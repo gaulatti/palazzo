@@ -1,0 +1,65 @@
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '**'
+      - '!.github/**'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.DEPLOYMENT_TOKEN }}
+
+      - name: Build Docker image
+        run: |
+          docker build -t ghcr.io/${{ github.repository }}/palazzo:latest .
+
+      - name: Push Docker image to GHCR
+        run: |
+          docker push ghcr.io/${{ github.repository }}/palazzo:latest
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Deploy to on-premises host
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            sh -c '
+            docker login ghcr.io -u ${{ github.actor }} -p ${{ secrets.DEPLOYMENT_TOKEN }}
+            docker pull ghcr.io/${{ github.repository }}/palazzo:latest
+
+            docker stop palazzo || true
+            docker rm palazzo || true
+
+            docker run -d --name palazzo \
+              --network bridge \
+              -p ${{ vars.PALAZZO_PORT }}:${{ vars.PALAZZO_PORT }} \
+              -e PALAZZO_PORT="${{ vars.PALAZZO_PORT }}" \
+              -e ICECAST_HOST="${{ vars.ICECAST_HOST }}" \
+              -e ICECAST_PORT="${{ vars.ICECAST_PORT }}" \
+              -e ICECAST_SOURCE_PASSWORD="${{ secrets.ICECAST_SOURCE_PASSWORD }}" \
+              -e STREAMS_WORKDIR=/tmp/palazzo-streams \
+              -e TELNET_PORT_START=14000 \
+              -e TELNET_PORT_END=14999 \
+              --restart=always \
+              ghcr.io/${{ github.repository }}/palazzo:latest
+            '

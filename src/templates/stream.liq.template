@@ -1,0 +1,26 @@
+#!/usr/bin/liquidsoap
+
+set("init.allow_root", true)
+
+set("server.telnet", true)
+set("server.telnet.bind_addr", "0.0.0.0")
+set("server.telnet.port", {{TELNET_PORT}})
+set("log.level", 3)
+
+songs = request.queue(id="songs")
+instants = request.queue(id="instants")
+
+radio = fallback(track_sensitive=false, [instants, songs])
+radio = mksafe(radio)
+
+output.icecast(
+  %mp3(bitrate={{BITRATE}}),
+  host="{{ICECAST_HOST}}",
+  port={{ICECAST_PORT}},
+  password="{{ICECAST_PASSWORD}}",
+  mount="{{MOUNT}}",
+  name="{{STREAM_NAME}}",
+  genre="{{STREAM_GENRE}}",
+  description="{{STREAM_NAME}}",
+  radio
+)
