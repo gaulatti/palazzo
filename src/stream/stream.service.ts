@@ -4,6 +4,7 @@ import { ChildProcess, spawn } from 'child_process';
 import { writeFile, mkdir } from 'fs/promises';
 import { join } from 'path';
 import { Socket } from 'net';
+import { Buffer } from 'node:buffer';
 
 export interface SongPayload { url: string; title?: string; artist?: string; }
 export interface InstantPayload { url: string; volume?: number; }

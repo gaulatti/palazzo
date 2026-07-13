@@ -25,4 +25,4 @@ RUN chmod +x /app/docker-entrypoint.sh
 EXPOSE 3100 8000
 
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
-CMD ["node", "dist/src/main.js"]
+CMD ["node", "dist/main.js"]
