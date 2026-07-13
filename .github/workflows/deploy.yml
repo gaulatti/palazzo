@@ -52,7 +52,7 @@ jobs:
 
             docker run -d --name palazzo \
               --network bridge \
-              -p 127.0.0.1:${{ vars.PALAZZO_PORT }}:3100 \
+              -p ${{ vars.PALAZZO_PORT }}:3100 \
               -p 127.0.0.1:${{ vars.ICECAST_PORT }}:8000 \
               -e PALAZZO_PORT=3100 \
               -e ICECAST_PORT=8000 \
