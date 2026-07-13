@@ -15,7 +15,6 @@ RUN npm install && npm cache clean --force
 COPY nest-cli.json tsconfig.json tsconfig.build.json ./
 
 COPY docker-entrypoint.sh \
-     icecast.xml.template \
      ./
 
 RUN chmod +x /app/docker-entrypoint.sh

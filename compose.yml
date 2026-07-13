@@ -4,7 +4,6 @@ services:
   palazzo:
     build:
       context: .
-      dockerfile: Dockerfile.dev
     env_file: .env
     environment:
       - ICECAST_PORT=${ICECAST_PORT:-8000}
