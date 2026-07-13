@@ -10,8 +10,14 @@ services:
       - ICECAST_SOURCE_PASSWORD=${ICECAST_SOURCE_PASSWORD:-palazzo-source}
     ports:
       - "127.0.0.1:${ICECAST_PORT:-8000}:${ICECAST_PORT:-8000}"
-    volumes:
-      - ./src:/app/src
-      - ./nest-cli.json:/app/nest-cli.json
-    command: npm run start:dev
+    develop:
+      watch:
+        - action: rebuild
+          path: ./src
+        - action: rebuild
+          path: ./package.json
+        - action: rebuild
+          path: ./tsconfig.json
+        - action: rebuild
+          path: ./tsconfig.build.json
     restart: unless-stopped
