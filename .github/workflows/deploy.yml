@@ -52,14 +52,11 @@ jobs:
 
             docker run -d --name palazzo \
               --network bridge \
-              -p ${{ vars.PALAZZO_PORT }}:${{ vars.PALAZZO_PORT }} \
-              -e PALAZZO_PORT="${{ vars.PALAZZO_PORT }}" \
-              -e ICECAST_HOST="${{ vars.ICECAST_HOST }}" \
-              -e ICECAST_PORT="${{ vars.ICECAST_PORT }}" \
+              -p 127.0.0.1:${{ vars.PALAZZO_PORT }}:3100 \
+              -p 127.0.0.1:${{ vars.ICECAST_PORT }}:8000 \
+              -e PALAZZO_PORT=3100 \
+              -e ICECAST_PORT=8000 \
               -e ICECAST_SOURCE_PASSWORD="${{ secrets.ICECAST_SOURCE_PASSWORD }}" \
-              -e STREAMS_WORKDIR=/tmp/palazzo-streams \
-              -e TELNET_PORT_START=14000 \
-              -e TELNET_PORT_END=14999 \
               --restart=always \
               ghcr.io/${{ github.repository }}/palazzo:latest
             '

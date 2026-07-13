@@ -7,7 +7,8 @@ import {
 import { AppModule } from './app.module';
 
 async function bootstrap() {
-  const port = Number(process.env.PALAZZO_PORT ?? 3100);
+  const port = Number(process.env.PALAZZO_PORT);
+  if (!port) throw new Error('PALAZZO_PORT env var is required');
 
   const app = await NestFactory.create<NestFastifyApplication>(
     AppModule,

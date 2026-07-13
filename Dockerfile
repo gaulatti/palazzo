@@ -1,35 +1,26 @@
-FROM node:22 AS builder
+FROM node:22
 
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
   liquidsoap \
   lame \
+  icecast2 \
   ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
 COPY package*.json ./
-RUN npm install --omit=dev && npm cache clean --force
+RUN npm install && npm cache clean --force
 
 COPY nest-cli.json tsconfig.json tsconfig.build.json ./
-COPY src/ ./src/
 
-RUN npm run build
+COPY docker-entrypoint.sh \
+     icecast.xml.template \
+     ./
 
-FROM node:22-slim
+RUN chmod +x /app/docker-entrypoint.sh
 
-WORKDIR /app
+EXPOSE 3100 8000
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-  liquidsoap \
-  lame \
-  ca-certificates \
-  && rm -rf /var/lib/apt/lists/*
-
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/dist ./dist
-COPY package*.json ./
-
-EXPOSE 3100
-
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
 CMD ["node", "dist/src/main.js"]

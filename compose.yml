@@ -5,30 +5,14 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.dev
-    ports:
-      - "${PALAZZO_PORT:-3100}:${PALAZZO_PORT:-3100}"
     env_file: .env
     environment:
-      - PALAZZO_PORT=${PALAZZO_PORT:-3100}
-      - STREAMS_WORKDIR=/tmp/palazzo-streams
-      - TELNET_PORT_START=14000
-      - TELNET_PORT_END=14999
+      - ICECAST_PORT=${ICECAST_PORT:-8000}
+      - ICECAST_SOURCE_PASSWORD=${ICECAST_SOURCE_PASSWORD:-palazzo-source}
+    ports:
+      - "127.0.0.1:${ICECAST_PORT:-8000}:${ICECAST_PORT:-8000}"
     volumes:
       - ./src:/app/src
       - ./nest-cli.json:/app/nest-cli.json
-      - /tmp/palazzo-streams:/tmp/palazzo-streams
     command: npm run start:dev
-    restart: unless-stopped
-
-  icecast:
-    image: pltnk/icecast2
-    environment:
-      - ICECAST_SOURCE_PASSWORD=palazzo-source
-      - ICECAST_ADMIN_PASSWORD=palazzo-admin
-      - ICECAST_RELAY_PASSWORD=palazzo-relay
-      - ICECAST_ADMIN_EMAIL=admin@localhost
-      - ICECAST_LOCATION=Earth
-      - ICECAST_HOSTNAME=localhost
-    ports:
-      - "${ICECAST_PORT:-8000}:8000"
     restart: unless-stopped
