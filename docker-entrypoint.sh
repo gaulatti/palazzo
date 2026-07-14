@@ -1,9 +1,18 @@
 #!/bin/sh
+# docker-entrypoint.sh
+#
+# First-stage entrypoint for the Palazzo container.
+# 1. Generates an Icecast2 XML configuration from environment variables.
+# 2. Starts Icecast2 in the background.
+# 3. Execs the Node.js API server (passed via CMD).
 set -e
 
+# Defaults for Icecast configuration.
 ICECAST_PORT="${ICECAST_PORT:-8000}"
 PASS="${ICECAST_SOURCE_PASSWORD:-palazzo-source}"
 
+# Write Icecast config — all authentication uses the same password
+# and CORS is wide-open so browser-based clients can connect.
 cat > /etc/icecast2/icecast.xml << EOF
 <icecast>
     <location>Earth</location>
@@ -55,7 +64,9 @@ cat > /etc/icecast2/icecast.xml << EOF
 </icecast>
 EOF
 
+# Start Icecast in the background.
 icecast2 -c /etc/icecast2/icecast.xml -b
 echo "Icecast started on port ${ICECAST_PORT}"
 
+# Hand control to the Node.js process.
 exec "$@"
