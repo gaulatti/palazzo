@@ -3,11 +3,16 @@ import {
   Body,
   Controller,
   Get,
+  Header,
+  Headers,
+  MessageEvent,
   Post,
   Put,
   Query,
+  Sse,
   StreamableFile,
 } from '@nestjs/common';
+import { map, Observable } from 'rxjs';
 import {
   StreamService,
   type SongPayload,
@@ -47,8 +52,7 @@ export class StreamController {
   @Post('song')
   async playSong(@Body() data: SongPayload) {
     if (!data.url) throw new BadRequestException('url is required');
-    await this.streamService.playSong(data);
-    return { ok: true };
+    return this.streamService.playSong(data);
   }
 
   /** Skips the current song (advances the `songs` request queue). */
@@ -62,8 +66,7 @@ export class StreamController {
   @Post('instant')
   async playInstant(@Body() data: InstantPayload) {
     if (!data.url) throw new BadRequestException('url is required');
-    await this.streamService.playInstant(data);
-    return { ok: true };
+    return this.streamService.playInstant(data);
   }
 
   /** Stops all currently playing instant clips by skipping the `instants` queue. */
@@ -82,6 +85,37 @@ export class StreamController {
   async updateMixer(@Body() data: MixerPayload) {
     await this.streamService.updateMixer(data);
     return { ok: true };
+  }
+
+  /** Returns the latest authoritative Liquidsoap playback snapshot. */
+  @Get('playback/state')
+  getPlaybackState() {
+    return this.streamService.telemetry.getState();
+  }
+
+  /**
+   * Streams replay-safe playback events. Reconnecting clients can provide the
+   * standard Last-Event-ID header to receive missed events from the bounded
+   * in-memory journal.
+   */
+  @Sse('playback/events')
+  playbackEvents(
+    @Headers('last-event-id') lastEventId?: string,
+  ): Observable<MessageEvent> {
+    return this.streamService.telemetry.subscribe(lastEventId).pipe(
+      map((event) => ({
+        id: event.id,
+        type: event.type,
+        data: event,
+      })),
+    );
+  }
+
+  /** Exposes bounded-cardinality Prometheus telemetry on the private API. */
+  @Get('metrics')
+  @Header('Content-Type', 'text/plain; version=0.0.4; charset=utf-8')
+  getMetrics(): string {
+    return this.streamService.telemetry.renderMetrics();
   }
 
   /**

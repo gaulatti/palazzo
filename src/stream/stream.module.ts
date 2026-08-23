@@ -1,6 +1,9 @@
 import { Module } from '@nestjs/common';
+import { APP_INTERCEPTOR } from '@nestjs/core';
+import { MetricsInterceptor } from './metrics.interceptor';
 import { StreamController } from './stream.controller';
 import { StreamService } from './stream.service';
+import { PlaybackTelemetryService } from './playback-telemetry.service';
 
 /**
  * Stream feature module.
@@ -12,7 +15,11 @@ import { StreamService } from './stream.service';
  */
 @Module({
   controllers: [StreamController],
-  providers: [StreamService],
-  exports: [StreamService],
+  providers: [
+    PlaybackTelemetryService,
+    StreamService,
+    { provide: APP_INTERCEPTOR, useClass: MetricsInterceptor },
+  ],
+  exports: [StreamService, PlaybackTelemetryService],
 })
 export class StreamModule {}

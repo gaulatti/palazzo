@@ -51,9 +51,10 @@ jobs:
 
             docker run -d --name palazzo \
               --network bridge \
-              -p ${{ vars.PALAZZO_PORT }}:3100 \
+              -p 127.0.0.1:${{ vars.PALAZZO_PORT }}:3100 \
               -p 127.0.0.1:${{ vars.ICECAST_PORT }}:8000 \
               -e PALAZZO_PORT=3100 \
+              -e PALAZZO_INSTANCE_ID=palazzo-production \
               -e ICECAST_PORT=8000 \
               -e ICECAST_SOURCE_PASSWORD="${{ secrets.ICECAST_SOURCE_PASSWORD }}" \
               --restart=always \

@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.0
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      - name: Type-check
+        run: npm run typecheck
+
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build pinned runtime image
+        run: docker build --tag palazzo:ci .
+
+      - name: Start and verify pinned runtime
+        run: |
+          docker run --rm --detach --name palazzo-ci \
+            --publish 127.0.0.1:3100:3100 \
+            --env PALAZZO_PORT=3100 \
+            --env PALAZZO_INSTANCE_ID=palazzo-ci \
+            --env ICECAST_PORT=8000 \
+            --env ICECAST_SOURCE_PASSWORD=ci-password \
+            palazzo:ci
+          trap 'docker stop palazzo-ci' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:3100/playback/state > /tmp/palazzo-state.json \
+              && jq --exit-status \
+                '.schemaVersion == 1 and .liquidsoap.running == true and .liquidsoap.connected == true' \
+                /tmp/palazzo-state.json > /dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          jq --exit-status \
+            '.schemaVersion == 1 and .liquidsoap.running == true and .liquidsoap.connected == true' \
+            /tmp/palazzo-state.json
+          docker exec palazzo-ci liquidsoap --version | grep 'Liquidsoap 2.4.5'
