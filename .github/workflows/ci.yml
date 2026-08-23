@@ -54,7 +54,10 @@ jobs:
             palazzo:ci
           trap 'docker stop palazzo-ci' EXIT
           for attempt in $(seq 1 30); do
-            if curl --fail --silent http://127.0.0.1:3100/playback/state > /tmp/palazzo-state.json; then
+            if curl --fail --silent http://127.0.0.1:3100/playback/state > /tmp/palazzo-state.json \
+              && jq --exit-status \
+                '.schemaVersion == 1 and .liquidsoap.running == true and .liquidsoap.connected == true' \
+                /tmp/palazzo-state.json > /dev/null; then
               break
             fi
             sleep 1
