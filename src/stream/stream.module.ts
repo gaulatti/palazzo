@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { StreamController } from './stream.controller';
 import { StreamService } from './stream.service';
+import { PlaybackTelemetryService } from './playback-telemetry.service';
 
 /**
  * Stream feature module.
@@ -12,7 +13,7 @@ import { StreamService } from './stream.service';
  */
 @Module({
   controllers: [StreamController],
-  providers: [StreamService],
-  exports: [StreamService],
+  providers: [PlaybackTelemetryService, StreamService],
+  exports: [StreamService, PlaybackTelemetryService],
 })
 export class StreamModule {}

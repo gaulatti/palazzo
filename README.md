@@ -22,6 +22,9 @@ All endpoints at a glance:
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/status` | Stream health and metadata |
+| `GET` | `/playback/state` | Authoritative current playback snapshot |
+| `GET` | `/playback/events` | Replay-safe Server-Sent Events |
+| `GET` | `/metrics` | Prometheus telemetry |
 | `POST` | `/song` | Push a song, skips current |
 | `POST` | `/song/stop` | Skip current song |
 | `POST` | `/instant` | Push a jingle/SFX |
@@ -29,7 +32,20 @@ All endpoints at a glance:
 | `PUT` | `/mixer` | Volume/mute (stub) |
 | `GET` | `/proxy-audio?url=` | CORS proxy for audio URLs |
 
+`POST /song` and `POST /instant` return a `playbackRequestId`. Song metadata
+and that ID travel with the Liquidsoap request and reappear in lifecycle,
+position, and state telemetry. Level samples are emitted at no more than 10 Hz,
+position at 1 Hz, and heartbeats approximately every 10 seconds.
+
+The control API, SSE feed, metrics, and unauthenticated Liquidsoap command
+socket are private interfaces. The provided Compose and deployment mappings
+bind them to host loopback; publish only Icecast (or route it through a reverse
+proxy) for listeners.
+
 Full details: [API Reference](wiki/API-Reference)
+
+Telemetry operations and migration guidance:
+[docs/playback-telemetry.md](docs/playback-telemetry.md).
 
 ## Documentation
 

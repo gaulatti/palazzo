@@ -6,9 +6,12 @@ services:
       context: .
     env_file: .env
     environment:
+      - PALAZZO_PORT=3100
+      - PALAZZO_INSTANCE_ID=${PALAZZO_INSTANCE_ID:-palazzo-local}
       - ICECAST_PORT=${ICECAST_PORT:-8000}
       - ICECAST_SOURCE_PASSWORD=${ICECAST_SOURCE_PASSWORD:-palazzo-source}
     ports:
+      - "127.0.0.1:${PALAZZO_PORT:-3100}:3100"
       - "127.0.0.1:${ICECAST_PORT:-8000}:${ICECAST_PORT:-8000}"
     develop:
       watch:
