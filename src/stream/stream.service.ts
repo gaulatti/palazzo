@@ -24,11 +24,13 @@ export interface SongPayload {
   url: string;
   title?: string;
   artist?: string;
+  playbackRequestId?: string;
 }
 
 export interface InstantPayload {
   url: string;
   volume?: number;
+  playbackRequestId?: string;
 }
 
 export interface MixerPayload {
@@ -51,6 +53,10 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
   private readonly telnet: LiquidsoapTelnetClient;
   private process: ChildProcess | null = null;
   private pollTimer: NodeJS.Timeout | null = null;
+  private restartTimer: NodeJS.Timeout | null = null;
+  private stabilityTimer: NodeJS.Timeout | null = null;
+  private restartAttempt = 0;
+  private shuttingDown = false;
   private pollInFlight = false;
 
   constructor(
@@ -94,29 +100,32 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
       timeout: 30_000,
     });
 
-    this.process = spawn('liquidsoap', [scriptPath], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    this.process.stdout?.on('data', (data: Buffer) =>
-      this.logger.debug(data.toString().trim()),
-    );
-    this.process.stderr?.on('data', (data: Buffer) =>
-      this.logger.debug(data.toString().trim()),
-    );
-    this.process.on('exit', (code) => {
-      this.telemetry.markDisconnected();
-      this.logger.warn(`Liquidsoap exited with code ${code}`);
-    });
+    this.startLiquidsoap(scriptPath);
 
-    this.pollTimer = setInterval(() => void this.pollTelemetry(), 100);
+    const configuredHz = Number(
+      this.config.get<string>('TELEMETRY_LEVEL_HZ') ?? 10,
+    );
+    const levelHz = Math.max(
+      1,
+      Math.min(10, Number.isFinite(configuredHz) ? configuredHz : 10),
+    );
+    this.pollTimer = setInterval(
+      () => void this.pollTelemetry(),
+      Math.ceil(1_000 / levelHz),
+    );
     this.pollTimer.unref();
     void this.pollTelemetry();
     this.logger.log(`Liquidsoap started, mount=${mount}`);
   }
 
   onModuleDestroy(): void {
+    this.shuttingDown = true;
     if (this.pollTimer) clearInterval(this.pollTimer);
+    if (this.restartTimer) clearTimeout(this.restartTimer);
+    if (this.stabilityTimer) clearTimeout(this.stabilityTimer);
     this.telnet.close();
+    this.telemetry.shutdown();
+    this.telemetry.setLiquidsoapRunning(false);
     this.process?.kill();
   }
 
@@ -131,7 +140,7 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
   }
 
   async playSong(data: SongPayload): Promise<PlaybackRequestAccepted> {
-    const playbackRequestId = randomUUID();
+    const playbackRequestId = data.playbackRequestId?.trim() || randomUUID();
     const uri = this.annotatedUri(data.url, {
       palazzo_request_id: playbackRequestId,
       palazzo_url: data.url,
@@ -140,6 +149,12 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
     });
     await this.telnet.send('songs.skip').catch(() => undefined);
     await this.telnet.send(`songs.push ${uri}`);
+    this.logger.log({
+      event: 'song.request.accepted',
+      playbackRequestId,
+      title: data.title ?? null,
+      artist: data.artist ?? null,
+    });
     return { ok: true, playbackRequestId };
   }
 
@@ -148,13 +163,17 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
   }
 
   async playInstant(data: InstantPayload): Promise<PlaybackRequestAccepted> {
-    const playbackRequestId = randomUUID();
+    const playbackRequestId = data.playbackRequestId?.trim() || randomUUID();
     const uri = this.annotatedUri(data.url, {
       palazzo_request_id: playbackRequestId,
       palazzo_url: data.url,
       palazzo_kind: 'instant',
     });
     await this.telnet.send(`instants.push ${uri}`);
+    this.logger.log({
+      event: 'instant.request.accepted',
+      playbackRequestId,
+    });
     return { ok: true, playbackRequestId };
   }
 
@@ -163,6 +182,47 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
   }
 
   async updateMixer(_data: MixerPayload): Promise<void> {}
+
+  private startLiquidsoap(scriptPath: string): void {
+    const child = spawn('liquidsoap', [scriptPath], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    this.process = child;
+    this.telemetry.setLiquidsoapRunning(true);
+    child.stdout?.on('data', (data: Buffer) =>
+      this.logger.debug(data.toString().trim()),
+    );
+    child.stderr?.on('data', (data: Buffer) =>
+      this.logger.debug(data.toString().trim()),
+    );
+    child.on('error', (error) =>
+      this.logger.error(`Liquidsoap process error: ${error.message}`),
+    );
+    child.once('close', (code) => {
+      if (this.process === child) this.process = null;
+      this.telemetry.setLiquidsoapRunning(false);
+      this.telemetry.markDisconnected();
+      this.logger.warn(`Liquidsoap exited with code ${code}`);
+      if (this.shuttingDown) return;
+
+      const delayMs = Math.min(100 * 2 ** this.restartAttempt, 2_000);
+      this.restartAttempt += 1;
+      this.telemetry.countProcessRestart();
+      this.restartTimer = setTimeout(() => {
+        this.restartTimer = null;
+        this.startLiquidsoap(scriptPath);
+      }, delayMs);
+      this.restartTimer.unref();
+    });
+
+    if (this.stabilityTimer) clearTimeout(this.stabilityTimer);
+    this.stabilityTimer = setTimeout(() => {
+      if (this.process === child && child.exitCode === null) {
+        this.restartAttempt = 0;
+      }
+    }, 5_000);
+    this.stabilityTimer.unref();
+  }
 
   private async pollTelemetry(): Promise<void> {
     if (this.pollInFlight) return;
@@ -176,6 +236,7 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
       const events = JSON.parse(eventsResponse) as LiquidsoapLifecycleEvent[];
       this.telemetry.apply(snapshot, events);
     } catch (error) {
+      if (error instanceof SyntaxError) this.telemetry.markParseFailure();
       this.telemetry.markDisconnected();
       this.logger.debug(
         `Liquidsoap telemetry poll failed: ${error instanceof Error ? error.message : String(error)}`,

@@ -32,8 +32,9 @@ All endpoints at a glance:
 | `PUT` | `/mixer` | Volume/mute (stub) |
 | `GET` | `/proxy-audio?url=` | CORS proxy for audio URLs |
 
-`POST /song` and `POST /instant` return a `playbackRequestId`. Song metadata
-and that ID travel with the Liquidsoap request and reappear in lifecycle,
+`POST /song` and `POST /instant` accept an optional caller-supplied
+`playbackRequestId`, generating one when omitted. Song metadata and that ID
+travel with the Liquidsoap request and reappear in lifecycle,
 position, and state telemetry. Level samples are emitted at no more than 10 Hz,
 position at 1 Hz, and heartbeats approximately every 10 seconds.
 

@@ -60,7 +60,11 @@ def remember_event(event_type, meta) =
   end
 end
 
-songs = request.queue(id="songs")
+songs_queue = request.queue(id="songs")
+songs_rms = rms(id="songs_rms", duration=0.1, songs_queue)
+get_song_rms = songs_rms.rms
+songs = peak(id="songs_peak", duration=0.1, songs_rms)
+get_song_peak = songs.peak
 
 songs.on_track(
   synchronous=false,
@@ -87,7 +91,11 @@ songs.on_position(
     end
 )
 
-instants = mksafe(request.queue(id="instants"))
+instants_queue = mksafe(request.queue(id="instants"))
+instants_rms = rms(id="instants_rms", duration=0.1, instants_queue)
+get_instant_rms = instants_rms.rms
+instants = peak(id="instants_peak", duration=0.1, instants_rms)
+get_instant_peak = instants.peak
 ${rtmpInput}
 radio = add(normalize=false, [songs, instants${rtmpSource}])
 radio = mksafe(radio)
@@ -111,8 +119,12 @@ server.register(
       started_at=current_started_at(),
       elapsed=songs.elapsed(),
       remaining=songs.remaining(),
-      rms=get_rms(),
-      peak=get_peak(),
+      song_rms=get_song_rms(),
+      song_peak=get_song_peak(),
+      instant_rms=get_instant_rms(),
+      instant_peak=get_instant_peak(),
+      output_rms=get_rms(),
+      output_peak=get_peak(),
       sampled_at=time()
     })
 )

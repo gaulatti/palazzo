@@ -25,6 +25,8 @@ test('generates a private authoritative telemetry script', () => {
   assert.match(script, /duration=0\.1/);
   assert.match(script, /radio_rms = rms/);
   assert.match(script, /radio = peak/);
+  assert.match(script, /songs_rms = rms/);
+  assert.match(script, /instants_rms = rms/);
   assert.doesNotMatch(script, /server\.telnet\.bind_addr := "0\.0\.0\.0"/);
 });
 

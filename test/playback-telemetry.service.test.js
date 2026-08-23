@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { firstValueFrom } = require('rxjs');
+const { firstValueFrom, take, toArray } = require('rxjs');
 const {
   PlaybackTelemetryService,
 } = require('../dist/stream/playback-telemetry.service.js');
@@ -22,8 +22,12 @@ function snapshot(overrides = {}) {
     started_at: 1_700_000_000,
     elapsed: 2.5,
     remaining: 7.5,
-    rms: 0.2,
-    peak: 0.4,
+    song_rms: 0.2,
+    song_peak: 0.4,
+    instant_rms: 0.1,
+    instant_peak: 0.3,
+    output_rms: 0.25,
+    output_peak: 0.5,
     sampled_at: 1_700_000_002.5,
     ...overrides,
   };
@@ -43,6 +47,7 @@ function lifecycle(sequence, event_type) {
 
 test('retains last-known playback through telemetry loss and ends only on engine evidence', () => {
   const telemetry = service();
+  telemetry.setLiquidsoapRunning(true);
   telemetry.apply(snapshot(), [lifecycle(1, 'track_started')]);
 
   assert.equal(telemetry.getState().status, 'playing');
@@ -50,29 +55,48 @@ test('retains last-known playback through telemetry loss and ends only on engine
 
   telemetry.markDisconnected();
   assert.equal(telemetry.getState().status, 'playing');
-  assert.equal(telemetry.getState().telemetry.connected, false);
-  assert.ok(telemetry.getState().telemetry.staleSince);
+  assert.equal(telemetry.getState().liquidsoap.connected, false);
+  assert.ok(telemetry.getState().liquidsoap.staleSince);
+  assert.equal(telemetry.getState().availability, 'degraded');
 
   telemetry.apply(
-    snapshot({ liquidsoap_sequence: 2, playing: false, rms: 0, peak: 0 }),
+    snapshot({
+      liquidsoap_sequence: 2,
+      playing: false,
+      song_rms: 0,
+      song_peak: 0,
+      instant_rms: 0,
+      instant_peak: 0,
+      output_rms: 0,
+      output_peak: 0,
+    }),
     [lifecycle(1, 'track_started'), lifecycle(2, 'track_ended')],
   );
   assert.equal(telemetry.getState().status, 'idle');
   assert.equal(telemetry.getState().track, null);
-  assert.deepEqual(telemetry.getState().levels, { rms: 0, peak: 0 });
+  assert.deepEqual(telemetry.getState().levels, {
+    song: { rms: 0, peak: 0 },
+    instant: { rms: 0, peak: 0 },
+    output: { rms: 0, peak: 0 },
+  });
 });
 
-test('deduplicates Liquidsoap events and replays after Last-Event-ID', async () => {
+test('starts every SSE connection with a snapshot and then replays after Last-Event-ID', async () => {
   const telemetry = service();
+  telemetry.setLiquidsoapRunning(true);
   telemetry.apply(snapshot(), [lifecycle(1, 'track_started')]);
   const replay = telemetry.replay;
   const started = replay.find((event) => event.type === 'track.started');
 
   telemetry.apply(snapshot(), [lifecycle(1, 'track_started')]);
-  const next = firstValueFrom(telemetry.subscribe(started.id));
-  const event = await next;
+  const events = await firstValueFrom(
+    telemetry.subscribe(started.id).pipe(take(2), toArray()),
+  );
 
-  assert.notEqual(event.id, started.id);
+  assert.equal(events[0].type, 'snapshot');
+  assert.equal(events[0].id, started.id);
+  assert.notEqual(events[1].id, started.id);
+  assert.ok(events[1].sequence > events[0].sequence);
   assert.equal(
     telemetry.renderMetrics().match(/event="started"} 1/g)?.length,
     1,
@@ -86,8 +110,11 @@ test('uses stable instance and per-boot IDs with bounded metric labels', () => {
   const metrics = telemetry.renderMetrics();
 
   assert.equal(state.instanceId, 'test-palazzo');
+  assert.equal(state.schemaVersion, 1);
   assert.match(state.bootId, /^[0-9a-f-]{36}$/);
-  assert.match(metrics, /palazzo_audio_rms 0\.2/);
+  assert.match(metrics, /palazzo_audio_song_rms 0\.2/);
+  assert.match(metrics, /palazzo_audio_instant_peak 0\.3/);
+  assert.match(metrics, /palazzo_audio_output_peak 0\.5/);
   assert.doesNotMatch(metrics, /request-1|Test title|example\.test/);
 });
 
@@ -111,8 +138,50 @@ test('rebases lifecycle deduplication after a Liquidsoap sequence reset', () => 
 test('bounds the replay journal under sustained level updates', () => {
   const telemetry = service();
   for (let index = 0; index < 700; index += 1) {
-    telemetry.apply(snapshot({ elapsed: index / 10 }), []);
+    telemetry.emit('audio.levels', { index });
   }
 
   assert.equal(telemetry.replay.length, 512);
+  assert.match(
+    telemetry.renderMetrics(),
+    /palazzo_sse_replay_dropped_total\{type="levels"\} 188/,
+  );
+});
+
+test('normalizes HTTP metric labels to a bounded route set', () => {
+  const telemetry = service();
+  telemetry.observeHttp('get', '/playback/state', 200, 12);
+  telemetry.observeHttp('get', '/devices/track-123', 404, 5);
+  const metrics = telemetry.renderMetrics();
+
+  assert.match(metrics, /route="\/playback\/state",status="2xx"/);
+  assert.match(metrics, /route="unmatched",status="4xx"/);
+  assert.doesNotMatch(metrics, /track-123/);
+});
+
+test('uses a fresh snapshot instead of replay across process boots', async () => {
+  const telemetry = service();
+  telemetry.apply(snapshot(), [lifecycle(1, 'track_started')]);
+
+  const event = await firstValueFrom(telemetry.subscribe('old-boot:99'));
+
+  assert.equal(event.type, 'snapshot');
+  assert.equal(event.bootId, telemetry.bootId);
+  assert.equal(event.data.state.sequence, telemetry.getState().sequence);
+});
+
+test('preserves lifecycle ordering after level replay pressure', () => {
+  const telemetry = service();
+  for (let index = 0; index < 700; index += 1) {
+    telemetry.emit('audio.levels', { index });
+  }
+  telemetry.apply(
+    snapshot({ liquidsoap_sequence: 2, playing: false }),
+    [lifecycle(1, 'track_started'), lifecycle(2, 'track_ended')],
+  );
+
+  const lifecycleTypes = telemetry.replay
+    .filter((event) => event.type.startsWith('track.'))
+    .map((event) => event.type);
+  assert.deepEqual(lifecycleTypes, ['track.started', 'track.ended']);
 });

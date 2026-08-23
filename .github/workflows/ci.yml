@@ -42,3 +42,24 @@ jobs:
 
       - name: Build pinned runtime image
         run: docker build --tag palazzo:ci .
+
+      - name: Start and verify pinned runtime
+        run: |
+          docker run --rm --detach --name palazzo-ci \
+            --publish 127.0.0.1:3100:3100 \
+            --env PALAZZO_PORT=3100 \
+            --env PALAZZO_INSTANCE_ID=palazzo-ci \
+            --env ICECAST_PORT=8000 \
+            --env ICECAST_SOURCE_PASSWORD=ci-password \
+            palazzo:ci
+          trap 'docker stop palazzo-ci' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:3100/playback/state > /tmp/palazzo-state.json; then
+              break
+            fi
+            sleep 1
+          done
+          jq --exit-status \
+            '.schemaVersion == 1 and .liquidsoap.running == true and .liquidsoap.connected == true' \
+            /tmp/palazzo-state.json
+          docker exec palazzo-ci liquidsoap --version | grep 'Liquidsoap 2.4.5'
