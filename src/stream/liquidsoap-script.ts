@@ -117,6 +117,10 @@ get_rms = radio_rms.rms
 radio = peak(id="radio_peak", duration=0.1, radio_rms)
 get_peak = radio.peak
 
+def finite_level(value)
+  if float.is_nan(value) or float.is_infinite(value) then 0. else value end
+end
+
 server.register(
   namespace="palazzo",
   description="Return the authoritative playback snapshot",
@@ -133,12 +137,12 @@ server.register(
       started_at=current_started_at(),
       elapsed=songs.elapsed(),
       remaining=songs.remaining(),
-      song_rms=get_song_rms(),
-      song_peak=get_song_peak(),
-      instant_rms=get_instant_rms(),
-      instant_peak=get_instant_peak(),
-      output_rms=get_rms(),
-      output_peak=get_peak(),
+      song_rms=finite_level(get_song_rms()),
+      song_peak=finite_level(get_song_peak()),
+      instant_rms=finite_level(get_instant_rms()),
+      instant_peak=finite_level(get_instant_peak()),
+      output_rms=finite_level(get_rms()),
+      output_peak=finite_level(get_peak()),
       icecast_connected=icecast_connected(),
       sampled_at=time()
     })
