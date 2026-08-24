@@ -50,8 +50,6 @@ jobs:
             set -eu
 
             test -n "${{ vars.PROGRAM_ID }}"
-            test -f /etc/palazzo/control-token
-            test -s /etc/palazzo/control-token
             docker network inspect broadcast-control >/dev/null
             if docker inspect palazzo-candidate >/dev/null 2>&1 || docker inspect palazzo-rollback >/dev/null 2>&1; then
               echo "A previous Palazzo deployment candidate or rollback container requires operator review"
@@ -69,18 +67,16 @@ jobs:
 
             docker run -d --name palazzo-candidate \
               --network broadcast-control \
-              -v /etc/palazzo/control-token:/run/secrets/palazzo-control-token:ro \
               -e PALAZZO_PORT=3100 \
               -e PALAZZO_INSTANCE_ID=palazzo-production-candidate \
               -e PROGRAM_ID="${{ vars.PROGRAM_ID }}" \
-              -e PALAZZO_CONTROL_TOKEN_FILE=/run/secrets/palazzo-control-token \
               -e ICECAST_PORT=8000 \
               -e ICECAST_SOURCE_PASSWORD="${{ secrets.ICECAST_SOURCE_PASSWORD }}" \
               "$IMAGE"
 
             candidate_ready=false
             for attempt in $(seq 1 45); do
-              if docker exec palazzo-candidate node -e "const fs=require(\"node:fs\");const token=fs.readFileSync(\"/run/secrets/palazzo-control-token\",\"utf8\").trim();Promise.all([fetch(\"http://127.0.0.1:3100/playback/state\").then(async response=>{const state=await response.json();if(!response.ok||state.liquidsoap?.running!==true||state.liquidsoap?.connected!==true||state.icecast?.connected!==true)throw new Error(\"transport not ready\")}),fetch(\"http://127.0.0.1:3100/v1/programs/${{ vars.PROGRAM_ID }}/automation\",{headers:{Authorization:\"Bearer \"+token}}).then(response=>{if(!response.ok)throw new Error(\"lifecycle API not ready\")})]).catch(error=>{console.error(error.message);process.exit(1)})"; then
+              if docker exec palazzo-candidate node -e "fetch(\"http://127.0.0.1:3100/playback/state\").then(async response=>{const state=await response.json();if(!response.ok||state.liquidsoap?.running!==true||state.liquidsoap?.connected!==true||state.icecast?.connected!==true)throw new Error(\"transport not ready\")}).catch(error=>{console.error(error.message);process.exit(1)})"; then
                 candidate_ready=true
                 break
               fi
@@ -104,13 +100,11 @@ jobs:
 
             if ! docker run -d --name palazzo \
               --network broadcast-control \
-              -v /etc/palazzo/control-token:/run/secrets/palazzo-control-token:ro \
               -p 127.0.0.1:${{ vars.PALAZZO_PORT }}:3100 \
               -p 127.0.0.1:${{ vars.ICECAST_PORT }}:8000 \
               -e PALAZZO_PORT=3100 \
               -e PALAZZO_INSTANCE_ID=palazzo-production \
               -e PROGRAM_ID="${{ vars.PROGRAM_ID }}" \
-              -e PALAZZO_CONTROL_TOKEN_FILE=/run/secrets/palazzo-control-token \
               -e ICECAST_PORT=8000 \
               -e ICECAST_SOURCE_PASSWORD="${{ secrets.ICECAST_SOURCE_PASSWORD }}" \
               --restart=always \
@@ -125,7 +119,7 @@ jobs:
 
             deployed_ready=false
             for attempt in $(seq 1 45); do
-              if docker exec palazzo node -e "const fs=require(\"node:fs\");const token=fs.readFileSync(\"/run/secrets/palazzo-control-token\",\"utf8\").trim();Promise.all([fetch(\"http://127.0.0.1:3100/playback/state\").then(async response=>{const state=await response.json();if(!response.ok||state.liquidsoap?.running!==true||state.liquidsoap?.connected!==true||state.icecast?.connected!==true)throw new Error(\"transport not ready\")}),fetch(\"http://127.0.0.1:3100/v1/programs/${{ vars.PROGRAM_ID }}/automation\",{headers:{Authorization:\"Bearer \"+token}}).then(response=>{if(!response.ok)throw new Error(\"lifecycle API not ready\")})]).catch(error=>{console.error(error.message);process.exit(1)})"; then
+              if docker exec palazzo node -e "fetch(\"http://127.0.0.1:3100/playback/state\").then(async response=>{const state=await response.json();if(!response.ok||state.liquidsoap?.running!==true||state.liquidsoap?.connected!==true||state.icecast?.connected!==true)throw new Error(\"transport not ready\")}).catch(error=>{console.error(error.message);process.exit(1)})"; then
                 deployed_ready=true
                 break
               fi
