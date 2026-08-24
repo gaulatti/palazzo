@@ -1,22 +1,23 @@
 import {
+  BadRequestException,
   Injectable,
   Logger,
   OnModuleDestroy,
   OnModuleInit,
-} from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { randomUUID } from 'node:crypto';
-import { ChildProcess, execFile, spawn } from 'node:child_process';
-import { mkdir, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
-import { promisify } from 'node:util';
-import { buildLiquidsoapScript } from './liquidsoap-script';
-import { LiquidsoapTelnetClient } from './liquidsoap-telnet.client';
+} from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
+import { randomUUID } from "node:crypto";
+import { ChildProcess, execFile, spawn } from "node:child_process";
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { promisify } from "node:util";
+import { buildLiquidsoapScript } from "./liquidsoap-script";
+import { LiquidsoapTelnetClient } from "./liquidsoap-telnet.client";
 import {
   LiquidsoapLifecycleEvent,
   LiquidsoapSnapshot,
   PlaybackTelemetryService,
-} from './playback-telemetry.service';
+} from "./playback-telemetry.service";
 
 const execFileAsync = promisify(execFile);
 
@@ -35,10 +36,19 @@ export interface InstantPayload {
 }
 
 export interface MixerPayload {
+  mainVolume?: number;
   songVolume?: number;
   instantVolume?: number;
   songMuted?: boolean;
   instantMuted?: boolean;
+}
+
+export interface MixerState {
+  mainVolume: number;
+  songVolume: number;
+  instantVolume: number;
+  songMuted: boolean;
+  instantMuted: boolean;
 }
 
 export interface PlaybackRequestAccepted {
@@ -60,6 +70,13 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
   private shuttingDown = false;
   private pollInFlight = false;
   private operationTail: Promise<void> = Promise.resolve();
+  private mixerState: MixerState = {
+    mainVolume: 1,
+    songVolume: 1,
+    instantVolume: 1,
+    songMuted: false,
+    instantMuted: false,
+  };
 
   constructor(
     private readonly config: ConfigService,
@@ -72,14 +89,14 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleInit(): Promise<void> {
-    const mount = this.config.get<string>('ICECAST_MOUNT') ?? '/stream';
-    const port = Number(this.config.get<string>('ICECAST_PORT') ?? 8000);
+    const mount = this.config.get<string>("ICECAST_MOUNT") ?? "/stream";
+    const port = Number(this.config.get<string>("ICECAST_PORT") ?? 8000);
     const password =
-      this.config.get<string>('ICECAST_SOURCE_PASSWORD') ?? 'hackme';
-    const streamName = this.config.get<string>('STREAM_NAME') ?? 'Palazzo';
-    const genre = this.config.get<string>('STREAM_GENRE') ?? 'Various';
-    const bitrate = Number(this.config.get<string>('BITRATE') ?? 128);
-    const rtmpUrl = this.config.get<string>('RTMP_URL') || undefined;
+      this.config.get<string>("ICECAST_SOURCE_PASSWORD") ?? "hackme";
+    const streamName = this.config.get<string>("STREAM_NAME") ?? "Palazzo";
+    const genre = this.config.get<string>("STREAM_GENRE") ?? "Various";
+    const bitrate = Number(this.config.get<string>("BITRATE") ?? 128);
+    const rtmpUrl = this.config.get<string>("RTMP_URL") || undefined;
 
     const script = buildLiquidsoapScript({
       telnetPort: this.telnetPort,
@@ -91,21 +108,21 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
       bitrate,
       rtmpUrl,
     });
-    const directory = '/tmp/palazzo';
-    const scriptPath = join(directory, 'stream.liq');
+    const directory = "/tmp/palazzo";
+    const scriptPath = join(directory, "stream.liq");
     await mkdir(directory, { recursive: true });
-    await writeFile(scriptPath, script, 'utf8');
+    await writeFile(scriptPath, script, "utf8");
 
     // Validate the exact environment-specific script with the bundled engine
     // before starting the long-lived process.
-    await execFileAsync('liquidsoap', ['--check', scriptPath], {
+    await execFileAsync("liquidsoap", ["--check", scriptPath], {
       timeout: 30_000,
     });
 
     this.startLiquidsoap(scriptPath);
 
     const configuredHz = Number(
-      this.config.get<string>('TELEMETRY_LEVEL_HZ') ?? 10,
+      this.config.get<string>("TELEMETRY_LEVEL_HZ") ?? 10,
     );
     const levelHz = Math.max(
       1,
@@ -133,8 +150,8 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
 
   getStatus() {
     return {
-      mount: this.config.get('ICECAST_MOUNT') ?? '/stream',
-      streamName: this.config.get('STREAM_NAME') ?? 'Palazzo',
+      mount: this.config.get("ICECAST_MOUNT") ?? "/stream",
+      streamName: this.config.get("STREAM_NAME") ?? "Palazzo",
       running: this.process !== null && this.process.exitCode === null,
       uptime: Date.now() - this.startedAt,
       playback: this.telemetry.getState(),
@@ -147,14 +164,14 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
       const uri = this.annotatedUri(data.url, {
         palazzo_request_id: playbackRequestId,
         palazzo_url: data.url,
-        title: data.title ?? '',
-        artist: data.artist ?? '',
-        cover_url: data.coverUrl ?? '',
+        title: data.title ?? "",
+        artist: data.artist ?? "",
+        cover_url: data.coverUrl ?? "",
       });
-      await this.telnet.send('songs.flush_and_skip');
+      await this.telnet.send("songs.flush_and_skip");
       await this.telnet.send(`songs.push ${uri}`);
       this.logger.log({
-        event: 'song.request.accepted',
+        event: "song.request.accepted",
         playbackRequestId,
         title: data.title ?? null,
         artist: data.artist ?? null,
@@ -166,7 +183,7 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
 
   async stopSong(): Promise<void> {
     await this.serializeOperation(async () => {
-      await this.telnet.send('songs.flush_and_skip');
+      await this.telnet.send("songs.flush_and_skip");
     });
   }
 
@@ -176,11 +193,14 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
       const uri = this.annotatedUri(data.url, {
         palazzo_request_id: playbackRequestId,
         palazzo_url: data.url,
-        palazzo_kind: 'instant',
+        palazzo_kind: "instant",
+        ...(data.volume === undefined
+          ? {}
+          : { liq_amplify: String(this.normalizeGain(data.volume, "volume")) }),
       });
       await this.telnet.send(`instants.push ${uri}`);
       this.logger.log({
-        event: 'instant.request.accepted',
+        event: "instant.request.accepted",
         playbackRequestId,
       });
       return { ok: true, playbackRequestId };
@@ -189,42 +209,122 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
 
   async stopAllInstants(): Promise<void> {
     await this.serializeOperation(async () => {
-      await this.telnet.send('instants.skip').catch(() => undefined);
+      await this.telnet.send("instants.skip").catch(() => undefined);
     });
   }
 
   async clearProgramMaterial(): Promise<void> {
     await this.serializeOperation(async () => {
       const results = await Promise.allSettled([
-        this.telnet.send('songs.flush_and_skip'),
-        this.telnet.send('instants.flush_and_skip'),
+        this.telnet.send("songs.flush_and_skip"),
+        this.telnet.send("instants.flush_and_skip"),
       ]);
       const failure = results.find(
         (result): result is PromiseRejectedResult =>
-          result.status === 'rejected',
+          result.status === "rejected",
       );
       if (failure) throw failure.reason;
     });
   }
 
-  async updateMixer(_data: MixerPayload): Promise<void> {}
+  getMixer(): MixerState {
+    return { ...this.mixerState };
+  }
+
+  async updateMixer(data: MixerPayload): Promise<MixerState> {
+    const next: MixerState = {
+      mainVolume: this.optionalGain(
+        data.mainVolume,
+        "mainVolume",
+        this.mixerState.mainVolume,
+      ),
+      songVolume: this.optionalGain(
+        data.songVolume,
+        "songVolume",
+        this.mixerState.songVolume,
+      ),
+      instantVolume: this.optionalGain(
+        data.instantVolume,
+        "instantVolume",
+        this.mixerState.instantVolume,
+      ),
+      songMuted: this.optionalBoolean(
+        data.songMuted,
+        "songMuted",
+        this.mixerState.songMuted,
+      ),
+      instantMuted: this.optionalBoolean(
+        data.instantMuted,
+        "instantMuted",
+        this.mixerState.instantMuted,
+      ),
+    };
+
+    await this.serializeOperation(async () => {
+      await this.telnet.send(
+        `var.set palazzo_main_volume = ${next.mainVolume}`,
+      );
+      await this.telnet.send(
+        `var.set palazzo_song_volume = ${next.songMuted ? 0 : next.songVolume}`,
+      );
+      await this.telnet.send(
+        `var.set palazzo_instant_volume = ${next.instantMuted ? 0 : next.instantVolume}`,
+      );
+      this.mixerState = next;
+    });
+    return this.getMixer();
+  }
+
+  private optionalGain(
+    value: unknown,
+    field: string,
+    fallback: number,
+  ): number {
+    return value === undefined ? fallback : this.normalizeGain(value, field);
+  }
+
+  private normalizeGain(value: unknown, field: string): number {
+    if (
+      typeof value !== "number" ||
+      !Number.isFinite(value) ||
+      value < 0 ||
+      value > 1
+    ) {
+      throw new BadRequestException(
+        `${field} must be a number between 0 and 1`,
+      );
+    }
+    return value;
+  }
+
+  private optionalBoolean(
+    value: unknown,
+    field: string,
+    fallback: boolean,
+  ): boolean {
+    if (value === undefined) return fallback;
+    if (typeof value !== "boolean") {
+      throw new BadRequestException(`${field} must be a boolean`);
+    }
+    return value;
+  }
 
   private startLiquidsoap(scriptPath: string): void {
-    const child = spawn('liquidsoap', [scriptPath], {
-      stdio: ['ignore', 'pipe', 'pipe'],
+    const child = spawn("liquidsoap", [scriptPath], {
+      stdio: ["ignore", "pipe", "pipe"],
     });
     this.process = child;
     this.telemetry.setLiquidsoapRunning(true);
-    child.stdout?.on('data', (data: Buffer) =>
+    child.stdout?.on("data", (data: Buffer) =>
       this.logger.debug(data.toString().trim()),
     );
-    child.stderr?.on('data', (data: Buffer) =>
+    child.stderr?.on("data", (data: Buffer) =>
       this.logger.debug(data.toString().trim()),
     );
-    child.on('error', (error) =>
+    child.on("error", (error) =>
       this.logger.error(`Liquidsoap process error: ${error.message}`),
     );
-    child.once('close', (code) => {
+    child.once("close", (code) => {
       if (this.process === child) this.process = null;
       this.telemetry.setLiquidsoapRunning(false);
       this.telemetry.markDisconnected();
@@ -255,8 +355,8 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
     this.pollInFlight = true;
     try {
       const [snapshotResponse, eventsResponse] = await Promise.all([
-        this.telnet.send('palazzo.snapshot'),
-        this.telnet.send('palazzo.events'),
+        this.telnet.send("palazzo.snapshot"),
+        this.telnet.send("palazzo.events"),
       ]);
       const snapshot = JSON.parse(snapshotResponse) as LiquidsoapSnapshot;
       const events = JSON.parse(eventsResponse) as LiquidsoapLifecycleEvent[];
@@ -273,19 +373,19 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
   }
 
   private annotatedUri(url: string, metadata: Record<string, string>): string {
-    if (/\r|\n/.test(url)) throw new Error('Audio URL cannot contain newlines');
+    if (/\r|\n/.test(url)) throw new Error("Audio URL cannot contain newlines");
     const annotations = Object.entries(metadata)
       .map(([key, value]) => `${key}="${this.annotationValue(value)}"`)
-      .join(',');
+      .join(",");
     return `annotate:${annotations}:${url}`;
   }
 
   private annotationValue(value: string): string {
     return value
-      .replace(/\\/g, '\\\\')
+      .replace(/\\/g, "\\\\")
       .replace(/"/g, '\\"')
-      .replace(/\r/g, '\\r')
-      .replace(/\n/g, '\\n');
+      .replace(/\r/g, "\\r")
+      .replace(/\n/g, "\\n");
   }
 
   private serializeOperation<T>(operation: () => Promise<T>): Promise<T> {

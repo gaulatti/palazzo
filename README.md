@@ -22,21 +22,22 @@ Push a song: `POST /song` with `{"url": "https://...mp3"}`
 
 All endpoints at a glance:
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/status` | Stream health and metadata |
-| `GET` | `/playback/state` | Authoritative current playback snapshot |
-| `GET` | `/playback/events` | Replay-safe Server-Sent Events |
-| `GET` | `/metrics` | Prometheus telemetry |
-| `GET` | `/v1/programs/:programId/automation` | Authenticated automation lifecycle state |
+| Method | Path                                       | Description                                               |
+| ------ | ------------------------------------------ | --------------------------------------------------------- |
+| `GET`  | `/status`                                  | Stream health and metadata                                |
+| `GET`  | `/playback/state`                          | Authoritative current playback snapshot                   |
+| `GET`  | `/playback/events`                         | Replay-safe Server-Sent Events                            |
+| `GET`  | `/metrics`                                 | Prometheus telemetry                                      |
+| `GET`  | `/v1/programs/:programId/automation`       | Authenticated automation lifecycle state                  |
 | `POST` | `/v1/programs/:programId/automation/start` | Start the program automation without restarting transport |
-| `POST` | `/v1/programs/:programId/automation/stop` | Clear program material while preserving the Icecast mount |
-| `POST` | `/song` | Push a song, skips current |
-| `POST` | `/song/stop` | Skip current song |
-| `POST` | `/instant` | Push a jingle/SFX |
-| `POST` | `/instant/stop` | Stop all instants |
-| `PUT` | `/mixer` | Volume/mute (stub) |
-| `GET` | `/proxy-audio?url=` | CORS proxy for audio URLs |
+| `POST` | `/v1/programs/:programId/automation/stop`  | Clear program material while preserving the Icecast mount |
+| `POST` | `/song`                                    | Push a song, skips current                                |
+| `POST` | `/song/stop`                               | Skip current song                                         |
+| `POST` | `/instant`                                 | Push a jingle/SFX                                         |
+| `POST` | `/instant/stop`                            | Stop all instants                                         |
+| `GET`  | `/mixer`                                   | Read the applied song, instant, and main mixer state      |
+| `PUT`  | `/mixer`                                   | Apply song, instant, and main volume/mute controls        |
+| `GET`  | `/proxy-audio?url=`                        | CORS proxy for audio URLs                                 |
 
 `POST /song` and `POST /instant` accept an optional caller-supplied
 `playbackRequestId`, generating one when omitted. Song metadata and that ID

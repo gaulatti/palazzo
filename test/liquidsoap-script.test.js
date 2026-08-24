@@ -1,17 +1,17 @@
-const assert = require('node:assert/strict');
-const test = require('node:test');
+const assert = require("node:assert/strict");
+const test = require("node:test");
 const {
   buildLiquidsoapScript,
-} = require('../dist/stream/liquidsoap-script.js');
+} = require("../dist/stream/liquidsoap-script.js");
 
-test('generates a private authoritative telemetry script', () => {
+test("generates a private authoritative telemetry script", () => {
   const script = buildLiquidsoapScript({
     telnetPort: 14000,
     icecastPort: 8000,
-    icecastPassword: 'secret',
-    mount: '/stream',
-    streamName: 'Palazzo',
-    genre: 'Various',
+    icecastPassword: "secret",
+    mount: "/stream",
+    streamName: "Palazzo",
+    genre: "Various",
     bitrate: 128,
   });
 
@@ -20,7 +20,10 @@ test('generates a private authoritative telemetry script', () => {
   assert.match(script, /songs\.on_position/);
   assert.match(script, /palazzo_request_id/);
   assert.match(script, /cover_url/);
-  assert.match(script, /icy_metadata=\["song", "title", "artist", "cover_url"\]/);
+  assert.match(
+    script,
+    /icy_metadata=\["song", "title", "artist", "cover_url"\]/,
+  );
   assert.match(script, /namespace="palazzo"/);
   assert.match(script, /"snapshot"/);
   assert.match(script, /"events"/);
@@ -32,22 +35,29 @@ test('generates a private authoritative telemetry script', () => {
   assert.match(script, /radio = peak/);
   assert.match(script, /songs_rms = rms/);
   assert.match(script, /instants_rms = rms/);
+  assert.match(script, /interactive\.float\("palazzo_song_volume", 1\.\)/);
+  assert.match(script, /interactive\.float\("palazzo_instant_volume", 1\.\)/);
+  assert.match(script, /interactive\.float\("palazzo_main_volume", 1\.\)/);
+  assert.match(script, /instants_per_item = amplify\(1\., instants_queue\)/);
   assert.doesNotMatch(script, /server\.telnet\.bind_addr := "0\.0\.0\.0"/);
 });
 
-test('escapes user-controlled Liquidsoap string values', () => {
+test("escapes user-controlled Liquidsoap string values", () => {
   const script = buildLiquidsoapScript({
     telnetPort: 14000,
     icecastPort: 8000,
     icecastPassword: 'quote"\npassword',
-    mount: '/stream',
+    mount: "/stream",
     streamName: 'Name"\nnext',
-    genre: 'Various',
+    genre: "Various",
     bitrate: 128,
     rtmpUrl: 'rtmp://example.test/live"\nnext',
   });
 
   assert.match(script, /password="quote\\"\\npassword"/);
   assert.match(script, /name="Name\\"\\nnext"/);
-  assert.match(script, /input\.rtmp\("rtmp:\/\/example\.test\/live\\"\\nnext"\)/);
+  assert.match(
+    script,
+    /input\.rtmp\("rtmp:\/\/example\.test\/live\\"\\nnext"\)/,
+  );
 });

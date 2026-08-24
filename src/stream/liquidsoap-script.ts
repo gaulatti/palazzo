@@ -11,10 +11,10 @@ export interface LiquidsoapScriptOptions {
 
 function liqString(value: string): string {
   return value
-    .replace(/\\/g, '\\\\')
+    .replace(/\\/g, "\\\\")
     .replace(/"/g, '\\"')
-    .replace(/\r/g, '\\r')
-    .replace(/\n/g, '\\n');
+    .replace(/\r/g, "\\r")
+    .replace(/\n/g, "\\n");
 }
 
 export function buildLiquidsoapScript(
@@ -22,8 +22,8 @@ export function buildLiquidsoapScript(
 ): string {
   const rtmpInput = options.rtmpUrl
     ? `live = mksafe(input.rtmp("${liqString(options.rtmpUrl)}"))`
-    : '';
-  const rtmpSource = options.rtmpUrl ? ', live' : '';
+    : "";
+  const rtmpSource = options.rtmpUrl ? ", live" : "";
 
   return `#!/usr/bin/liquidsoap
 
@@ -66,7 +66,9 @@ def remember_event(event_type, meta) =
 end
 
 songs_queue = request.queue(id="songs")
-songs_rms = rms(id="songs_rms", duration=0.1, songs_queue)
+song_volume = interactive.float("palazzo_song_volume", 1.)
+songs_controlled = amplify(override=null, song_volume, songs_queue)
+songs_rms = rms(id="songs_rms", duration=0.1, songs_controlled)
 get_song_rms = songs_rms.rms
 songs = peak(id="songs_peak", duration=0.1, songs_rms)
 get_song_peak = songs.peak
@@ -98,13 +100,18 @@ songs.on_position(
 )
 
 instants_queue = mksafe(request.queue(id="instants"))
-instants_rms = rms(id="instants_rms", duration=0.1, instants_queue)
+instant_volume = interactive.float("palazzo_instant_volume", 1.)
+instants_per_item = amplify(1., instants_queue)
+instants_controlled = amplify(override=null, instant_volume, instants_per_item)
+instants_rms = rms(id="instants_rms", duration=0.1, instants_controlled)
 get_instant_rms = instants_rms.rms
 instants = peak(id="instants_peak", duration=0.1, instants_rms)
 get_instant_peak = instants.peak
 ${rtmpInput}
 radio = add(normalize=false, [songs, instants${rtmpSource}])
 radio = mksafe(radio)
+main_volume = interactive.float("palazzo_main_volume", 1.)
+radio = amplify(override=null, main_volume, radio)
 radio_rms = rms(id="radio_rms", duration=0.1, radio)
 get_rms = radio_rms.rms
 radio = peak(id="radio_peak", duration=0.1, radio_rms)
