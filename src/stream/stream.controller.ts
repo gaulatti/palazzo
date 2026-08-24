@@ -12,19 +12,19 @@ import {
   Query,
   Sse,
   StreamableFile,
-} from '@nestjs/common';
-import { map, Observable } from 'rxjs';
+} from "@nestjs/common";
+import { map, Observable } from "rxjs";
 import {
   StreamService,
   type SongPayload,
   type InstantPayload,
   type MixerPayload,
-} from './stream.service';
-import { BroadcastLifecycleService } from './broadcast-lifecycle.service';
+} from "./stream.service";
+import { BroadcastLifecycleService } from "./broadcast-lifecycle.service";
 import {
   FillerStoreService,
   type FillerPreparationRequest,
-} from './filler-store.service';
+} from "./filler-store.service";
 
 /**
  * REST controller for radio stream operations.
@@ -38,7 +38,8 @@ import {
  * - `POST /song/stop`      — stop active and queued songs.
  * - `POST /instant`        — push a short audio clip (jingle / SFX).
  * - `POST /instant/stop`   — skip all currently playing instant clips.
- * - `PUT  /mixer`          — (stub) adjust volume / mute state.
+ * - `GET  /mixer`          — read applied volume / mute state.
+ * - `PUT  /mixer`          — adjust volume / mute state.
  * - `GET  /proxy-audio`    — fetch and relay audio from an external URL.
  */
 @Controller()
@@ -49,22 +50,22 @@ export class StreamController {
     private readonly fillerStore: FillerStoreService,
   ) {}
 
-  @Get('v1/programs/:programId/automation')
+  @Get("v1/programs/:programId/automation")
   async getAutomation(
-    @Param('programId') programId: string,
-    @Headers('authorization') authorization?: string,
+    @Param("programId") programId: string,
+    @Headers("authorization") authorization?: string,
   ): Promise<unknown> {
     await this.lifecycle.authorize(programId, authorization);
     return this.lifecycle.getState();
   }
 
-  @Post('v1/programs/:programId/automation/start')
+  @Post("v1/programs/:programId/automation/start")
   async startAutomation(
-    @Param('programId') programId: string,
-    @Headers('authorization') authorization?: string,
-    @Headers('idempotency-key') idempotencyKey?: string,
-    @Headers('x-command-sequence') commandSequence?: string,
-    @Headers('x-filler-version') fillerVersion?: string,
+    @Param("programId") programId: string,
+    @Headers("authorization") authorization?: string,
+    @Headers("idempotency-key") idempotencyKey?: string,
+    @Headers("x-command-sequence") commandSequence?: string,
+    @Headers("x-filler-version") fillerVersion?: string,
   ): Promise<unknown> {
     await this.lifecycle.authorize(programId, authorization);
     return this.lifecycle.start(idempotencyKey, commandSequence, fillerVersion);
@@ -92,19 +93,19 @@ export class StreamController {
     return this.fillerStore.prepare(version, request, idempotencyKey?.trim());
   }
 
-  @Post('v1/programs/:programId/automation/stop')
+  @Post("v1/programs/:programId/automation/stop")
   async stopAutomation(
-    @Param('programId') programId: string,
-    @Headers('authorization') authorization?: string,
-    @Headers('idempotency-key') idempotencyKey?: string,
-    @Headers('x-command-sequence') commandSequence?: string,
+    @Param("programId") programId: string,
+    @Headers("authorization") authorization?: string,
+    @Headers("idempotency-key") idempotencyKey?: string,
+    @Headers("x-command-sequence") commandSequence?: string,
   ): Promise<unknown> {
     await this.lifecycle.authorize(programId, authorization);
     return this.lifecycle.stop(idempotencyKey, commandSequence);
   }
 
   /** Returns the current stream mount point, name, uptime, and running state. */
-  @Get('status')
+  @Get("status")
   getStatus() {
     return this.streamService.getStatus();
   }
@@ -112,49 +113,50 @@ export class StreamController {
   /**
    * Replaces Liquidsoap's active and queued songs with the requested song.
    */
-  @Post('song')
+  @Post("song")
   async playSong(@Body() data: SongPayload) {
-    if (!data.url) throw new BadRequestException('url is required');
+    if (!data.url) throw new BadRequestException("url is required");
     this.lifecycle.startFromPlaybackCommand();
     return this.streamService.playSong(data);
   }
 
   /** Stops the active song and clears every queued song. */
-  @Post('song/stop')
+  @Post("song/stop")
   async stopSong() {
     await this.streamService.stopSong();
     return { ok: true };
   }
 
   /** Pushes an instant audio URL (short sound effect or jingle) into the `instants` queue. */
-  @Post('instant')
+  @Post("instant")
   async playInstant(@Body() data: InstantPayload) {
     this.lifecycle.requireReady();
-    if (!data.url) throw new BadRequestException('url is required');
+    if (!data.url) throw new BadRequestException("url is required");
     return this.streamService.playInstant(data);
   }
 
   /** Stops all currently playing instant clips by skipping the `instants` queue. */
-  @Post('instant/stop')
+  @Post("instant/stop")
   async stopAllInstants() {
     await this.streamService.stopAllInstants();
     return { ok: true };
   }
 
-  /**
-   * Updates mixer settings (volumes, mute state).
-   *
-   * @remarks Currently a no-op stub — Liquidsoap-level mixer controls are not yet wired.
-   */
-  @Put('mixer')
+  /** Returns the mixer state currently applied to Liquidsoap. */
+  @Get("mixer")
+  getMixer() {
+    return this.streamService.getMixer();
+  }
+
+  /** Updates mixer settings (volumes, mute state). */
+  @Put("mixer")
   async updateMixer(@Body() data: MixerPayload) {
     this.lifecycle.requireReady();
-    await this.streamService.updateMixer(data);
-    return { ok: true };
+    return this.streamService.updateMixer(data);
   }
 
   /** Returns the latest authoritative Liquidsoap playback snapshot. */
-  @Get('playback/state')
+  @Get("playback/state")
   getPlaybackState() {
     return this.streamService.telemetry.getState();
   }
@@ -164,9 +166,9 @@ export class StreamController {
    * standard Last-Event-ID header to receive missed events from the bounded
    * in-memory journal.
    */
-  @Sse('playback/events')
+  @Sse("playback/events")
   playbackEvents(
-    @Headers('last-event-id') lastEventId?: string,
+    @Headers("last-event-id") lastEventId?: string,
   ): Observable<MessageEvent> {
     return this.streamService.telemetry.subscribe(lastEventId).pipe(
       map((event) => ({
@@ -178,8 +180,8 @@ export class StreamController {
   }
 
   /** Exposes bounded-cardinality Prometheus telemetry on the private API. */
-  @Get('metrics')
-  @Header('Content-Type', 'text/plain; version=0.0.4; charset=utf-8')
+  @Get("metrics")
+  @Header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
   getMetrics(): string {
     return `${this.streamService.telemetry.renderMetrics()}${this.fillerStore.renderMetrics()}`;
   }
@@ -194,14 +196,14 @@ export class StreamController {
    * @param url - The remote audio URL to proxy.
    * @returns A `StreamableFile` containing the audio data.
    */
-  @Get('proxy-audio')
-  async proxyAudio(@Query('url') url: string): Promise<StreamableFile> {
-    if (!url) throw new BadRequestException('url is required');
+  @Get("proxy-audio")
+  async proxyAudio(@Query("url") url: string): Promise<StreamableFile> {
+    if (!url) throw new BadRequestException("url is required");
     const res = await fetch(url);
     if (!res.ok)
       throw new BadRequestException(`upstream returned ${res.status}`);
     const buffer = Buffer.from(await res.arrayBuffer());
-    const contentType = res.headers.get('content-type') ?? 'audio/mpeg';
+    const contentType = res.headers.get("content-type") ?? "audio/mpeg";
     return new StreamableFile(buffer, { type: contentType });
   }
 }
