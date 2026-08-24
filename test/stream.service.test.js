@@ -43,3 +43,30 @@ test('generates and returns an ID for backward-compatible callers', async () => 
   assert.match(accepted.playbackRequestId, /^[0-9a-f-]{36}$/);
   assert.match(commands[0], new RegExp(accepted.playbackRequestId));
 });
+
+test('clears active and queued song and instant material for lifecycle Stop', async () => {
+  const { service, commands } = streamService();
+
+  await service.clearProgramMaterial();
+
+  assert.deepEqual(commands, [
+    'songs.flush_and_skip',
+    'instants.flush_and_skip',
+  ]);
+});
+
+test('serializes multi-command playback operations against lifecycle queue clearing', async () => {
+  const { service, commands } = streamService();
+
+  await Promise.all([
+    service.playSong({ url: 'https://example.test/song.mp3' }),
+    service.clearProgramMaterial(),
+  ]);
+
+  assert.equal(commands[0], 'songs.skip');
+  assert.match(commands[1], /^songs\.push /);
+  assert.deepEqual(commands.slice(2), [
+    'songs.flush_and_skip',
+    'instants.flush_and_skip',
+  ]);
+});

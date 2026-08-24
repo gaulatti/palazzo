@@ -58,6 +58,7 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
   private restartAttempt = 0;
   private shuttingDown = false;
   private pollInFlight = false;
+  private operationTail: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly config: ConfigService,
@@ -140,45 +141,67 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
   }
 
   async playSong(data: SongPayload): Promise<PlaybackRequestAccepted> {
-    const playbackRequestId = data.playbackRequestId?.trim() || randomUUID();
-    const uri = this.annotatedUri(data.url, {
-      palazzo_request_id: playbackRequestId,
-      palazzo_url: data.url,
-      title: data.title ?? '',
-      artist: data.artist ?? '',
+    return this.serializeOperation(async () => {
+      const playbackRequestId = data.playbackRequestId?.trim() || randomUUID();
+      const uri = this.annotatedUri(data.url, {
+        palazzo_request_id: playbackRequestId,
+        palazzo_url: data.url,
+        title: data.title ?? '',
+        artist: data.artist ?? '',
+      });
+      await this.telnet.send('songs.skip').catch(() => undefined);
+      await this.telnet.send(`songs.push ${uri}`);
+      this.logger.log({
+        event: 'song.request.accepted',
+        playbackRequestId,
+        title: data.title ?? null,
+        artist: data.artist ?? null,
+      });
+      return { ok: true, playbackRequestId };
     });
-    await this.telnet.send('songs.skip').catch(() => undefined);
-    await this.telnet.send(`songs.push ${uri}`);
-    this.logger.log({
-      event: 'song.request.accepted',
-      playbackRequestId,
-      title: data.title ?? null,
-      artist: data.artist ?? null,
-    });
-    return { ok: true, playbackRequestId };
   }
 
   async stopSong(): Promise<void> {
-    await this.telnet.send('songs.skip').catch(() => undefined);
+    await this.serializeOperation(async () => {
+      await this.telnet.send('songs.skip').catch(() => undefined);
+    });
   }
 
   async playInstant(data: InstantPayload): Promise<PlaybackRequestAccepted> {
-    const playbackRequestId = data.playbackRequestId?.trim() || randomUUID();
-    const uri = this.annotatedUri(data.url, {
-      palazzo_request_id: playbackRequestId,
-      palazzo_url: data.url,
-      palazzo_kind: 'instant',
+    return this.serializeOperation(async () => {
+      const playbackRequestId = data.playbackRequestId?.trim() || randomUUID();
+      const uri = this.annotatedUri(data.url, {
+        palazzo_request_id: playbackRequestId,
+        palazzo_url: data.url,
+        palazzo_kind: 'instant',
+      });
+      await this.telnet.send(`instants.push ${uri}`);
+      this.logger.log({
+        event: 'instant.request.accepted',
+        playbackRequestId,
+      });
+      return { ok: true, playbackRequestId };
     });
-    await this.telnet.send(`instants.push ${uri}`);
-    this.logger.log({
-      event: 'instant.request.accepted',
-      playbackRequestId,
-    });
-    return { ok: true, playbackRequestId };
   }
 
   async stopAllInstants(): Promise<void> {
-    await this.telnet.send('instants.skip').catch(() => undefined);
+    await this.serializeOperation(async () => {
+      await this.telnet.send('instants.skip').catch(() => undefined);
+    });
+  }
+
+  async clearProgramMaterial(): Promise<void> {
+    await this.serializeOperation(async () => {
+      const results = await Promise.allSettled([
+        this.telnet.send('songs.flush_and_skip'),
+        this.telnet.send('instants.flush_and_skip'),
+      ]);
+      const failure = results.find(
+        (result): result is PromiseRejectedResult =>
+          result.status === 'rejected',
+      );
+      if (failure) throw failure.reason;
+    });
   }
 
   async updateMixer(_data: MixerPayload): Promise<void> {}
@@ -246,10 +269,7 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private annotatedUri(
-    url: string,
-    metadata: Record<string, string>,
-  ): string {
+  private annotatedUri(url: string, metadata: Record<string, string>): string {
     if (/\r|\n/.test(url)) throw new Error('Audio URL cannot contain newlines');
     const annotations = Object.entries(metadata)
       .map(([key, value]) => `${key}="${this.annotationValue(value)}"`)
@@ -263,5 +283,14 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
       .replace(/"/g, '\\"')
       .replace(/\r/g, '\\r')
       .replace(/\n/g, '\\n');
+  }
+
+  private serializeOperation<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.operationTail.then(operation, operation);
+    this.operationTail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
   }
 }

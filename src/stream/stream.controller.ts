@@ -6,6 +6,7 @@ import {
   Header,
   Headers,
   MessageEvent,
+  Param,
   Post,
   Put,
   Query,
@@ -19,6 +20,7 @@ import {
   type InstantPayload,
   type MixerPayload,
 } from './stream.service';
+import { BroadcastLifecycleService } from './broadcast-lifecycle.service';
 
 /**
  * REST controller for radio stream operations.
@@ -37,7 +39,41 @@ import {
  */
 @Controller()
 export class StreamController {
-  constructor(private readonly streamService: StreamService) {}
+  constructor(
+    private readonly streamService: StreamService,
+    private readonly lifecycle: BroadcastLifecycleService,
+  ) {}
+
+  @Get('v1/programs/:programId/automation')
+  async getAutomation(
+    @Param('programId') programId: string,
+    @Headers('authorization') authorization?: string,
+  ): Promise<unknown> {
+    await this.lifecycle.authorize(programId, authorization);
+    return this.lifecycle.getState();
+  }
+
+  @Post('v1/programs/:programId/automation/start')
+  async startAutomation(
+    @Param('programId') programId: string,
+    @Headers('authorization') authorization?: string,
+    @Headers('idempotency-key') idempotencyKey?: string,
+    @Headers('x-command-sequence') commandSequence?: string,
+  ): Promise<unknown> {
+    await this.lifecycle.authorize(programId, authorization);
+    return this.lifecycle.start(idempotencyKey, commandSequence);
+  }
+
+  @Post('v1/programs/:programId/automation/stop')
+  async stopAutomation(
+    @Param('programId') programId: string,
+    @Headers('authorization') authorization?: string,
+    @Headers('idempotency-key') idempotencyKey?: string,
+    @Headers('x-command-sequence') commandSequence?: string,
+  ): Promise<unknown> {
+    await this.lifecycle.authorize(programId, authorization);
+    return this.lifecycle.stop(idempotencyKey, commandSequence);
+  }
 
   /** Returns the current stream mount point, name, uptime, and running state. */
   @Get('status')
@@ -51,6 +87,7 @@ export class StreamController {
    */
   @Post('song')
   async playSong(@Body() data: SongPayload) {
+    this.lifecycle.requireReady();
     if (!data.url) throw new BadRequestException('url is required');
     return this.streamService.playSong(data);
   }
@@ -65,6 +102,7 @@ export class StreamController {
   /** Pushes an instant audio URL (short sound effect or jingle) into the `instants` queue. */
   @Post('instant')
   async playInstant(@Body() data: InstantPayload) {
+    this.lifecycle.requireReady();
     if (!data.url) throw new BadRequestException('url is required');
     return this.streamService.playInstant(data);
   }
@@ -83,6 +121,7 @@ export class StreamController {
    */
   @Put('mixer')
   async updateMixer(@Body() data: MixerPayload) {
+    this.lifecycle.requireReady();
     await this.streamService.updateMixer(data);
     return { ok: true };
   }

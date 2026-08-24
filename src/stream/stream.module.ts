@@ -4,6 +4,7 @@ import { MetricsInterceptor } from './metrics.interceptor';
 import { StreamController } from './stream.controller';
 import { StreamService } from './stream.service';
 import { PlaybackTelemetryService } from './playback-telemetry.service';
+import { BroadcastLifecycleService } from './broadcast-lifecycle.service';
 
 /**
  * Stream feature module.
@@ -18,6 +19,7 @@ import { PlaybackTelemetryService } from './playback-telemetry.service';
   providers: [
     PlaybackTelemetryService,
     StreamService,
+    BroadcastLifecycleService,
     { provide: APP_INTERCEPTOR, useClass: MetricsInterceptor },
   ],
   exports: [StreamService, PlaybackTelemetryService],

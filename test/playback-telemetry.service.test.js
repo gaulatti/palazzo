@@ -28,6 +28,7 @@ function snapshot(overrides = {}) {
     instant_peak: 0.3,
     output_rms: 0.25,
     output_peak: 0.5,
+    icecast_connected: true,
     sampled_at: 1_700_000_002.5,
     ...overrides,
   };
@@ -111,11 +112,13 @@ test('uses stable instance and per-boot IDs with bounded metric labels', () => {
 
   assert.equal(state.instanceId, 'test-palazzo');
   assert.equal(state.schemaVersion, 1);
+  assert.equal(state.icecast.connected, true);
   assert.match(state.bootId, /^[0-9a-f-]{36}$/);
   assert.match(metrics, /palazzo_audio_song_rms 0\.2/);
   assert.match(metrics, /palazzo_audio_instant_peak 0\.3/);
   assert.match(metrics, /palazzo_audio_output_peak 0\.5/);
   assert.doesNotMatch(metrics, /request-1|Test title|example\.test/);
+  assert.match(metrics, /palazzo_icecast_output_connected 1/);
 });
 
 test('rebases lifecycle deduplication after a Liquidsoap sequence reset', () => {

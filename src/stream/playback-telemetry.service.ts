@@ -37,6 +37,7 @@ export interface LiquidsoapSnapshot {
   instant_peak: number;
   output_rms: number;
   output_peak: number;
+  icecast_connected: boolean;
   sampled_at: number;
 }
 
@@ -85,6 +86,9 @@ export interface PlaybackState {
     staleSince: string | null;
     lastSampleAt: string | null;
   };
+  icecast: {
+    connected: boolean;
+  };
   track: {
     playbackRequestId: string;
     title: string | null;
@@ -110,6 +114,9 @@ const NORMALIZED_ROUTES = new Set([
   '/playback/events',
   '/metrics',
   '/proxy-audio',
+  '/v1/programs/:programId/automation',
+  '/v1/programs/:programId/automation/start',
+  '/v1/programs/:programId/automation/stop',
 ]);
 
 @Injectable()
@@ -127,6 +134,7 @@ export class PlaybackTelemetryService {
   private positionSeconds = 0;
   private remainingSeconds: number | null = null;
   private levels: AudioLevels = emptyLevels();
+  private icecastConnected = false;
   private readonly replay: PlaybackEvent[] = [];
   private readonly snapshotByEventId = new Map<string, PlaybackState>();
   private readonly live = new Subject<PlaybackEvent>();
@@ -153,7 +161,10 @@ export class PlaybackTelemetryService {
     this.instanceId = config.get<string>('PALAZZO_INSTANCE_ID') ?? 'palazzo';
   }
 
-  apply(snapshot: LiquidsoapSnapshot, events: LiquidsoapLifecycleEvent[]): void {
+  apply(
+    snapshot: LiquidsoapSnapshot,
+    events: LiquidsoapLifecycleEvent[],
+  ): void {
     const now = Date.now();
     this.pollSamples += 1;
     const becameConnected = !this.connected;
@@ -190,6 +201,7 @@ export class PlaybackTelemetryService {
       instant: level(snapshot.instant_rms, snapshot.instant_peak),
       output: level(snapshot.output_rms, snapshot.output_peak),
     };
+    this.icecastConnected = snapshot.icecast_connected === true;
 
     if (now - this.lastLevelEventAt >= LEVEL_EVENT_INTERVAL_MS) {
       this.lastLevelEventAt = now;
@@ -277,6 +289,9 @@ export class PlaybackTelemetryService {
         staleSince: this.staleSince,
         lastSampleAt: this.lastSampleAt,
       },
+      icecast: {
+        connected: this.icecastConnected,
+      },
       track: this.track,
       positionSeconds: this.positionSeconds,
       remainingSeconds: this.remainingSeconds,
@@ -341,6 +356,9 @@ export class PlaybackTelemetryService {
       '# HELP palazzo_telemetry_degraded Whether authoritative telemetry is degraded.',
       '# TYPE palazzo_telemetry_degraded gauge',
       `palazzo_telemetry_degraded ${this.connected && this.running ? 0 : 1}`,
+      '# HELP palazzo_icecast_output_connected Whether Liquidsoap is connected to Icecast.',
+      '# TYPE palazzo_icecast_output_connected gauge',
+      `palazzo_icecast_output_connected ${this.icecastConnected ? 1 : 0}`,
       '# HELP palazzo_telemetry_sample_age_seconds Age of the latest Liquidsoap sample.',
       '# TYPE palazzo_telemetry_sample_age_seconds gauge',
       `palazzo_telemetry_sample_age_seconds ${sampleAge}`,
@@ -470,7 +488,9 @@ export class PlaybackTelemetryService {
   }
 }
 
-function trackFromSnapshot(snapshot: LiquidsoapSnapshot): NonNullable<PlaybackState['track']> {
+function trackFromSnapshot(
+  snapshot: LiquidsoapSnapshot,
+): NonNullable<PlaybackState['track']> {
   return {
     playbackRequestId: snapshot.playback_request_id,
     title: snapshot.title || null,

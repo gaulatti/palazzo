@@ -45,10 +45,13 @@ jobs:
 
       - name: Start and verify pinned runtime
         run: |
+          printf 'ci-control-token\n' > /tmp/palazzo-control-token
           docker run --rm --detach --name palazzo-ci \
             --publish 127.0.0.1:3100:3100 \
+            --volume /tmp/palazzo-control-token:/run/secrets/palazzo-control-token:ro \
             --env PALAZZO_PORT=3100 \
             --env PALAZZO_INSTANCE_ID=palazzo-ci \
+            --env PROGRAM_ID=program-ci \
             --env ICECAST_PORT=8000 \
             --env ICECAST_SOURCE_PASSWORD=ci-password \
             palazzo:ci
@@ -56,13 +59,27 @@ jobs:
           for attempt in $(seq 1 30); do
             if curl --fail --silent http://127.0.0.1:3100/playback/state > /tmp/palazzo-state.json \
               && jq --exit-status \
-                '.schemaVersion == 1 and .liquidsoap.running == true and .liquidsoap.connected == true' \
+                '.schemaVersion == 1 and .liquidsoap.running == true and .liquidsoap.connected == true and .icecast.connected == true' \
                 /tmp/palazzo-state.json > /dev/null; then
               break
             fi
             sleep 1
           done
           jq --exit-status \
-            '.schemaVersion == 1 and .liquidsoap.running == true and .liquidsoap.connected == true' \
+            '.schemaVersion == 1 and .liquidsoap.running == true and .liquidsoap.connected == true and .icecast.connected == true' \
             /tmp/palazzo-state.json
+          curl --fail --silent \
+            --header 'Authorization: Bearer ci-control-token' \
+            --header 'Idempotency-Key: ci-start' \
+            --header 'X-Command-Sequence: 1' \
+            --request POST \
+            http://127.0.0.1:3100/v1/programs/program-ci/automation/start \
+            | jq --exit-status '.actualState == "ready" and .readiness == true and .playback.status == "idle"'
+          curl --fail --silent \
+            --header 'Authorization: Bearer ci-control-token' \
+            --header 'Idempotency-Key: ci-stop' \
+            --header 'X-Command-Sequence: 2' \
+            --request POST \
+            http://127.0.0.1:3100/v1/programs/program-ci/automation/stop \
+            | jq --exit-status '.actualState == "stopped" and .dependencies.icecast == true'
           docker exec palazzo-ci liquidsoap --version | grep 'Liquidsoap 2.4.5'
