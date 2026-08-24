@@ -75,6 +75,35 @@ test('boots in reconciliation-required state without assuming prior success', ()
   assert.equal(state.readiness, false);
 });
 
+test('a playback command starts healthy automation', () => {
+  const { service } = fixture();
+
+  service.startFromPlaybackCommand();
+  const state = service.getState();
+
+  assert.equal(state.requestedState, 'running');
+  assert.equal(state.actualState, 'ready');
+  assert.equal(state.readiness, true);
+});
+
+test('a playback command remains blocked when a dependency is unavailable', () => {
+  const { service } = fixture({
+    state: playback({
+      liquidsoap: {
+        running: true,
+        connected: false,
+        staleSince: 'now',
+        lastSampleAt: new Date().toISOString(),
+      },
+    }),
+  });
+
+  assert.throws(
+    () => service.startFromPlaybackCommand(),
+    (error) => error.getStatus() === 409,
+  );
+});
+
 test('starts empty automation when Liquidsoap, control, and Icecast are healthy', async () => {
   const { service } = fixture();
   const state = await service.start('start-one', '1');

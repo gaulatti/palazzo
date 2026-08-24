@@ -2,8 +2,8 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { StreamController } = require('../dist/stream/stream.controller.js');
 
-test('ordinary playback commands remain closed until automation is Ready', async () => {
-  let ready = false;
+test('a song command starts automation before entering the playback queue', async () => {
+  const calls = [];
   let played = 0;
   const controller = new StreamController(
     {
@@ -13,21 +13,15 @@ test('ordinary playback commands remain closed until automation is Ready', async
       },
     },
     {
-      requireReady: () => {
-        if (!ready) throw new Error('not ready');
+      startFromPlaybackCommand: () => {
+        calls.push('start');
       },
     },
   );
 
-  await assert.rejects(
-    controller.playSong({ url: 'https://example.test/song.mp3' }),
-    /not ready/,
-  );
-  assert.equal(played, 0);
-
-  ready = true;
   await controller.playSong({ url: 'https://example.test/song.mp3' });
   assert.equal(played, 1);
+  assert.deepEqual(calls, ['start']);
 });
 
 test('lifecycle endpoints authenticate before issuing a command', async () => {

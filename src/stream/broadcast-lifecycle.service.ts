@@ -144,6 +144,28 @@ export class BroadcastLifecycleService {
     }
   }
 
+  startFromPlaybackCommand(): void {
+    const state = this.getState();
+    if (state.readiness) return;
+    if (
+      !this.transition &&
+      state.dependencies.liquidsoap &&
+      state.dependencies.control &&
+      state.dependencies.icecast
+    ) {
+      const stamp = new Date().toISOString();
+      this.requestedState = 'running';
+      this.actualState = 'ready';
+      this.timestamps.requestedAt = stamp;
+      this.timestamps.readyAt = stamp;
+      return;
+    }
+    throw new ConflictException({
+      error: 'automation is not ready',
+      lifecycle: state,
+    });
+  }
+
   start(key: string | undefined, sequenceText: string | undefined) {
     return this.enqueue(() => this.execute('start', key, sequenceText));
   }

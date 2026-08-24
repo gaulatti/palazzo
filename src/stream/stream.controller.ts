@@ -87,8 +87,8 @@ export class StreamController {
    */
   @Post('song')
   async playSong(@Body() data: SongPayload) {
-    this.lifecycle.requireReady();
     if (!data.url) throw new BadRequestException('url is required');
+    this.lifecycle.startFromPlaybackCommand();
     return this.streamService.playSong(data);
   }
 
