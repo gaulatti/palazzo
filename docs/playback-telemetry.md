@@ -40,6 +40,8 @@ sequence is treated as a restart without fabricating a track-end event.
 
 Useful metrics:
 
+- `palazzo_build_info{service="palazzo",version="..."}`
+- `palazzo_process_*` and `palazzo_nodejs_*` runtime/process families
 - `palazzo_telemetry_connected`
 - `palazzo_telemetry_sample_age_seconds`
 - `palazzo_telemetry_poll_failures_total`
@@ -49,16 +51,36 @@ Useful metrics:
 - `palazzo_sse_subscribers`
 - `palazzo_sse_event_buffer_events` and replay-drop counters
 - normalized-route HTTP request and duration counters
+- `palazzo_dependency_operations_total{dependency="liquidsoap",operation,result}`
+- `palazzo_dependency_retries_total{dependency="liquidsoap",operation}`
 
 Alert on a disconnected bridge or growing sample age. Do not alert on a
 last-known active track alone while the bridge is stale.
 
+The dependency labels are closed enums. They distinguish successful telemetry
+polls, transport failures, parse failures, unexpected process exits, Telnet
+connection retries, and child-process restart attempts without carrying error
+messages. Palazzo currently spawns Liquidsoap directly and makes no Docker API
+calls, so it deliberately exposes no fabricated Docker dependency metric.
+
 ## Security boundary
 
 Liquidsoap Telnet has no authentication and binds only to `127.0.0.1` inside
-the container. The API, SSE, and metrics mappings also bind to host loopback in
-Compose and deployment. Publish only the Icecast listener interface or place
-it behind an approved reverse proxy.
+the container. The API and SSE mappings bind to host loopback in Compose and
+deployment. `GET /metrics` additionally requires `Authorization: Bearer ...`
+using the same mounted token file as lifecycle control. The central
+`gaulatti/prometheus` deployment must join `broadcast-control`, mount the
+matching token, and scrape `http://palazzo:3100/metrics`; central scrape,
+dashboard, and alert configuration remain outside this repository.
+
+Metric labels are limited to normalized HTTP method/route/status, fixed
+playback event/replay types, fixed dependency operation/result values,
+prom-client runtime buckets/kinds/version components, and bounded service/build
+identity. Program IDs, instance IDs, playback request IDs, media metadata,
+URLs, credentials, and free-form errors never appear in exposition.
+The prom-client active-handle and active-resource type families are excluded
+because library-defined async-resource names do not satisfy that closed-label
+contract; the remaining Node/process baseline is retained.
 
 ## Runtime compatibility
 
@@ -70,7 +92,8 @@ Node 22.22.0 image by immutable digest. Before changing either digest:
    `liquidsoap --check` command.
 3. Build the image for both `linux/amd64` and `linux/arm64`.
 4. Play a known finite track and verify request ID, metadata, start, position,
-   non-zero levels, end, idle state, SSE replay, and metrics.
+   non-zero levels, end, idle state, SSE replay, and an authenticated metrics
+   scrape that parses as Prometheus text.
 5. Interrupt the command connection while a track plays and verify Palazzo
    marks telemetry stale without emitting a false `track.ended` event.
 

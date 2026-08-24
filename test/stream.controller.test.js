@@ -52,3 +52,30 @@ test('lifecycle endpoints authenticate before issuing a command', async () => {
   ]);
   assert.equal(response.actualState, 'ready');
 });
+
+test('metrics authenticate before rendering the collector', async () => {
+  const calls = [];
+  const controller = new StreamController(
+    {
+      telemetry: {
+        renderMetrics: async () => {
+          calls.push(['render']);
+          return 'palazzo_build_info 1\n';
+        },
+      },
+    },
+    {
+      authorizeMachine: async (authorization) => {
+        calls.push(['authorize', authorization]);
+      },
+    },
+  );
+
+  const response = await controller.getMetrics('Bearer redacted');
+
+  assert.equal(response, 'palazzo_build_info 1\n');
+  assert.deepEqual(calls, [
+    ['authorize', 'Bearer redacted'],
+    ['render'],
+  ]);
+});

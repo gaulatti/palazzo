@@ -40,8 +40,13 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.0
+
       - name: Build pinned runtime image
-        run: docker build --tag palazzo:ci .
+        run: docker build --build-arg BUILD_VERSION=${{ github.sha }} --tag palazzo:ci .
 
       - name: Start and verify pinned runtime
         run: |
@@ -68,6 +73,29 @@ jobs:
           jq --exit-status \
             '.schemaVersion == 1 and .liquidsoap.running == true and .liquidsoap.connected == true and .icecast.connected == true' \
             /tmp/palazzo-state.json
+          unauthorized_status=$(curl --silent \
+            --output /tmp/palazzo-metrics-unauthorized.json \
+            --write-out '%{http_code}' \
+            http://127.0.0.1:3100/metrics)
+          test "$unauthorized_status" = 401
+          wrong_token_status=$(curl --silent \
+            --output /tmp/palazzo-metrics-wrong-token.json \
+            --write-out '%{http_code}' \
+            --header 'Authorization: Bearer wrong-ci-token' \
+            http://127.0.0.1:3100/metrics)
+          test "$wrong_token_status" = 401
+          curl --fail --silent \
+            --dump-header /tmp/palazzo-metrics-headers.txt \
+            --header 'Authorization: Bearer ci-control-token' \
+            http://127.0.0.1:3100/metrics \
+            > /tmp/palazzo-metrics.txt
+          grep --ignore-case 'content-type: text/plain; version=0.0.4' \
+            /tmp/palazzo-metrics-headers.txt
+          node test/verify-prometheus-exposition.js /tmp/palazzo-metrics.txt
+          if grep --extended-regexp 'program-ci|ci-control-token|wrong-ci-token' /tmp/palazzo-metrics.txt; then
+            echo 'metrics exposed private identifiers or credentials'
+            exit 1
+          fi
           curl --fail --silent \
             --header 'Authorization: Bearer ci-control-token' \
             --header 'Idempotency-Key: ci-start' \

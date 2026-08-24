@@ -241,10 +241,16 @@ test('private authentication rejects missing credentials and wrong program scope
   );
   try {
     await assert.rejects(service.authorize('program-one'), /unauthorized/);
+    await assert.rejects(service.authorizeMachine(), /unauthorized/);
+    await assert.rejects(
+      service.authorizeMachine('Bearer wrong-control-token'),
+      /unauthorized/,
+    );
     await assert.rejects(
       service.authorize('wrong-program', 'Bearer test-control-token'),
       /program not found/,
     );
+    await service.authorizeMachine('Bearer test-control-token');
     await service.authorize('program-one', 'Bearer test-control-token');
     assert.doesNotMatch(JSON.stringify(service.getState()), /test-control-token/);
   } finally {

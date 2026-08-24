@@ -27,7 +27,7 @@ All endpoints at a glance:
 | `GET`  | `/status`                                  | Stream health and metadata                                |
 | `GET`  | `/playback/state`                          | Authoritative current playback snapshot                   |
 | `GET`  | `/playback/events`                         | Replay-safe Server-Sent Events                            |
-| `GET`  | `/metrics`                                 | Prometheus telemetry                                      |
+| `GET`  | `/metrics`                                 | Authenticated Prometheus telemetry                        |
 | `GET`  | `/v1/programs/:programId/automation`       | Authenticated automation lifecycle state                  |
 | `POST` | `/v1/programs/:programId/automation/start` | Start the program automation without restarting transport |
 | `POST` | `/v1/programs/:programId/automation/stop`  | Clear program material while preserving the Icecast mount |
@@ -46,9 +46,10 @@ position, and state telemetry. Level samples are emitted at no more than 10 Hz,
 position at 1 Hz, and heartbeats approximately every 10 seconds.
 
 The control API, SSE feed, metrics, and unauthenticated Liquidsoap command
-socket are private interfaces. The provided Compose and deployment mappings
-bind them to host loopback; publish only Icecast (or route it through a reverse
-proxy) for listeners.
+socket are private interfaces. `/metrics` requires the same mounted bearer
+token as lifecycle control. The provided Compose and deployment mappings bind
+the API to host loopback and join the private `broadcast-control` network;
+publish only Icecast (or route it through a reverse proxy) for listeners.
 
 Palazzo boots in `reconciliation-required`: container or process startup never
 pretends a prior operator Start/Stop succeeded. Alcantara reconciles it through

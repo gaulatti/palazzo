@@ -4,10 +4,19 @@ const { firstValueFrom, take, toArray } = require('rxjs');
 const {
   PlaybackTelemetryService,
 } = require('../dist/stream/playback-telemetry.service.js');
+const {
+  assertBoundedLabels,
+  parseExposition,
+} = require('./prometheus-exposition');
 
-function service() {
+function service(overrides = {}) {
+  const values = {
+    PALAZZO_INSTANCE_ID: 'test-palazzo',
+    PALAZZO_BUILD_VERSION: 'build-test',
+    ...overrides,
+  };
   return new PlaybackTelemetryService({
-    get: (key) => (key === 'PALAZZO_INSTANCE_ID' ? 'test-palazzo' : undefined),
+    get: (key) => values[key],
   });
 }
 
@@ -105,16 +114,16 @@ test('starts every SSE connection with a snapshot and then replays after Last-Ev
   assert.notEqual(events[1].id, started.id);
   assert.ok(events[1].sequence > events[0].sequence);
   assert.equal(
-    telemetry.renderMetrics().match(/event="started"} 1/g)?.length,
+    (await telemetry.renderMetrics()).match(/event="started"} 1/g)?.length,
     1,
   );
 });
 
-test('uses stable instance and per-boot IDs with bounded metric labels', () => {
+test('uses stable instance and per-boot IDs with bounded metric labels', async () => {
   const telemetry = service();
   telemetry.apply(snapshot(), [lifecycle(1, 'track_started')]);
   const state = telemetry.getState();
-  const metrics = telemetry.renderMetrics();
+  const metrics = await telemetry.renderMetrics();
 
   assert.equal(state.instanceId, 'test-palazzo');
   assert.equal(state.schemaVersion, 1);
@@ -127,7 +136,7 @@ test('uses stable instance and per-boot IDs with bounded metric labels', () => {
   assert.match(metrics, /palazzo_icecast_output_connected 1/);
 });
 
-test('rebases lifecycle deduplication after a Liquidsoap sequence reset', () => {
+test('rebases lifecycle deduplication after a Liquidsoap sequence reset', async () => {
   const telemetry = service();
   telemetry.apply(
     snapshot({ liquidsoap_sequence: 20 }),
@@ -139,12 +148,12 @@ test('rebases lifecycle deduplication after a Liquidsoap sequence reset', () => 
   );
 
   assert.match(
-    telemetry.renderMetrics(),
+    await telemetry.renderMetrics(),
     /palazzo_track_lifecycle_total\{event="started"\} 2/,
   );
 });
 
-test('bounds the replay journal under sustained level updates', () => {
+test('bounds the replay journal under sustained level updates', async () => {
   const telemetry = service();
   for (let index = 0; index < 700; index += 1) {
     telemetry.emit('audio.levels', { index });
@@ -152,20 +161,48 @@ test('bounds the replay journal under sustained level updates', () => {
 
   assert.equal(telemetry.replay.length, 512);
   assert.match(
-    telemetry.renderMetrics(),
+    await telemetry.renderMetrics(),
     /palazzo_sse_replay_dropped_total\{type="levels"\} 188/,
   );
 });
 
-test('normalizes HTTP metric labels to a bounded route set', () => {
+test('normalizes HTTP metric labels to a bounded route set', async () => {
   const telemetry = service();
   telemetry.observeHttp('get', '/playback/state', 200, 12);
   telemetry.observeHttp('get', '/devices/track-123', 404, 5);
-  const metrics = telemetry.renderMetrics();
+  telemetry.observeHttp('private-method', '/private/track-123', 999, 5);
+  const metrics = await telemetry.renderMetrics();
 
   assert.match(metrics, /route="\/playback\/state",status="2xx"/);
   assert.match(metrics, /route="unmatched",status="4xx"/);
-  assert.doesNotMatch(metrics, /track-123/);
+  assert.match(metrics, /method="OTHER",route="unmatched",status="other"/);
+  assert.doesNotMatch(metrics, /track-123|private-method/);
+});
+
+test('renders a parseable process, build, dependency, and retry baseline', async () => {
+  const telemetry = service({
+    PALAZZO_BUILD_VERSION: 'private build value with spaces',
+  });
+  telemetry.observeDependency('telemetry_poll', 'success');
+  telemetry.observeDependency('telemetry_poll', 'parse_failure');
+  telemetry.countReconnect();
+  telemetry.countProcessRestart();
+  const metrics = await telemetry.renderMetrics();
+  const samples = parseExposition(metrics);
+  assertBoundedLabels(samples);
+  const names = new Set(samples.map((sample) => sample.name));
+
+  assert.ok(names.has('palazzo_build_info'));
+  assert.ok(names.has('palazzo_process_cpu_user_seconds_total'));
+  assert.ok(names.has('palazzo_process_resident_memory_bytes'));
+  assert.ok(names.has('palazzo_nodejs_eventloop_lag_seconds'));
+  assert.ok(names.has('palazzo_dependency_operations_total'));
+  assert.ok(names.has('palazzo_dependency_retries_total'));
+  assert.match(metrics, /palazzo_build_info\{service="palazzo",version="unknown"\} 1/);
+  assert.match(metrics, /operation="telemetry_poll",result="success"/);
+  assert.match(metrics, /operation="telemetry_poll",result="parse_failure"/);
+  assert.match(metrics, /operation="telnet_connect"\} 1/);
+  assert.doesNotMatch(metrics, /private build value/);
 });
 
 test('uses a fresh snapshot instead of replay across process boots', async () => {
