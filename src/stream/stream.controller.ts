@@ -31,7 +31,7 @@ import { BroadcastLifecycleService } from './broadcast-lifecycle.service';
  * Routes:
  * - `GET  /status`         — stream health and metadata.
  * - `POST /song`           — push a track into the song queue.
- * - `POST /song/stop`      — skip the current song.
+ * - `POST /song/stop`      — stop active and queued songs.
  * - `POST /instant`        — push a short audio clip (jingle / SFX).
  * - `POST /instant/stop`   — skip all currently playing instant clips.
  * - `PUT  /mixer`          — (stub) adjust volume / mute state.
@@ -82,8 +82,7 @@ export class StreamController {
   }
 
   /**
-   * Queues a song URL in Liquidsoap's `songs` request queue.
-   * The currently playing track is skipped first so the new one starts immediately.
+   * Replaces Liquidsoap's active and queued songs with the requested song.
    */
   @Post('song')
   async playSong(@Body() data: SongPayload) {
@@ -92,7 +91,7 @@ export class StreamController {
     return this.streamService.playSong(data);
   }
 
-  /** Skips the current song (advances the `songs` request queue). */
+  /** Stops the active song and clears every queued song. */
   @Post('song/stop')
   async stopSong() {
     await this.streamService.stopSong();

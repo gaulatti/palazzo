@@ -151,7 +151,7 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
         artist: data.artist ?? '',
         cover_url: data.coverUrl ?? '',
       });
-      await this.telnet.send('songs.skip').catch(() => undefined);
+      await this.telnet.send('songs.flush_and_skip');
       await this.telnet.send(`songs.push ${uri}`);
       this.logger.log({
         event: 'song.request.accepted',
@@ -166,7 +166,7 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
 
   async stopSong(): Promise<void> {
     await this.serializeOperation(async () => {
-      await this.telnet.send('songs.skip').catch(() => undefined);
+      await this.telnet.send('songs.flush_and_skip');
     });
   }
 

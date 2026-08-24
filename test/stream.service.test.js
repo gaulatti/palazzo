@@ -31,6 +31,7 @@ test('propagates a caller-supplied playback request ID into Liquidsoap metadata'
   });
 
   assert.equal(accepted.playbackRequestId, 'alcantara-request-42');
+  assert.equal(commands[0], 'songs.flush_and_skip');
   assert.match(commands[1], /palazzo_request_id="alcantara-request-42"/);
   assert.match(commands[1], /cover_url="https:\/\/example\.test\/cover\.jpg"/);
   assert.doesNotMatch(commands[1], /remaining/);
@@ -57,6 +58,14 @@ test('clears active and queued song and instant material for lifecycle Stop', as
   ]);
 });
 
+test('song Stop clears active and queued songs', async () => {
+  const { service, commands } = streamService();
+
+  await service.stopSong();
+
+  assert.deepEqual(commands, ['songs.flush_and_skip']);
+});
+
 test('serializes multi-command playback operations against lifecycle queue clearing', async () => {
   const { service, commands } = streamService();
 
@@ -65,7 +74,7 @@ test('serializes multi-command playback operations against lifecycle queue clear
     service.clearProgramMaterial(),
   ]);
 
-  assert.equal(commands[0], 'songs.skip');
+  assert.equal(commands[0], 'songs.flush_and_skip');
   assert.match(commands[1], /^songs\.push /);
   assert.deepEqual(commands.slice(2), [
     'songs.flush_and_skip',
