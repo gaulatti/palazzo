@@ -185,6 +185,8 @@ export class PlaybackTelemetryService {
     for (const name of [
       'palazzo_nodejs_active_handles',
       'palazzo_nodejs_active_handles_total',
+      'palazzo_nodejs_active_requests',
+      'palazzo_nodejs_active_requests_total',
       'palazzo_nodejs_active_resources',
       'palazzo_nodejs_active_resources_total',
     ]) {

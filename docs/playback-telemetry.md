@@ -78,9 +78,10 @@ playback event/replay types, fixed dependency operation/result values,
 prom-client runtime buckets/kinds/version components, and bounded service/build
 identity. Program IDs, instance IDs, playback request IDs, media metadata,
 URLs, credentials, and free-form errors never appear in exposition.
-The prom-client active-handle and active-resource type families are excluded
-because library-defined async-resource names do not satisfy that closed-label
-contract; the remaining Node/process baseline is retained.
+The prom-client active-handle, active-request, and active-resource type
+families are excluded because library-defined async-resource names do not
+satisfy that closed-label contract; the remaining Node/process baseline is
+retained.
 
 ## Runtime compatibility
 

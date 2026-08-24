@@ -198,6 +198,9 @@ test('renders a parseable process, build, dependency, and retry baseline', async
   assert.ok(names.has('palazzo_nodejs_eventloop_lag_seconds'));
   assert.ok(names.has('palazzo_dependency_operations_total'));
   assert.ok(names.has('palazzo_dependency_retries_total'));
+  assert.ok(!names.has('palazzo_nodejs_active_handles'));
+  assert.ok(!names.has('palazzo_nodejs_active_requests'));
+  assert.ok(!names.has('palazzo_nodejs_active_resources'));
   assert.match(metrics, /palazzo_build_info\{service="palazzo",version="unknown"\} 1/);
   assert.match(metrics, /operation="telemetry_poll",result="success"/);
   assert.match(metrics, /operation="telemetry_poll",result="parse_failure"/);
