@@ -17,7 +17,9 @@ function liqString(value: string): string {
     .replace(/\n/g, '\\n');
 }
 
-export function buildLiquidsoapScript(options: LiquidsoapScriptOptions): string {
+export function buildLiquidsoapScript(
+  options: LiquidsoapScriptOptions,
+): string {
   const rtmpInput = options.rtmpUrl
     ? `live = mksafe(input.rtmp("${liqString(options.rtmpUrl)}"))`
     : '';
@@ -39,6 +41,7 @@ current_title = ref("")
 current_artist = ref("")
 current_url = ref("")
 current_started_at = ref(0.)
+icecast_connected = ref(false)
 
 def metadata_value(key, meta) =
   list.assoc(default="", key, meta)
@@ -125,6 +128,7 @@ server.register(
       instant_peak=get_instant_peak(),
       output_rms=get_rms(),
       output_peak=get_peak(),
+      icecast_connected=icecast_connected(),
       sampled_at=time()
     })
 )
@@ -135,7 +139,8 @@ server.register(
   "events",
   fun (_) -> "[" ^ string.concat(separator=",", list.rev(events())) ^ "]"
 )
-output.icecast(
+icecast_output = output.icecast(
+  id="icecast_output",
   %mp3(bitrate=${options.bitrate}),
   host="127.0.0.1", port=${options.icecastPort},
   password="${liqString(options.icecastPassword)}",
@@ -144,6 +149,15 @@ output.icecast(
   genre="${liqString(options.genre)}",
   description="${liqString(options.streamName)}",
   radio
+)
+
+icecast_output.on_connect(
+  synchronous=true,
+  fun () -> icecast_connected := true
+)
+icecast_output.on_disconnect(
+  synchronous=true,
+  fun () -> icecast_connected := false
 )
 `;
 }

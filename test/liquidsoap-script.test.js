@@ -22,6 +22,9 @@ test('generates a private authoritative telemetry script', () => {
   assert.match(script, /namespace="palazzo"/);
   assert.match(script, /"snapshot"/);
   assert.match(script, /"events"/);
+  assert.match(script, /icecast_connected/);
+  assert.match(script, /icecast_output\.on_connect/);
+  assert.match(script, /icecast_output\.on_disconnect/);
   assert.match(script, /duration=0\.1/);
   assert.match(script, /radio_rms = rms/);
   assert.match(script, /radio = peak/);

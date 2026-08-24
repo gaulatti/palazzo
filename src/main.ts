@@ -58,7 +58,13 @@ async function bootstrap(): Promise<void> {
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'Last-Event-ID'],
+    allowedHeaders: [
+      'Content-Type',
+      'Authorization',
+      'Last-Event-ID',
+      'Idempotency-Key',
+      'X-Command-Sequence',
+    ],
   });
 
   // Bind on all interfaces so Docker port forwarding works correctly.
