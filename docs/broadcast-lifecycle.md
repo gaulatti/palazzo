@@ -61,10 +61,13 @@ openssl rand -hex 32 > secrets/palazzo-control-token
 ```
 
 Production deployment fails closed unless the host already has a non-empty
-`/etc/palazzo/control-token`, the `broadcast-control` network, and the GitHub
-Actions `PROGRAM_ID` repository variable. Provisioning or rotating the
-production token is a separate operator action; the workflow only mounts it
-read-only.
+regular file at `/etc/palazzo/control-token`, the `broadcast-control` network,
+and the GitHub Actions `PROGRAM_ID` repository variable. Before replacing the
+live container, the workflow starts the immutable commit image as a candidate
+and verifies its transport and authenticated lifecycle API. It retains the old
+container for rollback until those checks pass in production. Provisioning or
+rotating the production token is a separate operator action; the workflow only
+mounts it read-only.
 
 ## Recovery checks
 

@@ -24,10 +24,14 @@ jobs:
 
       - name: Build Docker image
         run: |
-          docker build -t ghcr.io/${{ github.repository }}/palazzo:latest .
+          docker build \
+            -t ghcr.io/${{ github.repository }}/palazzo:${{ github.sha }} \
+            -t ghcr.io/${{ github.repository }}/palazzo:latest \
+            .
 
       - name: Push Docker image to GHCR
         run: |
+          docker push ghcr.io/${{ github.repository }}/palazzo:${{ github.sha }}
           docker push ghcr.io/${{ github.repository }}/palazzo:latest
 
   deploy:
@@ -43,16 +47,62 @@ jobs:
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           script: |
             sh -c '
+            set -eu
+
             test -n "${{ vars.PROGRAM_ID }}"
+            test -f /etc/palazzo/control-token
             test -s /etc/palazzo/control-token
             docker network inspect broadcast-control >/dev/null
+            if docker inspect palazzo-candidate >/dev/null 2>&1 || docker inspect palazzo-rollback >/dev/null 2>&1; then
+              echo "A previous Palazzo deployment candidate or rollback container requires operator review"
+              exit 1
+            fi
+
             docker login ghcr.io -u ${{ github.actor }} -p ${{ secrets.DEPLOYMENT_TOKEN }}
-            docker pull ghcr.io/${{ github.repository }}/palazzo:latest
+            IMAGE=ghcr.io/${{ github.repository }}/palazzo:${{ github.sha }}
+            docker pull "$IMAGE"
 
-            docker stop palazzo || true
-            docker rm palazzo || true
+            cleanup_candidate() {
+              docker rm -f palazzo-candidate >/dev/null 2>&1 || true
+            }
+            trap cleanup_candidate EXIT
 
-            docker run -d --name palazzo \
+            docker run -d --name palazzo-candidate \
+              --network broadcast-control \
+              -v /etc/palazzo/control-token:/run/secrets/palazzo-control-token:ro \
+              -e PALAZZO_PORT=3100 \
+              -e PALAZZO_INSTANCE_ID=palazzo-production-candidate \
+              -e PROGRAM_ID="${{ vars.PROGRAM_ID }}" \
+              -e PALAZZO_CONTROL_TOKEN_FILE=/run/secrets/palazzo-control-token \
+              -e ICECAST_PORT=8000 \
+              -e ICECAST_SOURCE_PASSWORD="${{ secrets.ICECAST_SOURCE_PASSWORD }}" \
+              "$IMAGE"
+
+            candidate_ready=false
+            for attempt in $(seq 1 45); do
+              if docker exec palazzo-candidate node -e "const fs=require(\"node:fs\");const token=fs.readFileSync(\"/run/secrets/palazzo-control-token\",\"utf8\").trim();Promise.all([fetch(\"http://127.0.0.1:3100/playback/state\").then(async response=>{const state=await response.json();if(!response.ok||state.liquidsoap?.running!==true||state.liquidsoap?.connected!==true||state.icecast?.connected!==true)throw new Error(\"transport not ready\")}),fetch(\"http://127.0.0.1:3100/v1/programs/${{ vars.PROGRAM_ID }}/automation\",{headers:{Authorization:\"Bearer \"+token}}).then(response=>{if(!response.ok)throw new Error(\"lifecycle API not ready\")})]).catch(error=>{console.error(error.message);process.exit(1)})"; then
+                candidate_ready=true
+                break
+              fi
+              sleep 2
+            done
+            if [ "$candidate_ready" != true ]; then
+              echo "Palazzo candidate failed its transport and lifecycle checks"
+              docker logs --tail 200 palazzo-candidate || true
+              exit 1
+            fi
+
+            cleanup_candidate
+            trap - EXIT
+
+            rollback_available=false
+            if docker inspect palazzo >/dev/null 2>&1; then
+              docker stop palazzo
+              docker rename palazzo palazzo-rollback
+              rollback_available=true
+            fi
+
+            if ! docker run -d --name palazzo \
               --network broadcast-control \
               -v /etc/palazzo/control-token:/run/secrets/palazzo-control-token:ro \
               -p 127.0.0.1:${{ vars.PALAZZO_PORT }}:3100 \
@@ -64,5 +114,35 @@ jobs:
               -e ICECAST_PORT=8000 \
               -e ICECAST_SOURCE_PASSWORD="${{ secrets.ICECAST_SOURCE_PASSWORD }}" \
               --restart=always \
-              ghcr.io/${{ github.repository }}/palazzo:latest
+              "$IMAGE"; then
+              docker rm -f palazzo >/dev/null 2>&1 || true
+              if [ "$rollback_available" = true ]; then
+                docker rename palazzo-rollback palazzo
+                docker start palazzo
+              fi
+              exit 1
+            fi
+
+            deployed_ready=false
+            for attempt in $(seq 1 45); do
+              if docker exec palazzo node -e "const fs=require(\"node:fs\");const token=fs.readFileSync(\"/run/secrets/palazzo-control-token\",\"utf8\").trim();Promise.all([fetch(\"http://127.0.0.1:3100/playback/state\").then(async response=>{const state=await response.json();if(!response.ok||state.liquidsoap?.running!==true||state.liquidsoap?.connected!==true||state.icecast?.connected!==true)throw new Error(\"transport not ready\")}),fetch(\"http://127.0.0.1:3100/v1/programs/${{ vars.PROGRAM_ID }}/automation\",{headers:{Authorization:\"Bearer \"+token}}).then(response=>{if(!response.ok)throw new Error(\"lifecycle API not ready\")})]).catch(error=>{console.error(error.message);process.exit(1)})"; then
+                deployed_ready=true
+                break
+              fi
+              sleep 2
+            done
+            if [ "$deployed_ready" != true ]; then
+              echo "Palazzo deployment failed its transport and lifecycle checks; rolling back"
+              docker logs --tail 200 palazzo || true
+              docker rm -f palazzo || true
+              if [ "$rollback_available" = true ]; then
+                docker rename palazzo-rollback palazzo
+                docker start palazzo
+              fi
+              exit 1
+            fi
+
+            if [ "$rollback_available" = true ]; then
+              docker rm palazzo-rollback
+            fi
             '
