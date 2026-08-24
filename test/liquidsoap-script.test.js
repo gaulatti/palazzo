@@ -19,6 +19,8 @@ test('generates a private authoritative telemetry script', () => {
   assert.match(script, /songs\.on_track/);
   assert.match(script, /songs\.on_position/);
   assert.match(script, /palazzo_request_id/);
+  assert.match(script, /cover_url/);
+  assert.match(script, /icy_metadata=\["song", "title", "artist", "cover_url"\]/);
   assert.match(script, /namespace="palazzo"/);
   assert.match(script, /"snapshot"/);
   assert.match(script, /"events"/);

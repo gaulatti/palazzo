@@ -39,6 +39,7 @@ current_playing = ref(false)
 current_request_id = ref("")
 current_title = ref("")
 current_artist = ref("")
+current_cover_url = ref("")
 current_url = ref("")
 current_started_at = ref(0.)
 icecast_connected = ref(false)
@@ -56,6 +57,7 @@ def remember_event(event_type, meta) =
       playback_request_id=metadata_value("palazzo_request_id", meta),
       title=metadata_value("title", meta),
       artist=metadata_value("artist", meta),
+      cover_url=metadata_value("cover_url", meta),
       url=metadata_value("palazzo_url", meta),
       occurred_at=time()
     })
@@ -77,6 +79,7 @@ songs.on_track(
       current_request_id := metadata_value("palazzo_request_id", meta)
       current_title := metadata_value("title", meta)
       current_artist := metadata_value("artist", meta)
+      current_cover_url := metadata_value("cover_url", meta)
       current_url := metadata_value("palazzo_url", meta)
       current_started_at := time()
       remember_event("track_started", meta)
@@ -118,6 +121,7 @@ server.register(
       playback_request_id=current_request_id(),
       title=current_title(),
       artist=current_artist(),
+      cover_url=current_cover_url(),
       url=current_url(),
       started_at=current_started_at(),
       elapsed=songs.elapsed(),
@@ -148,6 +152,7 @@ icecast_output = output.icecast(
   name="${liqString(options.streamName)}",
   genre="${liqString(options.genre)}",
   description="${liqString(options.streamName)}",
+  icy_metadata=["song", "title", "artist", "cover_url"],
   radio
 )
 

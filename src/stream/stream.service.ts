@@ -24,6 +24,7 @@ export interface SongPayload {
   url: string;
   title?: string;
   artist?: string;
+  coverUrl?: string;
   playbackRequestId?: string;
 }
 
@@ -148,6 +149,7 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
         palazzo_url: data.url,
         title: data.title ?? '',
         artist: data.artist ?? '',
+        cover_url: data.coverUrl ?? '',
       });
       await this.telnet.send('songs.skip').catch(() => undefined);
       await this.telnet.send(`songs.push ${uri}`);
@@ -156,6 +158,7 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
         playbackRequestId,
         title: data.title ?? null,
         artist: data.artist ?? null,
+        coverUrl: data.coverUrl ?? null,
       });
       return { ok: true, playbackRequestId };
     });

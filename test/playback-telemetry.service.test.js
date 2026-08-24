@@ -18,6 +18,7 @@ function snapshot(overrides = {}) {
     playback_request_id: 'request-1',
     title: 'Test title',
     artist: 'Test artist',
+    cover_url: 'https://example.test/cover.jpg',
     url: 'https://example.test/audio.mp3',
     started_at: 1_700_000_000,
     elapsed: 2.5,
@@ -41,6 +42,7 @@ function lifecycle(sequence, event_type) {
     playback_request_id: 'request-1',
     title: 'Test title',
     artist: 'Test artist',
+    cover_url: 'https://example.test/cover.jpg',
     url: 'https://example.test/audio.mp3',
     occurred_at: 1_700_000_000 + sequence,
   };
@@ -53,6 +55,10 @@ test('retains last-known playback through telemetry loss and ends only on engine
 
   assert.equal(telemetry.getState().status, 'playing');
   assert.equal(telemetry.getState().track.playbackRequestId, 'request-1');
+  assert.equal(
+    telemetry.getState().track.coverUrl,
+    'https://example.test/cover.jpg',
+  );
 
   telemetry.markDisconnected();
   assert.equal(telemetry.getState().status, 'playing');

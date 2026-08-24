@@ -26,11 +26,13 @@ test('propagates a caller-supplied playback request ID into Liquidsoap metadata'
     url: 'https://example.test/song.mp3',
     title: 'Title',
     artist: 'Artist',
+    coverUrl: 'https://example.test/cover.jpg',
     playbackRequestId: 'alcantara-request-42',
   });
 
   assert.equal(accepted.playbackRequestId, 'alcantara-request-42');
   assert.match(commands[1], /palazzo_request_id="alcantara-request-42"/);
+  assert.match(commands[1], /cover_url="https:\/\/example\.test\/cover\.jpg"/);
   assert.doesNotMatch(commands[1], /remaining/);
 });
 

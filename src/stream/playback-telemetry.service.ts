@@ -17,6 +17,7 @@ export interface LiquidsoapLifecycleEvent {
   playback_request_id: string;
   title: string;
   artist: string;
+  cover_url: string;
   url: string;
   occurred_at: number;
 }
@@ -27,6 +28,7 @@ export interface LiquidsoapSnapshot {
   playback_request_id: string;
   title: string;
   artist: string;
+  cover_url: string;
   url: string;
   started_at: number;
   elapsed: number;
@@ -93,6 +95,7 @@ export interface PlaybackState {
     playbackRequestId: string;
     title: string | null;
     artist: string | null;
+    coverUrl: string | null;
     url: string;
     startedAt: string;
   } | null;
@@ -410,6 +413,7 @@ export class PlaybackTelemetryService {
       playbackRequestId: event.playback_request_id,
       title: event.title || null,
       artist: event.artist || null,
+      coverUrl: event.cover_url || null,
       url: event.url,
       liquidsoapSequence: event.sequence,
     };
@@ -420,6 +424,7 @@ export class PlaybackTelemetryService {
         playbackRequestId: event.playback_request_id,
         title: event.title || null,
         artist: event.artist || null,
+        coverUrl: event.cover_url || null,
         url: event.url,
         startedAt: occurredAt,
       };
@@ -495,6 +500,7 @@ function trackFromSnapshot(
     playbackRequestId: snapshot.playback_request_id,
     title: snapshot.title || null,
     artist: snapshot.artist || null,
+    coverUrl: snapshot.cover_url || null,
     url: snapshot.url,
     startedAt: new Date(snapshot.started_at * 1_000).toISOString(),
   };
