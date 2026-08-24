@@ -50,7 +50,9 @@ jobs:
             set -eu
 
             test -n "${{ vars.PROGRAM_ID }}"
+            test -s /etc/palazzo/control-token
             docker network inspect broadcast-control >/dev/null
+            mkdir -p /opt/palazzo/fillers
             if docker inspect palazzo-candidate >/dev/null 2>&1 || docker inspect palazzo-rollback >/dev/null 2>&1; then
               echo "A previous Palazzo deployment candidate or rollback container requires operator review"
               exit 1
@@ -72,6 +74,7 @@ jobs:
               -e PROGRAM_ID="${{ vars.PROGRAM_ID }}" \
               -e ICECAST_PORT=8000 \
               -e ICECAST_SOURCE_PASSWORD="${{ secrets.ICECAST_SOURCE_PASSWORD }}" \
+              --volume /etc/palazzo/control-token:/run/secrets/palazzo-control-token:ro \
               "$IMAGE"
 
             candidate_ready=false
@@ -107,6 +110,8 @@ jobs:
               -e PROGRAM_ID="${{ vars.PROGRAM_ID }}" \
               -e ICECAST_PORT=8000 \
               -e ICECAST_SOURCE_PASSWORD="${{ secrets.ICECAST_SOURCE_PASSWORD }}" \
+              --volume /etc/palazzo/control-token:/run/secrets/palazzo-control-token:ro \
+              --volume /opt/palazzo/fillers:/var/lib/palazzo/fillers \
               --restart=always \
               "$IMAGE"; then
               docker rm -f palazzo >/dev/null 2>&1 || true

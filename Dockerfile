@@ -22,6 +22,7 @@ WORKDIR /app
 RUN mkdir -p /var/lib/apt/lists/partial \
   && apt-get update && apt-get install -y --no-install-recommends \
   ca-certificates \
+  ffmpeg \
   lame \
   icecast2 \
   && liquidsoap --version \
@@ -36,6 +37,8 @@ RUN npm ci && npm cache clean --force
 COPY nest-cli.json tsconfig.json tsconfig.build.json ./
 COPY src/ ./src/
 RUN npm run build
+
+RUN mkdir -p /var/lib/palazzo/fillers /run/palazzo
 
 # Entrypoint script that generates Icecast config and starts services.
 COPY docker-entrypoint.sh ./

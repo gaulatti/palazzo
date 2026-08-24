@@ -31,6 +31,8 @@ All endpoints at a glance:
 | `GET` | `/v1/programs/:programId/automation` | Authenticated automation lifecycle state |
 | `POST` | `/v1/programs/:programId/automation/start` | Start the program automation without restarting transport |
 | `POST` | `/v1/programs/:programId/automation/stop` | Clear program material while preserving the Icecast mount |
+| `PUT` | `/v1/programs/:programId/fillers/:version` | Prepare immutable local radio filler from authenticated Alcantara input |
+| `GET` | `/v1/programs/:programId/fillers/:version` | Read filler readiness without exposing signed source data |
 | `POST` | `/song` | Push a song, skips current |
 | `POST` | `/song/stop` | Skip current song |
 | `POST` | `/instant` | Push a jingle/SFX |
@@ -56,6 +58,9 @@ control/telemetry connection, and the Icecast source output are healthy. Stop
 flushes both queues and waits for authoritative idle while leaving Liquidsoap
 and the 24x7 Icecast mount connected. See
 [docs/broadcast-lifecycle.md](docs/broadcast-lifecycle.md).
+Lifecycle Start requires a prepared `X-Filler-Version`; the watched local
+playlist provides offline fallback without disconnecting Icecast. See
+[docs/radio-filler.md](docs/radio-filler.md).
 
 Full details: [API Reference](wiki/API-Reference)
 

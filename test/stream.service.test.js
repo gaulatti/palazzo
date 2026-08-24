@@ -8,7 +8,10 @@ const { StreamService } = require('../dist/stream/stream.service.js');
 function streamService() {
   const config = { get: () => undefined };
   const telemetry = new PlaybackTelemetryService(config);
-  const service = new StreamService(config, telemetry);
+  const service = new StreamService(config, telemetry, {
+    initialize: async () => undefined,
+    activePlaylistPath: '/run/palazzo/active-filler.m3u',
+  });
   const commands = [];
   service.telnet = {
     send: async (command) => {
