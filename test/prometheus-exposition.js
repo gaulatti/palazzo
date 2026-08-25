@@ -76,6 +76,7 @@ function assertBoundedLabels(samples) {
       "/v1/programs/:programId/automation",
       "/v1/programs/:programId/automation/start",
       "/v1/programs/:programId/automation/stop",
+      "/v1/programs/:programId/fillers/:version",
       "unmatched",
     ]),
     service: new Set(["palazzo"]),
