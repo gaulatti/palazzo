@@ -131,6 +131,7 @@ const NORMALIZED_ROUTES = new Set([
   '/v1/programs/:programId/automation',
   '/v1/programs/:programId/automation/start',
   '/v1/programs/:programId/automation/stop',
+  '/v1/programs/:programId/fillers/:version',
 ]);
 
 @Injectable()

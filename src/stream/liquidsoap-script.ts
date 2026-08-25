@@ -6,6 +6,7 @@ export interface LiquidsoapScriptOptions {
   streamName: string;
   genre: string;
   bitrate: number;
+  fillerPlaylistPath: string;
   rtmpUrl?: string;
 }
 
@@ -107,8 +108,17 @@ instants_rms = rms(id="instants_rms", duration=0.1, instants_controlled)
 get_instant_rms = instants_rms.rms
 instants = peak(id="instants_peak", duration=0.1, instants_rms)
 get_instant_peak = instants.peak
+filler_playlist = playlist(
+  id="program_filler",
+  mode="normal",
+  reload=1,
+  reload_mode="watch",
+  "${liqString(options.fillerPlaylistPath)}"
+)
+filler = mksafe(filler_playlist)
+program_audio = fallback(track_sensitive=false, [songs, filler])
 ${rtmpInput}
-radio = add(normalize=false, [songs, instants${rtmpSource}])
+radio = add(normalize=false, [program_audio, instants${rtmpSource}])
 radio = mksafe(radio)
 main_volume = interactive.float("palazzo_main_volume", 1.)
 radio = amplify(override=null, main_volume, radio)

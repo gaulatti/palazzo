@@ -32,6 +32,8 @@ services:
     networks:
       - default
       - broadcast-control
+    volumes:
+      - palazzo-fillers:/var/lib/palazzo/fillers
 
 secrets:
   palazzo-control-token:
@@ -40,3 +42,6 @@ secrets:
 networks:
   broadcast-control:
     external: true
+
+volumes:
+  palazzo-fillers:

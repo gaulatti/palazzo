@@ -45,6 +45,16 @@ function fixture({ state = playback(), clearError } = {}) {
       currentState = playback();
     },
   };
+  let activeVersion = null;
+  const filler = {
+    getActiveVersion: () => activeVersion,
+    activate: async (version) => {
+      if (version === 'missing') throw new Error('unprepared');
+      if (activeVersion && activeVersion !== version) throw new Error('immutable');
+      activeVersion = version;
+    },
+    deactivate: async () => { activeVersion = null; },
+  };
   const values = {
     PROGRAM_ID: 'program-one',
     PALAZZO_INSTANCE_ID: 'palazzo-test',
@@ -54,6 +64,7 @@ function fixture({ state = playback(), clearError } = {}) {
     { get: (key) => values[key] },
     stream,
     telemetry,
+    filler,
   );
   return {
     service,
@@ -106,7 +117,7 @@ test('a playback command remains blocked when a dependency is unavailable', () =
 
 test('starts empty automation when Liquidsoap, control, and Icecast are healthy', async () => {
   const { service } = fixture();
-  const state = await service.start('start-one', '1');
+  const state = await service.start('start-one', '1', 'filler-v1');
 
   assert.equal(state.requestedState, 'running');
   assert.equal(state.actualState, 'ready');
@@ -115,9 +126,23 @@ test('starts empty automation when Liquidsoap, control, and Icecast are healthy'
   service.requireReady();
 });
 
+test('Start requires a prepared version and keeps the active session version immutable', async () => {
+  const { service } = fixture();
+  await assert.rejects(service.start('missing-header', '1'), (error) => {
+    assert.equal(error.getStatus(), 400);
+    return true;
+  });
+  await service.start('start-one', '1', 'filler-v1');
+  await assert.rejects(service.start('start-two', '2', 'filler-v2'), (error) => {
+    assert.equal(error.getStatus(), 409);
+    return true;
+  });
+  assert.equal(service.getState().filler.activeVersion, 'filler-v1');
+});
+
 test('Stop flushes all program material while preserving transport readiness', async () => {
   const context = fixture();
-  await context.service.start('start', '1');
+  await context.service.start('start', '1', 'filler-v1');
   context.setState(
     playback({
       status: 'playing',
@@ -140,7 +165,7 @@ test('Stop flushes all program material while preserving transport readiness', a
 
 test('duplicate commands do not repeat queue effects', async () => {
   const context = fixture();
-  await context.service.start('start', '1');
+  await context.service.start('start', '1', 'filler-v1');
   await context.service.stop('stop', '2');
   const duplicate = await context.service.stop('stop', '2');
 
@@ -150,7 +175,7 @@ test('duplicate commands do not repeat queue effects', async () => {
 
 test('queue exhaustion does not convert a running automation into Stop', async () => {
   const { service } = fixture();
-  await service.start('start', '1');
+  await service.start('start', '1', 'filler-v1');
 
   const state = service.getState();
   assert.equal(state.playback.status, 'idle');
@@ -160,7 +185,7 @@ test('queue exhaustion does not convert a running automation into Stop', async (
 
 test('dependency failures remain distinguishable from an intentional Stop', async () => {
   const context = fixture();
-  await context.service.start('start', '1');
+  await context.service.start('start', '1', 'filler-v1');
   context.setState(
     playback({
       liquidsoap: {
@@ -188,7 +213,7 @@ test('Start never reports Ready when a required dependency is unavailable', asyn
     state: playback({ icecast: { connected: false } }),
   });
 
-  await assert.rejects(service.start('start', '1'), (error) => {
+  await assert.rejects(service.start('start', '1', 'filler-v1'), (error) => {
     const response = error.getResponse();
     assert.equal(response.actualState, 'failed');
     assert.equal(response.readiness, false);
@@ -199,7 +224,7 @@ test('Start never reports Ready when a required dependency is unavailable', asyn
 
 test('failed queue clearing reports failure and never claims Stopped', async () => {
   const { service } = fixture({ clearError: new Error('private detail') });
-  await service.start('start', '1');
+  await service.start('start', '1', 'filler-v1');
 
   await assert.rejects(service.stop('stop', '2'), (error) => {
     assert.equal(error.getStatus(), 503);
@@ -212,7 +237,7 @@ test('failed queue clearing reports failure and never claims Stopped', async () 
 
 test('rejects replayed sequences and key reuse for another action', async () => {
   const { service } = fixture();
-  await service.start('same', '5');
+  await service.start('same', '5', 'filler-v1');
 
   await assert.rejects(service.stop('other', '4'), (error) => {
     assert.match(error.getResponse().error, /not newer/);
@@ -238,6 +263,7 @@ test('private authentication rejects missing credentials and wrong program scope
     { get: (key) => values[key] },
     { clearProgramMaterial: async () => undefined },
     { getState: () => state },
+    { getActiveVersion: () => null, activate: async () => undefined, deactivate: async () => undefined },
   );
   try {
     await assert.rejects(service.authorize('program-one'), /unauthorized/);

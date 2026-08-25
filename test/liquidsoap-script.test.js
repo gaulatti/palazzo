@@ -13,6 +13,7 @@ test("generates a private authoritative telemetry script", () => {
     streamName: "Palazzo",
     genre: "Various",
     bitrate: 128,
+    fillerPlaylistPath: '/run/palazzo/active-filler.m3u',
   });
 
   assert.match(script, /settings\.server\.telnet\.bind_addr := "127\.0\.0\.1"/);
@@ -35,6 +36,8 @@ test("generates a private authoritative telemetry script", () => {
   assert.match(script, /radio = peak/);
   assert.match(script, /songs_rms = rms/);
   assert.match(script, /instants_rms = rms/);
+  assert.match(script, /reload_mode="watch"/);
+  assert.match(script, /fallback\(track_sensitive=false, \[songs, filler\]\)/);
   assert.match(script, /interactive\.float\("palazzo_song_volume", 1\.\)/);
   assert.match(script, /interactive\.float\("palazzo_instant_volume", 1\.\)/);
   assert.match(script, /interactive\.float\("palazzo_main_volume", 1\.\)/);
@@ -51,6 +54,7 @@ test("escapes user-controlled Liquidsoap string values", () => {
     streamName: 'Name"\nnext',
     genre: "Various",
     bitrate: 128,
+    fillerPlaylistPath: '/run/palazzo/active-filler.m3u',
     rtmpUrl: 'rtmp://example.test/live"\nnext',
   });
 

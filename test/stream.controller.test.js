@@ -17,6 +17,7 @@ test('a song command starts automation before entering the playback queue', asyn
         calls.push('start');
       },
     },
+    {},
   );
 
   await controller.playSong({ url: 'https://example.test/song.mp3' });
@@ -32,11 +33,12 @@ test('lifecycle endpoints authenticate before issuing a command', async () => {
       authorize: async (program, authorization) => {
         calls.push(['authorize', program, authorization]);
       },
-      start: async (key, sequence) => {
-        calls.push(['start', key, sequence]);
+      start: async (key, sequence, version) => {
+        calls.push(['start', key, sequence, version]);
         return { actualState: 'ready' };
       },
     },
+    {},
   );
 
   const response = await controller.startAutomation(
@@ -44,11 +46,12 @@ test('lifecycle endpoints authenticate before issuing a command', async () => {
     'Bearer redacted',
     'command-one',
     '1',
+    'filler-v1',
   );
 
   assert.deepEqual(calls, [
     ['authorize', 'program-one', 'Bearer redacted'],
-    ['start', 'command-one', '1'],
+    ['start', 'command-one', '1', 'filler-v1'],
   ]);
   assert.equal(response.actualState, 'ready');
 });
@@ -69,13 +72,23 @@ test('metrics authenticate before rendering the collector', async () => {
         calls.push(['authorize', authorization]);
       },
     },
+    {
+      renderMetrics: () => {
+        calls.push(['filler-render']);
+        return 'palazzo_filler_prepared_versions 1\n';
+      },
+    },
   );
 
   const response = await controller.getMetrics('Bearer redacted');
 
-  assert.equal(response, 'palazzo_build_info 1\n');
+  assert.equal(
+    response,
+    'palazzo_build_info 1\npalazzo_filler_prepared_versions 1\n',
+  );
   assert.deepEqual(calls, [
     ['authorize', 'Bearer redacted'],
     ['render'],
+    ['filler-render'],
   ]);
 });

@@ -37,4 +37,5 @@ test('deployment verifies a candidate and retains a rollback container', async (
     )?.length,
     2,
   );
+  assert.match(workflow, /\/opt\/palazzo\/fillers:\/var\/lib\/palazzo\/fillers/);
 });

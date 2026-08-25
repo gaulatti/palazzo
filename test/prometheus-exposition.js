@@ -61,6 +61,7 @@ function assertBoundedLabels(samples) {
       "telnet_connect",
       "telemetry_poll",
     ]),
+    outcome: new Set(["conflict", "failure", "success"]),
     result: new Set(["failure", "parse_failure", "success"]),
     route: new Set([
       "/instant",
@@ -76,6 +77,7 @@ function assertBoundedLabels(samples) {
       "/v1/programs/:programId/automation",
       "/v1/programs/:programId/automation/start",
       "/v1/programs/:programId/automation/stop",
+      "/v1/programs/:programId/fillers/:version",
       "unmatched",
     ]),
     service: new Set(["palazzo"]),

@@ -11,6 +11,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { PlaybackTelemetryService } from './playback-telemetry.service';
 import { StreamService } from './stream.service';
+import { FillerStoreService } from './filler-store.service';
 
 type RequestedState = 'reconciliation-required' | 'running' | 'stopped';
 type ActualState =
@@ -30,6 +31,7 @@ interface CommandRecord {
   result: string;
   status: number;
   acceptedAt: string;
+  fillerVersion: string | null;
 }
 
 @Injectable()
@@ -58,6 +60,7 @@ export class BroadcastLifecycleService {
     config: ConfigService,
     private readonly stream: StreamService,
     private readonly telemetry: PlaybackTelemetryService,
+    private readonly fillerStore: FillerStoreService,
   ) {
     this.programId = config.get<string>('PROGRAM_ID')?.trim() ?? '';
     if (!this.programId) throw new Error('PROGRAM_ID is required');
@@ -125,6 +128,10 @@ export class BroadcastLifecycleService {
       requestedState: this.requestedState,
       actualState: this.actualState,
       readiness: this.actualState === 'ready' && healthy,
+      filler: {
+        activeVersion: this.fillerStore.getActiveVersion(),
+        ready: this.fillerStore.getActiveVersion() !== null,
+      },
       transition: this.transition,
       dependencies,
       playback,
@@ -170,18 +177,25 @@ export class BroadcastLifecycleService {
     });
   }
 
-  start(key: string | undefined, sequenceText: string | undefined) {
-    return this.enqueue(() => this.execute('start', key, sequenceText));
+  start(
+    key: string | undefined,
+    sequenceText: string | undefined,
+    fillerVersion: string | undefined,
+  ) {
+    return this.enqueue(() =>
+      this.execute('start', key, sequenceText, fillerVersion?.trim() || null),
+    );
   }
 
   stop(key: string | undefined, sequenceText: string | undefined) {
-    return this.enqueue(() => this.execute('stop', key, sequenceText));
+    return this.enqueue(() => this.execute('stop', key, sequenceText, null));
   }
 
   private async execute(
     action: CommandAction,
     key: string | undefined,
     sequenceText: string | undefined,
+    fillerVersion: string | null,
   ) {
     const commandKey = key?.trim() ?? '';
     const sequence = Number(sequenceText);
@@ -197,7 +211,11 @@ export class BroadcastLifecycleService {
     const digest = createHash('sha256').update(commandKey).digest('hex');
     const prior = this.commands.get(digest);
     if (prior) {
-      if (prior.action !== action || prior.sequence !== sequence) {
+      if (
+        prior.action !== action ||
+        prior.sequence !== sequence ||
+        prior.fillerVersion !== fillerVersion
+      ) {
         throw new ConflictException(
           'idempotency key was already used for another command',
         );
@@ -216,6 +234,23 @@ export class BroadcastLifecycleService {
       });
     }
 
+    if (action === 'start') {
+      if (!fillerVersion) {
+        throw new BadRequestException('X-Filler-Version is required');
+      }
+      const activeVersion = this.fillerStore.getActiveVersion();
+      if (
+        this.requestedState === 'running' &&
+        activeVersion &&
+        activeVersion !== fillerVersion
+      ) {
+        throw new ConflictException(
+          'active session filler version is immutable',
+        );
+      }
+      await this.fillerStore.activate(fillerVersion);
+    }
+
     const stamp = new Date().toISOString();
     this.requestedState = action === 'start' ? 'running' : 'stopped';
     this.actualState = action === 'start' ? 'starting' : 'stopping';
@@ -227,20 +262,23 @@ export class BroadcastLifecycleService {
       const ready = await this.waitFor(() => this.dependenciesReady());
       this.transition = null;
       if (!ready) {
+        await this.fillerStore.deactivate();
         return this.finishFailure(
           digest,
           action,
           sequence,
           'dependencies-not-ready',
+          fillerVersion,
         );
       }
       this.actualState = 'ready';
       this.timestamps.readyAt = new Date().toISOString();
-      return this.finish(digest, action, sequence, 'ready', 200);
+      return this.finish(digest, action, sequence, 'ready', 200, fillerVersion);
     }
 
     try {
       await this.stream.clearProgramMaterial();
+      await this.fillerStore.deactivate();
       const idle = await this.waitFor(() => this.playbackIdle());
       this.transition = null;
       if (!idle) {
@@ -249,14 +287,21 @@ export class BroadcastLifecycleService {
           action,
           sequence,
           'playback-did-not-reach-idle',
+          null,
         );
       }
       this.actualState = this.dependenciesReady() ? 'stopped' : 'degraded';
       this.timestamps.stoppedAt = new Date().toISOString();
-      return this.finish(digest, action, sequence, 'stopped', 200);
+      return this.finish(digest, action, sequence, 'stopped', 200, null);
     } catch {
       this.transition = null;
-      return this.finishFailure(digest, action, sequence, 'queue-clear-failed');
+      return this.finishFailure(
+        digest,
+        action,
+        sequence,
+        'queue-clear-failed',
+        null,
+      );
     }
   }
 
@@ -265,9 +310,17 @@ export class BroadcastLifecycleService {
     action: CommandAction,
     sequence: number,
     result: string,
+    fillerVersion: string | null,
   ): never {
     this.actualState = 'failed';
-    const state = this.finish(digest, action, sequence, result, 503);
+    const state = this.finish(
+      digest,
+      action,
+      sequence,
+      result,
+      503,
+      fillerVersion,
+    );
     throw new ServiceUnavailableException(state);
   }
 
@@ -277,6 +330,7 @@ export class BroadcastLifecycleService {
     sequence: number,
     result: string,
     status: number,
+    fillerVersion: string | null,
   ) {
     const record: CommandRecord = {
       id: digest.slice(0, 16),
@@ -285,6 +339,7 @@ export class BroadcastLifecycleService {
       result,
       status,
       acceptedAt: new Date().toISOString(),
+      fillerVersion,
     };
     this.lastSequence = sequence;
     this.lastCommand = record;

@@ -48,6 +48,15 @@ jobs:
       - name: Build pinned runtime image
         run: docker build --build-arg BUILD_VERSION=${{ github.sha }} --tag palazzo:ci .
 
+      - name: Test real media preparation in pinned runtime
+        run: |
+          docker run --rm \
+            --entrypoint node \
+            --volume "$PWD/test:/workspace/test:ro" \
+            --env PALAZZO_DIST_DIR=/app/dist \
+            palazzo:ci \
+            --test /workspace/test/runtime/filler-store.service.test.js
+
       - name: Start and verify pinned runtime
         run: |
           printf 'ci-control-token\n' > /tmp/palazzo-control-token
@@ -73,6 +82,22 @@ jobs:
           jq --exit-status \
             '.schemaVersion == 1 and .liquidsoap.running == true and .liquidsoap.connected == true and .icecast.connected == true' \
             /tmp/palazzo-state.json
+          docker exec palazzo-ci ffmpeg -hide_banner -loglevel error -y \
+            -f lavfi -i sine=frequency=440:sample_rate=44100 -t 2 /tmp/filler.wav
+          docker exec --detach palazzo-ci node -e \
+            'require("node:http").createServer((_,response)=>require("node:fs").createReadStream("/tmp/filler.wav").pipe(response)).listen(3200,"127.0.0.1")'
+          FILLER_SHA=$(docker exec palazzo-ci sha256sum /tmp/filler.wav | cut -d ' ' -f 1)
+          jq --null-input --arg checksum "$FILLER_SHA" \
+            '{commandId:"ci-prepare",mode:"ordered",assets:[{id:"ci-filler",sha256:$checksum,downloadUrl:"http://127.0.0.1:3200/filler.wav?signed=redacted"}]}' \
+            > /tmp/palazzo-filler.json
+          curl --fail --silent \
+            --header 'Authorization: Bearer ci-control-token' \
+            --header 'Idempotency-Key: ci-prepare' \
+            --header 'Content-Type: application/json' \
+            --request PUT \
+            --data-binary @/tmp/palazzo-filler.json \
+            http://127.0.0.1:3100/v1/programs/program-ci/fillers/ci-v1 \
+            | jq --exit-status '.ready == true and .assets[0].id == "ci-filler"'
           unauthorized_status=$(curl --silent \
             --output /tmp/palazzo-metrics-unauthorized.json \
             --write-out '%{http_code}' \
@@ -94,20 +119,22 @@ jobs:
           node test/verify-prometheus-exposition.js /tmp/palazzo-metrics.txt
           if grep --extended-regexp 'program-ci|ci-control-token|wrong-ci-token' /tmp/palazzo-metrics.txt; then
             echo 'metrics exposed private identifiers or credentials'
-            exit 1
-          fi
+             exit 1
+           fi
           curl --fail --silent \
             --header 'Authorization: Bearer ci-control-token' \
             --header 'Idempotency-Key: ci-start' \
             --header 'X-Command-Sequence: 1' \
+            --header 'X-Filler-Version: ci-v1' \
             --request POST \
             http://127.0.0.1:3100/v1/programs/program-ci/automation/start \
-            | jq --exit-status '.actualState == "ready" and .readiness == true and .playback.status == "idle"'
+            | jq --exit-status '.actualState == "ready" and .readiness == true and .filler.activeVersion == "ci-v1"'
+          docker exec palazzo-ci node -e 'fetch("http://127.0.0.1:8000/stream").then(async response=>{const reader=response.body.getReader();let total=0;while(total<16384){const chunk=await reader.read();if(chunk.done)break;total+=chunk.value.length}if(total<16384)throw new Error("Icecast filler stream starved")}).catch(error=>{console.error(error.message);process.exit(1)})'
           curl --fail --silent \
             --header 'Authorization: Bearer ci-control-token' \
             --header 'Idempotency-Key: ci-stop' \
             --header 'X-Command-Sequence: 2' \
             --request POST \
             http://127.0.0.1:3100/v1/programs/program-ci/automation/stop \
-            | jq --exit-status '.actualState == "stopped" and .dependencies.icecast == true'
+            | jq --exit-status '.actualState == "stopped" and .dependencies.icecast == true and .filler.activeVersion == null'
           docker exec palazzo-ci liquidsoap --version | grep 'Liquidsoap 2.4.5'

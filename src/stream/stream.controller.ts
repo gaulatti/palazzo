@@ -21,6 +21,10 @@ import {
   type MixerPayload,
 } from "./stream.service";
 import { BroadcastLifecycleService } from "./broadcast-lifecycle.service";
+import {
+  FillerStoreService,
+  type FillerPreparationRequest,
+} from "./filler-store.service";
 
 /**
  * REST controller for radio stream operations.
@@ -43,6 +47,7 @@ export class StreamController {
   constructor(
     private readonly streamService: StreamService,
     private readonly lifecycle: BroadcastLifecycleService,
+    private readonly fillerStore: FillerStoreService,
   ) {}
 
   @Get("v1/programs/:programId/automation")
@@ -60,9 +65,32 @@ export class StreamController {
     @Headers("authorization") authorization?: string,
     @Headers("idempotency-key") idempotencyKey?: string,
     @Headers("x-command-sequence") commandSequence?: string,
+    @Headers("x-filler-version") fillerVersion?: string,
   ): Promise<unknown> {
     await this.lifecycle.authorize(programId, authorization);
-    return this.lifecycle.start(idempotencyKey, commandSequence);
+    return this.lifecycle.start(idempotencyKey, commandSequence, fillerVersion);
+  }
+
+  @Get('v1/programs/:programId/fillers/:version')
+  async getFiller(
+    @Param('programId') programId: string,
+    @Param('version') version: string,
+    @Headers('authorization') authorization?: string,
+  ) {
+    await this.lifecycle.authorize(programId, authorization);
+    return this.fillerStore.getPublicState(version);
+  }
+
+  @Put('v1/programs/:programId/fillers/:version')
+  async prepareFiller(
+    @Param('programId') programId: string,
+    @Param('version') version: string,
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @Body() request: FillerPreparationRequest,
+  ) {
+    await this.lifecycle.authorize(programId, authorization);
+    return this.fillerStore.prepare(version, request, idempotencyKey?.trim());
   }
 
   @Post("v1/programs/:programId/automation/stop")
@@ -158,7 +186,8 @@ export class StreamController {
     @Headers("authorization") authorization?: string,
   ): Promise<string> {
     await this.lifecycle.authorizeMachine(authorization);
-    return this.streamService.telemetry.renderMetrics();
+    const telemetry = await this.streamService.telemetry.renderMetrics();
+    return `${telemetry}${this.fillerStore.renderMetrics()}`;
   }
 
   /**

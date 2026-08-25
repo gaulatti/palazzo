@@ -12,6 +12,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { buildLiquidsoapScript } from "./liquidsoap-script";
+import { FillerStoreService } from "./filler-store.service";
 import { LiquidsoapTelnetClient } from "./liquidsoap-telnet.client";
 import {
   LiquidsoapLifecycleEvent,
@@ -81,6 +82,7 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly config: ConfigService,
     readonly telemetry: PlaybackTelemetryService,
+    private readonly fillerStore: FillerStoreService,
   ) {
     this.telnet = new LiquidsoapTelnetClient({
       port: this.telnetPort,
@@ -89,6 +91,7 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleInit(): Promise<void> {
+    await this.fillerStore.initialize();
     const mount = this.config.get<string>("ICECAST_MOUNT") ?? "/stream";
     const port = Number(this.config.get<string>("ICECAST_PORT") ?? 8000);
     const password =
@@ -107,6 +110,7 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
       genre,
       bitrate,
       rtmpUrl,
+      fillerPlaylistPath: this.fillerStore.activePlaylistPath,
     });
     const directory = "/tmp/palazzo";
     const scriptPath = join(directory, "stream.liq");
@@ -154,6 +158,7 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
       streamName: this.config.get("STREAM_NAME") ?? "Palazzo",
       running: this.process !== null && this.process.exitCode === null,
       uptime: Date.now() - this.startedAt,
+      filler: this.fillerStore.getRuntimeState(),
       playback: this.telemetry.getState(),
     };
   }

@@ -18,13 +18,17 @@ also require a bounded `Idempotency-Key` and monotonically increasing positive
 | Method | Path | Behavior |
 | --- | --- | --- |
 | `GET` | `/v1/programs/{programId}/automation` | Requested/actual state, readiness, transition, dependencies, authoritative playback, timestamps, and last command |
-| `POST` | `/v1/programs/{programId}/automation/start` | Reach Ready without restarting Liquidsoap or Icecast |
+| `POST` | `/v1/programs/{programId}/automation/start` | Bind the prepared `X-Filler-Version` and reach Ready without restarting Liquidsoap or Icecast |
 | `POST` | `/v1/programs/{programId}/automation/stop` | Flush active and queued songs/instants, confirm idle, preserve the mount |
 
 Another program ID returns 404 after authentication. Reusing a key for the
 same command returns the current lifecycle state without repeating effects;
 reusing it for another action or sequence returns 409. Raw keys and bearer
 tokens are never returned, retained, or logged.
+
+Start refuses a missing or unprepared filler version. The bound version is
+immutable until Stop; filler edits prepare a later version without changing the
+active session. See [radio-filler.md](radio-filler.md).
 
 ## State and failure semantics
 
