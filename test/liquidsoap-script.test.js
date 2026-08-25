@@ -36,8 +36,16 @@ test("generates a private authoritative telemetry script", () => {
   assert.match(script, /radio = peak/);
   assert.match(script, /songs_rms = rms/);
   assert.match(script, /instants_rms = rms/);
+  assert.match(script, /intros_queue = request\.queue\(id="intros"/);
+  assert.match(script, /current_request_id\(\) == armed_intro_parent_id\(\)/);
+  assert.match(script, /remember_event\("intro_started"/);
+  assert.match(script, /remember_event\("intro_ended"/);
+  assert.match(script, /smooth_add\(/);
   assert.match(script, /reload_mode="watch"/);
-  assert.match(script, /fallback\(track_sensitive=false, \[songs, filler\]\)/);
+  assert.match(
+    script,
+    /fallback\(track_sensitive=false, \[ducked_songs, filler\]\)/,
+  );
   assert.match(script, /interactive\.float\("palazzo_song_volume", 1\.\)/);
   assert.match(script, /interactive\.float\("palazzo_instant_volume", 1\.\)/);
   assert.match(script, /interactive\.float\("palazzo_main_volume", 1\.\)/);

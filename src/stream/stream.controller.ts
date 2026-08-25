@@ -19,6 +19,8 @@ import {
   type SongPayload,
   type InstantPayload,
   type MixerPayload,
+  type ProgramSongPayload,
+  type ProgramInstantPayload,
 } from "./stream.service";
 import { BroadcastLifecycleService } from "./broadcast-lifecycle.service";
 import {
@@ -102,6 +104,104 @@ export class StreamController {
   ): Promise<unknown> {
     await this.lifecycle.authorize(programId, authorization);
     return this.lifecycle.stop(idempotencyKey, commandSequence);
+  }
+
+  @Post("v1/programs/:programId/playback/song")
+  async playProgramSong(
+    @Param("programId") programId: string,
+    @Headers("authorization") authorization: string | undefined,
+    @Headers("idempotency-key") idempotencyKey: string | undefined,
+    @Body() data: ProgramSongPayload,
+  ) {
+    await this.lifecycle.authorize(programId, authorization);
+    this.lifecycle.requireReady();
+    return this.streamService.playProgramSong(programId, idempotencyKey, data);
+  }
+
+  @Post("v1/programs/:programId/playback/song/stop")
+  async stopProgramSong(
+    @Param("programId") programId: string,
+    @Headers("authorization") authorization?: string,
+  ) {
+    await this.lifecycle.authorize(programId, authorization);
+    await this.streamService.stopSong();
+    return { ok: true };
+  }
+
+  @Post("v1/programs/:programId/playback/instant")
+  async playProgramInstant(
+    @Param("programId") programId: string,
+    @Headers("authorization") authorization: string | undefined,
+    @Body() data: ProgramInstantPayload,
+  ) {
+    await this.lifecycle.authorize(programId, authorization);
+    this.lifecycle.requireReady();
+    if (!data.url) throw new BadRequestException("url is required");
+    if (data.programId !== programId) {
+      throw new BadRequestException("instant belongs to another program");
+    }
+    if (!data.playbackId?.trim() || data.playbackId.length > 200) {
+      throw new BadRequestException("playbackId is invalid");
+    }
+    return this.streamService.playInstant({
+      ...data,
+      playbackRequestId: data.playbackId,
+    });
+  }
+
+  @Post("v1/programs/:programId/playback/instant/stop")
+  async stopProgramInstants(
+    @Param("programId") programId: string,
+    @Headers("authorization") authorization?: string,
+  ) {
+    await this.lifecycle.authorize(programId, authorization);
+    await this.streamService.stopAllInstants();
+    return { ok: true };
+  }
+
+  @Get("v1/programs/:programId/mixer")
+  async getProgramMixer(
+    @Param("programId") programId: string,
+    @Headers("authorization") authorization?: string,
+  ) {
+    await this.lifecycle.authorize(programId, authorization);
+    return this.streamService.getMixer();
+  }
+
+  @Put("v1/programs/:programId/mixer")
+  async updateProgramMixer(
+    @Param("programId") programId: string,
+    @Headers("authorization") authorization: string | undefined,
+    @Body() data: MixerPayload,
+  ) {
+    await this.lifecycle.authorize(programId, authorization);
+    this.lifecycle.requireReady();
+    return this.streamService.updateMixer(data);
+  }
+
+  @Get("v1/programs/:programId/playback/state")
+  async getProgramPlaybackState(
+    @Param("programId") programId: string,
+    @Headers("authorization") authorization?: string,
+  ) {
+    await this.lifecycle.authorize(programId, authorization);
+    return this.streamService.telemetry.getState();
+  }
+
+  @Sse("v1/programs/:programId/playback/events")
+  async programPlaybackEvents(
+    @Param("programId") programId: string,
+    @Headers("authorization") authorization: string | undefined,
+    @Headers("last-event-id") lastEventId?: string,
+  ): Promise<Observable<MessageEvent>> {
+    await this.lifecycle.authorize(programId, authorization);
+    return this.streamService.telemetry.subscribe(lastEventId).pipe(
+      map((event) => ({
+        id: event.id,
+        type: event.type,
+        data: event,
+      })),
+    );
   }
 
   /** Returns the current stream mount point, name, uptime, and running state. */

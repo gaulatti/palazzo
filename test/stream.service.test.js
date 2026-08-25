@@ -1,5 +1,8 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
+const { mkdtemp, readFile } = require("node:fs/promises");
+const { tmpdir } = require("node:os");
+const { join } = require("node:path");
 const {
   PlaybackTelemetryService,
 } = require("../dist/stream/playback-telemetry.service.js");
@@ -95,6 +98,7 @@ test("clears active and queued song and instant material for lifecycle Stop", as
   assert.deepEqual(commands, [
     "songs.flush_and_skip",
     "instants.flush_and_skip",
+    "intros.flush_and_skip",
   ]);
 });
 
@@ -119,7 +123,114 @@ test("serializes multi-command playback operations against lifecycle queue clear
   assert.deepEqual(commands.slice(2), [
     "songs.flush_and_skip",
     "instants.flush_and_skip",
+    "intros.flush_and_skip",
   ]);
+});
+
+test("prepares an intro before replacing the song and deduplicates retries", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "palazzo-playout-"));
+  const { service, commands } = streamService();
+  service.playoutJournalPath = join(directory, "commands.json");
+  service.assetProbe = async () => undefined;
+  const payload = {
+    song: {
+      programId: "program-one",
+      playbackId: "song-42",
+      url: "https://example.test/song.mp3",
+      title: "Song",
+    },
+    intro: {
+      programId: "program-one",
+      playbackId: "intro-42",
+      url: "https://example.test/intro.mp3",
+      gain: 0.7,
+      duckGain: 0.25,
+      fadeInSeconds: 0.1,
+      fadeOutSeconds: 0.2,
+    },
+  };
+
+  const first = await service.playProgramSong("program-one", "command-42", payload);
+  const duplicate = await service.playProgramSong(
+    "program-one",
+    "command-42",
+    payload,
+  );
+  const reordered = await service.playProgramSong("program-one", "command-42", {
+    intro: {
+      fadeOutSeconds: 0.2,
+      fadeInSeconds: 0.1,
+      duckGain: 0.25,
+      gain: 0.7,
+      url: "https://example.test/intro.mp3",
+      playbackId: "intro-42",
+      programId: "program-one",
+    },
+    song: {
+      title: "Song",
+      url: "https://example.test/song.mp3",
+      playbackId: "song-42",
+      programId: "program-one",
+    },
+  });
+
+  assert.equal(first.introPlaybackId, "intro-42");
+  assert.equal(duplicate.duplicate, true);
+  assert.equal(reordered.duplicate, true);
+  assert.equal(commands.filter((command) => command.startsWith("songs.push")).length, 1);
+  assert.ok(
+    commands.indexOf("intros.flush_and_skip") <
+      commands.findIndex((command) => command.startsWith("songs.flush")),
+  );
+  assert.match(commands.find((command) => command.startsWith("intros.push")), /liq_amplify="0.7"/);
+  assert.match(commands.find((command) => command.startsWith("intros.push")), /palazzo_parent_playback_id="song-42"/);
+  assert.equal(JSON.parse(await readFile(join(directory, "commands.json"))).length, 1);
+});
+
+test("intro readiness failure degrades to song-only playout", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "palazzo-playout-"));
+  const { service, commands, telemetry } = streamService();
+  service.playoutJournalPath = join(directory, "commands.json");
+  let probes = 0;
+  service.assetProbe = async () => {
+    probes += 1;
+    if (probes === 2) throw new Error("unavailable");
+  };
+
+  const result = await service.playProgramSong("program-one", "command", {
+    song: {
+      programId: "program-one",
+      playbackId: "song",
+      url: "https://example.test/song.mp3",
+    },
+    intro: {
+      programId: "program-one",
+      playbackId: "intro",
+      url: "https://example.test/intro.mp3",
+    },
+  });
+
+  assert.equal(result.introPlaybackId, null);
+  assert.equal(commands.some((command) => command.startsWith("intros.push")), false);
+  assert.equal(commands.some((command) => command.startsWith("songs.push")), true);
+  assert.equal(telemetry.getState().intro.status, "failed");
+  assert.match(await telemetry.renderMetrics(), /result="failed",reason="asset_unavailable"\} 1/);
+});
+
+test("rejects cross-program assets before touching Liquidsoap", async () => {
+  const { service, commands } = streamService();
+  service.assetProbe = async () => undefined;
+  await assert.rejects(
+    service.playProgramSong("program-one", "command", {
+      song: {
+        programId: "program-two",
+        playbackId: "song",
+        url: "https://example.test/song.mp3",
+      },
+    }),
+    /belongs to another program/,
+  );
+  assert.deepEqual(commands, []);
 });
 
 test("records successful and malformed Liquidsoap telemetry poll outcomes", async () => {

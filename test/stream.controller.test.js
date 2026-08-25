@@ -92,3 +92,66 @@ test('metrics authenticate before rendering the collector', async () => {
     ['filler-render'],
   ]);
 });
+
+test('program playback authenticates and preserves the idempotency key', async () => {
+  const calls = [];
+  const controller = new StreamController(
+    {
+      playProgramSong: async (...args) => {
+        calls.push(['play', ...args]);
+        return { ok: true, playbackRequestId: 'song' };
+      },
+    },
+    {
+      authorize: async (...args) => calls.push(['authorize', ...args]),
+      requireReady: () => calls.push(['ready']),
+    },
+    {},
+  );
+  const payload = {
+    song: {
+      programId: 'program-one',
+      playbackId: 'song',
+      url: 'https://example.test/song.mp3',
+    },
+  };
+
+  await controller.playProgramSong(
+    'program-one',
+    'Bearer token',
+    'command',
+    payload,
+  );
+
+  assert.deepEqual(calls, [
+    ['authorize', 'program-one', 'Bearer token'],
+    ['ready'],
+    ['play', 'program-one', 'command', payload],
+  ]);
+});
+
+test('program instant rejects cross-program assets and maps authoritative IDs', async () => {
+  const played = [];
+  const controller = new StreamController(
+    { playInstant: async (payload) => played.push(payload) },
+    {
+      authorize: async () => undefined,
+      requireReady: () => undefined,
+    },
+    {},
+  );
+  await assert.rejects(
+    controller.playProgramInstant('program-one', 'Bearer token', {
+      programId: 'program-two',
+      playbackId: 'instant',
+      url: 'https://example.test/instant.mp3',
+    }),
+    /belongs to another program/,
+  );
+  await controller.playProgramInstant('program-one', 'Bearer token', {
+    programId: 'program-one',
+    playbackId: 'instant',
+    url: 'https://example.test/instant.mp3',
+  });
+  assert.equal(played[0].playbackRequestId, 'instant');
+});
