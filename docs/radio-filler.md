@@ -73,6 +73,8 @@ only the active version and whether a validated binding exists. Preparation
 failure reasons are limited to checksum, download, size, decode, validation, or
 generic preparation categories.
 
-Compose persists the store in the `palazzo-fillers` volume. Production mounts
-`/opt/palazzo/fillers` into the container. Back up that host directory with the
-other broadcast state; deleting it requires Alcantara to prepare versions again.
+Compose and production persist the store in the Docker-managed
+`palazzo-fillers` volume. The deploy workflow creates that volume idempotently
+through Docker, so the unprivileged deployment user never needs to create or
+write a host directory under `/opt`. Back up the named volume with the other
+broadcast state; deleting it requires Alcantara to prepare versions again.
