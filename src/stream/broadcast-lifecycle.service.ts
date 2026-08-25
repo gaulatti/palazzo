@@ -78,6 +78,13 @@ export class BroadcastLifecycleService {
   }
 
   async authorize(programId: string, authorization?: string): Promise<void> {
+    await this.authorizeMachine(authorization);
+    if (programId !== this.programId) {
+      throw new NotFoundException('program not found');
+    }
+  }
+
+  async authorizeMachine(authorization?: string): Promise<void> {
     let expected: string;
     try {
       expected = (await readFile(this.tokenFile, 'utf8')).trim();
@@ -90,9 +97,6 @@ export class BroadcastLifecycleService {
       : '';
     if (!expected || !this.equalSecret(supplied, expected)) {
       throw new UnauthorizedException('unauthorized');
-    }
-    if (programId !== this.programId) {
-      throw new NotFoundException('program not found');
     }
   }
 

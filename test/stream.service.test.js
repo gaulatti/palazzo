@@ -17,7 +17,7 @@ function streamService() {
     },
     close: () => undefined,
   };
-  return { service, commands };
+  return { service, commands, telemetry };
 }
 
 test("propagates a caller-supplied playback request ID into Liquidsoap metadata", async () => {
@@ -117,4 +117,41 @@ test("serializes multi-command playback operations against lifecycle queue clear
     "songs.flush_and_skip",
     "instants.flush_and_skip",
   ]);
+});
+
+test("records successful and malformed Liquidsoap telemetry poll outcomes", async () => {
+  const { service, telemetry } = streamService();
+  const snapshot = {
+    liquidsoap_sequence: 0,
+    playing: false,
+    playback_request_id: "",
+    title: "",
+    artist: "",
+    cover_url: "",
+    url: "",
+    started_at: 0,
+    elapsed: 0,
+    remaining: 0,
+    song_rms: 0,
+    song_peak: 0,
+    instant_rms: 0,
+    instant_peak: 0,
+    output_rms: 0,
+    output_peak: 0,
+    icecast_connected: true,
+    sampled_at: Date.now() / 1000,
+  };
+  service.telnet = {
+    send: async (command) =>
+      command === "palazzo.snapshot" ? JSON.stringify(snapshot) : "[]",
+    close: () => undefined,
+  };
+
+  await service.pollTelemetry();
+  service.telnet.send = async () => "not-json";
+  await service.pollTelemetry();
+
+  const metrics = await telemetry.renderMetrics();
+  assert.match(metrics, /operation="telemetry_poll",result="success"\} 1/);
+  assert.match(metrics, /operation="telemetry_poll",result="parse_failure"\} 1/);
 });

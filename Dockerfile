@@ -13,6 +13,9 @@ FROM savonet/liquidsoap:v2.4.5@sha256:206664046c8cd012151928a6ea903a6ab65c20295b
 
 USER root
 
+ARG BUILD_VERSION=development
+ENV PALAZZO_BUILD_VERSION=$BUILD_VERSION
+
 COPY --from=node-runtime /usr/local/ /usr/local/
 
 WORKDIR /app
