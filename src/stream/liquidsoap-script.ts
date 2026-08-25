@@ -43,6 +43,14 @@ current_artist = ref("")
 current_cover_url = ref("")
 current_url = ref("")
 current_started_at = ref(0.)
+current_intro_playing = ref(false)
+current_intro_playback_id = ref("")
+current_intro_parent_id = ref("")
+current_intro_program_id = ref("")
+current_intro_request_id = ref("")
+current_intro_url = ref("")
+current_intro_started_at = ref(0.)
+armed_intro_parent_id = ref("")
 icecast_connected = ref(false)
 
 def metadata_value(key, meta) =
@@ -56,6 +64,9 @@ def remember_event(event_type, meta) =
       sequence=event_sequence(),
       event_type=event_type,
       playback_request_id=metadata_value("palazzo_request_id", meta),
+      playback_id=metadata_value("palazzo_playback_id", meta),
+      parent_playback_id=metadata_value("palazzo_parent_playback_id", meta),
+      program_id=metadata_value("palazzo_program_id", meta),
       title=metadata_value("title", meta),
       artist=metadata_value("artist", meta),
       cover_url=metadata_value("cover_url", meta),
@@ -100,6 +111,70 @@ songs.on_position(
     end
 )
 
+intros_queue = request.queue(id="intros", prefetch=1)
+intros_per_item = amplify(1., intros_queue)
+intros_faded = fade.in(
+  override_duration="palazzo_fade_in",
+  duration=0.25,
+  track_sensitive=true,
+  intros_per_item
+)
+intros_faded = fade.out(
+  override_duration="palazzo_fade_out",
+  duration=0.25,
+  track_sensitive=true,
+  intros_faded
+)
+intros_gated = source.available(
+  track_sensitive=false,
+  intros_faded,
+  fun () ->
+    current_playing() and
+      current_request_id() == armed_intro_parent_id()
+)
+intros_rms = rms(id="intros_rms", duration=0.1, intros_gated)
+get_intro_rms = intros_rms.rms
+intros = peak(id="intros_peak", duration=0.1, intros_rms)
+get_intro_peak = intros.peak
+
+intros.on_track(
+  synchronous=false,
+  fun (meta) ->
+    begin
+      current_intro_playing := true
+      current_intro_playback_id := metadata_value("palazzo_playback_id", meta)
+      current_intro_parent_id := metadata_value("palazzo_parent_playback_id", meta)
+      current_intro_program_id := metadata_value("palazzo_program_id", meta)
+      current_intro_request_id := metadata_value("palazzo_request_id", meta)
+      current_intro_url := metadata_value("palazzo_url", meta)
+      current_intro_started_at := time()
+      remember_event("intro_started", meta)
+    end
+)
+
+intros.on_position(
+  position=0., remaining=true, allow_partial=true, synchronous=false,
+  fun (_, meta) ->
+    begin
+      remember_event("intro_ended", meta)
+      if metadata_value("palazzo_playback_id", meta) == current_intro_playback_id() then
+        current_intro_playing := false
+        armed_intro_parent_id := ""
+      end
+    end
+)
+
+server.register(
+  namespace="palazzo",
+  description="Arm the prepared intro for one parent song",
+  "arm_intro",
+  fun (parent_id) ->
+    begin
+      armed_intro_parent_id := parent_id
+      "ok"
+    end
+)
+
 instants_queue = mksafe(request.queue(id="instants"))
 instant_volume = interactive.float("palazzo_instant_volume", 1.)
 instants_per_item = amplify(1., instants_queue)
@@ -116,7 +191,14 @@ filler_playlist = playlist(
   "${liqString(options.fillerPlaylistPath)}"
 )
 filler = mksafe(filler_playlist)
-program_audio = fallback(track_sensitive=false, [songs, filler])
+intro_duck_gain = interactive.float("palazzo_intro_duck_gain", 0.35)
+ducked_songs = smooth_add(
+  duration=0.25,
+  p=intro_duck_gain,
+  normal=songs,
+  special=intros
+)
+program_audio = fallback(track_sensitive=false, [ducked_songs, filler])
 ${rtmpInput}
 radio = add(normalize=false, [program_audio, instants${rtmpSource}])
 radio = mksafe(radio)
@@ -151,6 +233,15 @@ server.register(
       song_peak=finite_level(get_song_peak()),
       instant_rms=finite_level(get_instant_rms()),
       instant_peak=finite_level(get_instant_peak()),
+      intro_playing=current_intro_playing(),
+      intro_playback_id=current_intro_playback_id(),
+      intro_parent_playback_id=current_intro_parent_id(),
+      intro_program_id=current_intro_program_id(),
+      intro_request_id=current_intro_request_id(),
+      intro_url=current_intro_url(),
+      intro_started_at=current_intro_started_at(),
+      intro_rms=finite_level(get_intro_rms()),
+      intro_peak=finite_level(get_intro_peak()),
       output_rms=finite_level(get_rms()),
       output_peak=finite_level(get_peak()),
       icecast_connected=icecast_connected(),

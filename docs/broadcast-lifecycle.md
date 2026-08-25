@@ -41,7 +41,8 @@ private control/telemetry connection, and Icecast source output, then reports
 `ready`. An empty song queue is valid Ready state. Once ready, ordinary song,
 instant, and mixer commands are accepted.
 
-Stop sends Liquidsoap 2.4.5's `flush_and_skip` command to both request queues,
+Stop sends Liquidsoap 2.4.5's `flush_and_skip` command to the song, manual
+instant, and recorded-intro request queues,
 then waits for authoritative song-idle and zero instant activity. It reports
 Stopped only after that observation. Liquidsoap and Icecast remain running and
 connected, so listeners retain the 24x7 mount and hear the existing safe idle
@@ -52,6 +53,10 @@ never creates an explicit Stop. While requested state remains running, losing
 Liquidsoap, control telemetry, or Icecast changes actual state to `degraded`
 and identifies each dependency separately. A failed queue clear or readiness
 timeout returns 503 and `failed`; a newer command is required to reconcile.
+
+Program playback uses the same authentication and readiness boundary. See
+[Program-scoped playout](program-playout.md) for the atomic song-intro
+contract, failure semantics, events, and migration routes.
 
 ## Deployment prerequisites
 

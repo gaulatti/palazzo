@@ -14,8 +14,15 @@ import {
 
 export interface LiquidsoapLifecycleEvent {
   sequence: number;
-  event_type: 'track_started' | 'track_ended';
+  event_type:
+    | 'track_started'
+    | 'track_ended'
+    | 'intro_started'
+    | 'intro_ended';
   playback_request_id: string;
+  playback_id: string;
+  parent_playback_id: string;
+  program_id: string;
   title: string;
   artist: string;
   cover_url: string;
@@ -38,6 +45,15 @@ export interface LiquidsoapSnapshot {
   song_peak: number;
   instant_rms: number;
   instant_peak: number;
+  intro_playing: boolean;
+  intro_playback_id: string;
+  intro_parent_playback_id: string;
+  intro_program_id: string;
+  intro_request_id: string;
+  intro_url: string;
+  intro_started_at: number;
+  intro_rms: number;
+  intro_peak: number;
   output_rms: number;
   output_peak: number;
   icecast_connected: boolean;
@@ -50,6 +66,9 @@ export type PlaybackEventType =
   | 'telemetry.disconnected'
   | 'track.started'
   | 'track.ended'
+  | 'intro.started'
+  | 'intro.ended'
+  | 'intro.failed'
   | 'playback.position'
   | 'audio.levels'
   | 'heartbeat';
@@ -72,6 +91,7 @@ interface AudioLevel {
 
 interface AudioLevels {
   song: AudioLevel;
+  intro: AudioLevel;
   instant: AudioLevel;
   output: AudioLevel;
 }
@@ -99,6 +119,16 @@ export interface PlaybackState {
     coverUrl: string | null;
     url: string;
     startedAt: string;
+  } | null;
+  intro: {
+    playbackId: string;
+    parentPlaybackId: string;
+    programId: string;
+    playbackRequestId: string;
+    url: string;
+    startedAt: string;
+    status: 'playing' | 'failed';
+    failureReason?: string;
   } | null;
   positionSeconds: number;
   remainingSeconds: number | null;
@@ -132,6 +162,13 @@ const NORMALIZED_ROUTES = new Set([
   '/v1/programs/:programId/automation/start',
   '/v1/programs/:programId/automation/stop',
   '/v1/programs/:programId/fillers/:version',
+  '/v1/programs/:programId/playback/song',
+  '/v1/programs/:programId/playback/song/stop',
+  '/v1/programs/:programId/playback/instant',
+  '/v1/programs/:programId/playback/instant/stop',
+  '/v1/programs/:programId/playback/state',
+  '/v1/programs/:programId/playback/events',
+  '/v1/programs/:programId/mixer',
 ]);
 
 @Injectable()
@@ -146,6 +183,7 @@ export class PlaybackTelemetryService {
   private staleSince: string | null = null;
   private lastSampleAt: string | null = null;
   private track: PlaybackState['track'] = null;
+  private intro: PlaybackState['intro'] = null;
   private positionSeconds = 0;
   private remainingSeconds: number | null = null;
   private levels: AudioLevels = emptyLevels();
@@ -168,6 +206,8 @@ export class PlaybackTelemetryService {
   private replayLevelsDropped = 0;
   private replayOtherDropped = 0;
   private readonly dependencyResults = new Map<string, number>();
+  private readonly pairedCommandResults = new Map<string, number>();
+  private readonly introLifecycleResults = new Map<string, number>();
   private readonly httpMetrics = new Map<
     string,
     { count: number; durationSeconds: number }
@@ -240,11 +280,27 @@ export class PlaybackTelemetryService {
       this.positionSeconds = 0;
       this.remainingSeconds = null;
     }
+    if (snapshot.intro_playing) {
+      this.intro = {
+        playbackId: snapshot.intro_playback_id,
+        parentPlaybackId: snapshot.intro_parent_playback_id,
+        programId: snapshot.intro_program_id,
+        playbackRequestId: snapshot.intro_request_id,
+        url: snapshot.intro_url,
+        startedAt: new Date(snapshot.intro_started_at * 1_000).toISOString(),
+        status: 'playing',
+      };
+    } else if (this.intro?.status === 'playing') {
+      this.intro = null;
+    }
     this.levels = {
       song: snapshot.playing
         ? level(snapshot.song_rms, snapshot.song_peak)
         : { rms: 0, peak: 0 },
       instant: level(snapshot.instant_rms, snapshot.instant_peak),
+      intro: snapshot.intro_playing
+        ? level(snapshot.intro_rms, snapshot.intro_peak)
+        : { rms: 0, peak: 0 },
       output: level(snapshot.output_rms, snapshot.output_peak),
     };
     this.icecastConnected = snapshot.icecast_connected === true;
@@ -306,6 +362,53 @@ export class PlaybackTelemetryService {
     this.dependencyResults.set(key, (this.dependencyResults.get(key) ?? 0) + 1);
   }
 
+  observePairedCommand(
+    result: 'accepted' | 'deduplicated' | 'rejected',
+    reason:
+      | 'none'
+      | 'duplicate'
+      | 'engine_failure'
+      | 'idempotency'
+      | 'key_reuse'
+      | 'song_unavailable',
+  ): void {
+    const key = `${result}\t${reason}`;
+    this.pairedCommandResults.set(
+      key,
+      (this.pairedCommandResults.get(key) ?? 0) + 1,
+    );
+  }
+
+  observeIntroLifecycle(
+    result: 'started' | 'ended' | 'failed',
+    reason: 'none' | 'asset_unavailable' | 'decode_failure',
+  ): void {
+    const key = `${result}\t${reason}`;
+    this.introLifecycleResults.set(
+      key,
+      (this.introLifecycleResults.get(key) ?? 0) + 1,
+    );
+  }
+
+  reportIntroFailure(data: {
+    playbackId: string;
+    parentPlaybackId: string;
+    programId: string;
+    playbackRequestId: string;
+    reason: 'asset_unavailable' | 'decode_failure';
+  }): void {
+    const occurredAt = new Date().toISOString();
+    const { reason, ...identity } = data;
+    this.intro = {
+      ...identity,
+      url: '',
+      startedAt: occurredAt,
+      status: 'failed',
+      failureReason: reason,
+    };
+    this.emit('intro.failed', data, occurredAt);
+  }
+
   shutdown(): void {
     this.live.complete();
   }
@@ -353,6 +456,7 @@ export class PlaybackTelemetryService {
         connected: this.icecastConnected,
       },
       track: this.track,
+      intro: this.intro,
       positionSeconds: this.positionSeconds,
       remainingSeconds: this.remainingSeconds,
       levels: this.levels,
@@ -448,6 +552,7 @@ export class PlaybackTelemetryService {
       '# TYPE palazzo_liquidsoap_restarts_total counter',
       `palazzo_liquidsoap_restarts_total ${this.processRestarts}`,
       ...this.dependencyMetricLines(),
+      ...this.playoutMetricLines(),
       '# HELP palazzo_level_samples_coalesced_total Level samples coalesced before SSE emission.',
       '# TYPE palazzo_level_samples_coalesced_total counter',
       `palazzo_level_samples_coalesced_total ${this.levelSamplesCoalesced}`,
@@ -477,7 +582,33 @@ export class PlaybackTelemetryService {
       liquidsoapSequence: event.sequence,
     };
     const occurredAt = new Date(event.occurred_at * 1_000).toISOString();
-    if (event.event_type === 'track_started') {
+    if (event.event_type === 'intro_started') {
+      this.intro = {
+        playbackId: event.playback_id,
+        parentPlaybackId: event.parent_playback_id,
+        programId: event.program_id,
+        playbackRequestId: event.playback_request_id,
+        url: event.url,
+        startedAt: occurredAt,
+        status: 'playing',
+      };
+      this.observeIntroLifecycle('started', 'none');
+      this.emit('intro.started', {
+        ...data,
+        playbackId: event.playback_id,
+        parentPlaybackId: event.parent_playback_id,
+        programId: event.program_id,
+      }, occurredAt);
+    } else if (event.event_type === 'intro_ended') {
+      this.observeIntroLifecycle('ended', 'none');
+      this.emit('intro.ended', {
+        ...data,
+        playbackId: event.playback_id,
+        parentPlaybackId: event.parent_playback_id,
+        programId: event.program_id,
+      }, occurredAt);
+      if (this.intro?.playbackId === event.playback_id) this.intro = null;
+    } else if (event.event_type === 'track_started') {
       this.lifecycleStarted += 1;
       this.track = {
         playbackRequestId: event.playback_request_id,
@@ -570,6 +701,32 @@ export class PlaybackTelemetryService {
     }
     return lines;
   }
+
+  private playoutMetricLines(): string[] {
+    const lines = [
+      '# HELP palazzo_paired_playout_commands_total Paired song-intro commands by bounded result and reason.',
+      '# TYPE palazzo_paired_playout_commands_total counter',
+      '# HELP palazzo_intro_lifecycle_total Intro lifecycle transitions by bounded result and reason.',
+      '# TYPE palazzo_intro_lifecycle_total counter',
+    ];
+    for (const [key, count] of [...this.pairedCommandResults].sort(([a], [b]) =>
+      a.localeCompare(b),
+    )) {
+      const [result, reason] = key.split('\t');
+      lines.push(
+        `palazzo_paired_playout_commands_total{result="${result}",reason="${reason}"} ${count}`,
+      );
+    }
+    for (const [key, count] of [...this.introLifecycleResults].sort(([a], [b]) =>
+      a.localeCompare(b),
+    )) {
+      const [result, reason] = key.split('\t');
+      lines.push(
+        `palazzo_intro_lifecycle_total{result="${result}",reason="${reason}"} ${count}`,
+      );
+    }
+    return lines;
+  }
 }
 
 function trackFromSnapshot(
@@ -588,6 +745,7 @@ function trackFromSnapshot(
 function emptyLevels(): AudioLevels {
   return {
     song: { rms: 0, peak: 0 },
+    intro: { rms: 0, peak: 0 },
     instant: { rms: 0, peak: 0 },
     output: { rms: 0, peak: 0 },
   };

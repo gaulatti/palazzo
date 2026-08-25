@@ -36,6 +36,15 @@ function snapshot(overrides = {}) {
     song_peak: 0.4,
     instant_rms: 0.1,
     instant_peak: 0.3,
+    intro_playing: false,
+    intro_playback_id: '',
+    intro_parent_playback_id: '',
+    intro_program_id: '',
+    intro_request_id: '',
+    intro_url: '',
+    intro_started_at: 0,
+    intro_rms: 0,
+    intro_peak: 0,
     output_rms: 0.25,
     output_peak: 0.5,
     icecast_connected: true,
@@ -49,6 +58,9 @@ function lifecycle(sequence, event_type) {
     sequence,
     event_type,
     playback_request_id: 'request-1',
+    playback_id: 'request-1',
+    parent_playback_id: '',
+    program_id: 'program-one',
     title: 'Test title',
     artist: 'Test artist',
     cover_url: 'https://example.test/cover.jpg',
@@ -93,6 +105,7 @@ test('retains last-known playback through telemetry loss and ends only on engine
   assert.deepEqual(telemetry.getState().levels, {
     song: { rms: 0, peak: 0 },
     instant: { rms: 0, peak: 0 },
+    intro: { rms: 0, peak: 0 },
     output: { rms: 0, peak: 0 },
   });
 });
@@ -116,6 +129,58 @@ test('starts every SSE connection with a snapshot and then replays after Last-Ev
   assert.equal(
     (await telemetry.renderMetrics()).match(/event="started"} 1/g)?.length,
     1,
+  );
+});
+
+test('publishes correlated intro lifecycle and clears ended intro levels', async () => {
+  const telemetry = service();
+  telemetry.setLiquidsoapRunning(true);
+  const intro = {
+    ...lifecycle(2, 'intro_started'),
+    playback_id: 'intro-1',
+    parent_playback_id: 'request-1',
+    program_id: 'program-one',
+    url: 'https://example.test/intro.mp3',
+  };
+  telemetry.apply(
+    snapshot({
+      liquidsoap_sequence: 2,
+      intro_playing: true,
+      intro_playback_id: 'intro-1',
+      intro_parent_playback_id: 'request-1',
+      intro_program_id: 'program-one',
+      intro_request_id: 'request-1',
+      intro_url: 'https://example.test/intro.mp3',
+      intro_started_at: 1_700_000_001,
+      intro_rms: 0.2,
+      intro_peak: 0.4,
+    }),
+    [lifecycle(1, 'track_started'), intro],
+  );
+
+  assert.equal(telemetry.getState().intro.playbackId, 'intro-1');
+  assert.deepEqual(telemetry.getState().levels.intro, { rms: 0.2, peak: 0.4 });
+  const started = telemetry.replay.find((event) => event.type === 'intro.started');
+  assert.equal(started.data.parentPlaybackId, 'request-1');
+
+  telemetry.apply(
+    snapshot({
+      liquidsoap_sequence: 3,
+      intro_playing: false,
+      intro_rms: 0.2,
+      intro_peak: 0.4,
+    }),
+    [
+      lifecycle(1, 'track_started'),
+      intro,
+      { ...intro, sequence: 3, event_type: 'intro_ended' },
+    ],
+  );
+  assert.equal(telemetry.getState().intro, null);
+  assert.deepEqual(telemetry.getState().levels.intro, { rms: 0, peak: 0 });
+  assert.match(
+    await telemetry.renderMetrics(),
+    /palazzo_intro_lifecycle_total\{result="ended",reason="none"\} 1/,
   );
 });
 

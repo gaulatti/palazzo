@@ -18,6 +18,11 @@ API: `http://localhost:3100` — Stream: `http://localhost:8000/stream`
 
 ## API
 
+Automation clients should use the authenticated program-scoped surface in
+[Program-scoped playout](docs/program-playout.md). It provides atomic
+song-plus-intro playout, program-scoped instant/mixer/state/event routes,
+durable idempotency, and explicit intro lifecycle reporting.
+
 Push a song: `POST /song` with `{"url": "https://...mp3"}`
 
 All endpoints at a glance:
