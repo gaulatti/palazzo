@@ -333,6 +333,10 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
       if (this.process === child) this.process = null;
       this.telemetry.setLiquidsoapRunning(false);
       this.telemetry.markDisconnected();
+      this.telemetry.observeDependency(
+        "process_exit",
+        this.shuttingDown ? "success" : "failure",
+      );
       this.logger.warn(`Liquidsoap exited with code ${code}`);
       if (this.shuttingDown) return;
 
@@ -366,8 +370,14 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
       const snapshot = JSON.parse(snapshotResponse) as LiquidsoapSnapshot;
       const events = JSON.parse(eventsResponse) as LiquidsoapLifecycleEvent[];
       this.telemetry.apply(snapshot, events);
+      this.telemetry.observeDependency("telemetry_poll", "success");
     } catch (error) {
-      if (error instanceof SyntaxError) this.telemetry.markParseFailure();
+      if (error instanceof SyntaxError) {
+        this.telemetry.markParseFailure();
+        this.telemetry.observeDependency("telemetry_poll", "parse_failure");
+      } else {
+        this.telemetry.observeDependency("telemetry_poll", "failure");
+      }
       this.telemetry.markDisconnected();
       this.logger.debug(
         `Liquidsoap telemetry poll failed: ${error instanceof Error ? error.message : String(error)}`,

@@ -182,8 +182,12 @@ export class StreamController {
   /** Exposes bounded-cardinality Prometheus telemetry on the private API. */
   @Get("metrics")
   @Header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-  getMetrics(): string {
-    return `${this.streamService.telemetry.renderMetrics()}${this.fillerStore.renderMetrics()}`;
+  async getMetrics(
+    @Headers("authorization") authorization?: string,
+  ): Promise<string> {
+    await this.lifecycle.authorizeMachine(authorization);
+    const telemetry = await this.streamService.telemetry.renderMetrics();
+    return `${telemetry}${this.fillerStore.renderMetrics()}`;
   }
 
   /**

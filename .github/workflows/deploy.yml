@@ -25,6 +25,7 @@ jobs:
       - name: Build Docker image
         run: |
           docker build \
+            --build-arg BUILD_VERSION=${{ github.sha }} \
             -t ghcr.io/${{ github.repository }}/palazzo:${{ github.sha }} \
             -t ghcr.io/${{ github.repository }}/palazzo:latest \
             .
@@ -50,8 +51,8 @@ jobs:
             set -eu
 
             test -n "${{ vars.PROGRAM_ID }}"
-            test -s /etc/palazzo/control-token
             docker network inspect broadcast-control >/dev/null
+            test -s /etc/palazzo/control-token
             mkdir -p /opt/palazzo/fillers
             if docker inspect palazzo-candidate >/dev/null 2>&1 || docker inspect palazzo-rollback >/dev/null 2>&1; then
               echo "A previous Palazzo deployment candidate or rollback container requires operator review"
@@ -69,12 +70,13 @@ jobs:
 
             docker run -d --name palazzo-candidate \
               --network broadcast-control \
+              --volume /etc/palazzo/control-token:/run/secrets/palazzo-control-token:ro \
               -e PALAZZO_PORT=3100 \
               -e PALAZZO_INSTANCE_ID=palazzo-production-candidate \
               -e PROGRAM_ID="${{ vars.PROGRAM_ID }}" \
+              -e PALAZZO_CONTROL_TOKEN_FILE=/run/secrets/palazzo-control-token \
               -e ICECAST_PORT=8000 \
               -e ICECAST_SOURCE_PASSWORD="${{ secrets.ICECAST_SOURCE_PASSWORD }}" \
-              --volume /etc/palazzo/control-token:/run/secrets/palazzo-control-token:ro \
               "$IMAGE"
 
             candidate_ready=false
@@ -103,14 +105,15 @@ jobs:
 
             if ! docker run -d --name palazzo \
               --network broadcast-control \
+              --volume /etc/palazzo/control-token:/run/secrets/palazzo-control-token:ro \
               -p 127.0.0.1:${{ vars.PALAZZO_PORT }}:3100 \
               -p 127.0.0.1:${{ vars.ICECAST_PORT }}:8000 \
               -e PALAZZO_PORT=3100 \
               -e PALAZZO_INSTANCE_ID=palazzo-production \
               -e PROGRAM_ID="${{ vars.PROGRAM_ID }}" \
+              -e PALAZZO_CONTROL_TOKEN_FILE=/run/secrets/palazzo-control-token \
               -e ICECAST_PORT=8000 \
               -e ICECAST_SOURCE_PASSWORD="${{ secrets.ICECAST_SOURCE_PASSWORD }}" \
-              --volume /etc/palazzo/control-token:/run/secrets/palazzo-control-token:ro \
               --volume /opt/palazzo/fillers:/var/lib/palazzo/fillers \
               --restart=always \
               "$IMAGE"; then

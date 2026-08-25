@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
+import { Gauge, Registry, collectDefaultMetrics } from 'prom-client';
 import {
   Observable,
   Subject,
@@ -106,6 +107,16 @@ export interface PlaybackState {
 
 const MAX_REPLAY_EVENTS = 512;
 const LEVEL_EVENT_INTERVAL_MS = 100;
+const BUILD_VERSION_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
+const NORMALIZED_METHODS = new Set([
+  'DELETE',
+  'GET',
+  'HEAD',
+  'OPTIONS',
+  'PATCH',
+  'POST',
+  'PUT',
+]);
 const NORMALIZED_ROUTES = new Set([
   '/status',
   '/song',
@@ -156,13 +167,44 @@ export class PlaybackTelemetryService {
   private levelSamplesCoalesced = 0;
   private replayLevelsDropped = 0;
   private replayOtherDropped = 0;
+  private readonly dependencyResults = new Map<string, number>();
   private readonly httpMetrics = new Map<
     string,
     { count: number; durationSeconds: number }
   >();
+  private readonly baselineRegistry = new Registry();
 
   constructor(config: ConfigService) {
     this.instanceId = config.get<string>('PALAZZO_INSTANCE_ID') ?? 'palazzo';
+    collectDefaultMetrics({
+      prefix: 'palazzo_',
+      register: this.baselineRegistry,
+    });
+    // Node handle/resource type labels can expand with library-defined async
+    // resource names. Keep the managed scrape contract strictly bounded while
+    // retaining the remaining process and runtime baseline.
+    for (const name of [
+      'palazzo_nodejs_active_handles',
+      'palazzo_nodejs_active_handles_total',
+      'palazzo_nodejs_active_requests',
+      'palazzo_nodejs_active_requests_total',
+      'palazzo_nodejs_active_resources',
+      'palazzo_nodejs_active_resources_total',
+    ]) {
+      this.baselineRegistry.removeSingleMetric(name);
+    }
+    const configuredVersion =
+      config.get<string>('PALAZZO_BUILD_VERSION')?.trim() || 'development';
+    const version = BUILD_VERSION_PATTERN.test(configuredVersion)
+      ? configuredVersion
+      : 'unknown';
+    const buildInfo = new Gauge({
+      name: 'palazzo_build_info',
+      help: 'Palazzo service build identity.',
+      labelNames: ['service', 'version'] as const,
+      registers: [this.baselineRegistry],
+    });
+    buildInfo.set({ service: 'palazzo', version }, 1);
   }
 
   apply(
@@ -256,6 +298,14 @@ export class PlaybackTelemetryService {
     this.processRestarts += 1;
   }
 
+  observeDependency(
+    operation: 'process_exit' | 'telemetry_poll',
+    result: 'failure' | 'parse_failure' | 'success',
+  ): void {
+    const key = `${operation}\t${result}`;
+    this.dependencyResults.set(key, (this.dependencyResults.get(key) ?? 0) + 1);
+  }
+
   shutdown(): void {
     this.live.complete();
   }
@@ -266,10 +316,16 @@ export class PlaybackTelemetryService {
     statusCode: number,
     durationMs: number,
   ): void {
+    const normalizedMethod = NORMALIZED_METHODS.has(method.toUpperCase())
+      ? method.toUpperCase()
+      : 'OTHER';
     const normalizedRoute =
       route && NORMALIZED_ROUTES.has(route) ? route : 'unmatched';
-    const status = `${Math.floor(statusCode / 100)}xx`;
-    const key = `${method.toUpperCase()}\t${normalizedRoute}\t${status}`;
+    const status =
+      statusCode >= 100 && statusCode <= 599
+        ? `${Math.floor(statusCode / 100)}xx`
+        : 'other';
+    const key = `${normalizedMethod}\t${normalizedRoute}\t${status}`;
     const current = this.httpMetrics.get(key) ?? {
       count: 0,
       durationSeconds: 0,
@@ -343,11 +399,11 @@ export class PlaybackTelemetryService {
     });
   }
 
-  renderMetrics(): string {
+  async renderMetrics(): Promise<string> {
     const sampleAge = this.lastSampleAt
       ? Math.max(0, (Date.now() - Date.parse(this.lastSampleAt)) / 1_000)
       : 0;
-    return [
+    const applicationMetrics = [
       '# HELP palazzo_playback_active Whether a track is currently playing.',
       '# TYPE palazzo_playback_active gauge',
       `palazzo_playback_active ${this.track ? 1 : 0}`,
@@ -391,6 +447,7 @@ export class PlaybackTelemetryService {
       '# HELP palazzo_liquidsoap_restarts_total Liquidsoap child restart attempts.',
       '# TYPE palazzo_liquidsoap_restarts_total counter',
       `palazzo_liquidsoap_restarts_total ${this.processRestarts}`,
+      ...this.dependencyMetricLines(),
       '# HELP palazzo_level_samples_coalesced_total Level samples coalesced before SSE emission.',
       '# TYPE palazzo_level_samples_coalesced_total counter',
       `palazzo_level_samples_coalesced_total ${this.levelSamplesCoalesced}`,
@@ -407,6 +464,7 @@ export class PlaybackTelemetryService {
       ...this.httpMetricLines(),
       '',
     ].join('\n');
+    return `${await this.baselineRegistry.metrics()}\n${applicationMetrics}`;
   }
 
   private applyLifecycle(event: LiquidsoapLifecycleEvent): void {
@@ -488,6 +546,26 @@ export class PlaybackTelemetryService {
       lines.push(`palazzo_http_requests_total{${labels}} ${metric.count}`);
       lines.push(
         `palazzo_http_request_duration_seconds_sum{${labels}} ${metric.durationSeconds}`,
+      );
+    }
+    return lines;
+  }
+
+  private dependencyMetricLines(): string[] {
+    const lines = [
+      '# HELP palazzo_dependency_operations_total Liquidsoap dependency operations by bounded operation and result.',
+      '# TYPE palazzo_dependency_operations_total counter',
+      '# HELP palazzo_dependency_retries_total Liquidsoap dependency retry attempts by bounded operation.',
+      '# TYPE palazzo_dependency_retries_total counter',
+      `palazzo_dependency_retries_total{dependency="liquidsoap",operation="process_restart"} ${this.processRestarts}`,
+      `palazzo_dependency_retries_total{dependency="liquidsoap",operation="telnet_connect"} ${this.telnetReconnects}`,
+    ];
+    for (const [key, count] of [...this.dependencyResults].sort(([a], [b]) =>
+      a.localeCompare(b),
+    )) {
+      const [operation, result] = key.split('\t');
+      lines.push(
+        `palazzo_dependency_operations_total{dependency="liquidsoap",operation="${operation}",result="${result}"} ${count}`,
       );
     }
     return lines;
