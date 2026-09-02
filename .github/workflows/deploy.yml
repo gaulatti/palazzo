@@ -197,8 +197,7 @@ jobs:
             '[
               "printf %s " + ($script | @sh) + " | base64 -d > /tmp/deploy-palazzo.sh",
               "chmod 0700 /tmp/deploy-palazzo.sh",
-              "/tmp/deploy-palazzo.sh " + ([$user, $token, $broadcastSecret, $icecastSecret, $image, $nginx, $programId] | map(@sh) | join(" ")),
-              "rm -f /tmp/deploy-palazzo.sh"
+              "deployment_status=0; /tmp/deploy-palazzo.sh " + ([$user, $token, $broadcastSecret, $icecastSecret, $image, $nginx, $programId] | map(@sh) | join(" ")) + " || deployment_status=$?; rm -f /tmp/deploy-palazzo.sh; exit $deployment_status"
             ] | join("\n")')"
           PARAMETERS="$(jq -cn --arg command "$REMOTE_COMMAND" '{commands:[$command],executionTimeout:["600"]}')"
           COMMAND_ID="$(aws ssm send-command \

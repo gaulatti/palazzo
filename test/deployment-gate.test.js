@@ -21,4 +21,6 @@ test('preserves the on-premises gate and adds the fail-closed Cumulus path', () 
   assert.doesNotMatch(workflow, /route53 change-resource-record-sets/);
   assert.match(workflow, /deploy\/cumulus\.sh/);
   assert.match(workflow, /deploy\/cumulus\.nginx\.conf/);
+  assert.match(workflow, /deployment_status=0/);
+  assert.match(workflow, /exit \$deployment_status/);
 });
