@@ -43,6 +43,9 @@ jobs:
       id-token: write
 
     steps:
+      - name: Checkout deployment definitions
+        uses: actions/checkout@v4
+
       - name: Deploy to on-premises host
         if: vars.ON_PREMISES == 'true'
         uses: appleboy/ssh-action@v1.2.0
