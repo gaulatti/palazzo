@@ -23,4 +23,6 @@ test('preserves the on-premises gate and adds the fail-closed Cumulus path', () 
   assert.match(workflow, /deploy\/cumulus\.nginx\.conf/);
   assert.match(workflow, /deployment_status=0/);
   assert.match(workflow, /exit \$deployment_status/);
+  assert.match(workflow, /InvocationDoesNotExist/);
+  assert.match(workflow, /sleep 5\s+continue/);
 });
