@@ -152,8 +152,11 @@ rm -f /tmp/cumulus-palazzo.conf
 nginx -t
 systemctl reload nginx
 certbot --nginx --non-interactive --agree-tos --register-unsafely-without-email --redirect -d palazzo.gaulatti.com
+certbot --nginx --non-interactive --agree-tos --register-unsafely-without-email --redirect -d radio.modoitaliano.fm
 systemctl enable --now certbot-renew.timer
 
 stream_status="$(curl --silent --max-time 5 --output /dev/null --write-out '%{http_code}' https://palazzo.gaulatti.com || true)"
 test "$stream_status" = 200
+radio_stream_status="$(curl --silent --max-time 5 --output /dev/null --write-out '%{http_code}' https://radio.modoitaliano.fm/stream || true)"
+test "$radio_stream_status" = 200
 echo PALAZZO_HEALTHY

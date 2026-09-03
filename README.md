@@ -57,6 +57,9 @@ socket are private interfaces. `/metrics` requires the same mounted bearer
 token as lifecycle control. The provided Compose and deployment mappings bind
 the API to host loopback and join the private `broadcast-control` network;
 publish only Icecast (or route it through a reverse proxy) for listeners.
+On Cumulus, nginx exposes the same stream at `palazzo.gaulatti.com` and the
+Modo Italiano listener hostname `radio.modoitaliano.fm`; the latter redirects
+its root to `/stream` and includes the public CORS header used by radio clients.
 
 Palazzo boots in `reconciliation-required`: container or process startup never
 pretends a prior operator Start/Stop succeeded. Alcantara reconciles it through
