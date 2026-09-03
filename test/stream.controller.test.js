@@ -104,7 +104,7 @@ test('program playback authenticates and preserves the idempotency key', async (
     },
     {
       authorize: async (...args) => calls.push(['authorize', ...args]),
-      requireReady: () => calls.push(['ready']),
+      startFromPlaybackCommand: () => calls.push(['start']),
     },
     {},
   );
@@ -125,7 +125,7 @@ test('program playback authenticates and preserves the idempotency key', async (
 
   assert.deepEqual(calls, [
     ['authorize', 'program-one', 'Bearer token'],
-    ['ready'],
+    ['start'],
     ['play', 'program-one', 'command', payload],
   ]);
 });

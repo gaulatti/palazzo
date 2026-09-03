@@ -114,7 +114,7 @@ export class StreamController {
     @Body() data: ProgramSongPayload,
   ) {
     await this.lifecycle.authorize(programId, authorization);
-    this.lifecycle.requireReady();
+    this.lifecycle.startFromPlaybackCommand();
     return this.streamService.playProgramSong(programId, idempotencyKey, data);
   }
 

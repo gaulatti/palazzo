@@ -41,6 +41,12 @@ the previous song or without its parent. Retries return the original IDs with
 journal lives on the persistent Palazzo data volume, preserving at-most-once
 behavior across process and container restarts.
 
+After a Palazzo process restart, the first authenticated song command moves a
+healthy transport from `reconciliation-required` to Ready before entering the
+playback queue. It still fails closed if Liquidsoap, its control telemetry, or
+the Icecast source connection is unavailable. Explicit lifecycle Start is
+required when Alcantara needs to bind a prepared filler version.
+
 The default journal path is
 `/var/lib/palazzo/fillers/playout-commands.json`, inside the existing
 `palazzo-fillers` volume. `PLAYOUT_COMMAND_JOURNAL_PATH` may override it for

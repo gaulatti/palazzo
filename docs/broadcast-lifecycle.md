@@ -30,6 +30,12 @@ Start refuses a missing or unprepared filler version. The bound version is
 immutable until Stop; filler edits prepare a later version without changing the
 active session. See [radio-filler.md](radio-filler.md).
 
+An authenticated program-scoped song command also reconciles
+`reconciliation-required` to Ready when Liquidsoap, control telemetry, and
+Icecast are all healthy. This preserves direct Alcantara playout across a
+Palazzo process restart without weakening the dependency checks. Explicit
+Start remains the path that binds an immutable prepared filler version.
+
 ## State and failure semantics
 
 On every Palazzo process boot, requested and actual state begin as
