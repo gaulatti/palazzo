@@ -1,5 +1,8 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
+const { mkdtemp } = require('node:fs/promises');
+const { tmpdir } = require('node:os');
+const { join } = require('node:path');
 const { firstValueFrom, take, toArray } = require('rxjs');
 const {
   PlaybackTelemetryService,
@@ -127,7 +130,9 @@ test('starts every SSE connection with a snapshot and then replays after Last-Ev
   assert.notEqual(events[1].id, started.id);
   assert.ok(events[1].sequence > events[0].sequence);
   assert.equal(
-    (await telemetry.renderMetrics()).match(/event="started"} 1/g)?.length,
+    (await telemetry.renderMetrics()).match(
+      /palazzo_track_lifecycle_total\{event="started"\} 1/g,
+    )?.length,
     1,
   );
 });
@@ -160,7 +165,9 @@ test('publishes correlated intro lifecycle and clears ended intro levels', async
 
   assert.equal(telemetry.getState().intro.playbackId, 'intro-1');
   assert.deepEqual(telemetry.getState().levels.intro, { rms: 0.2, peak: 0.4 });
-  const started = telemetry.replay.find((event) => event.type === 'intro.started');
+  const started = telemetry.replay.find(
+    (event) => event.type === 'intro.started',
+  );
   assert.equal(started.data.parentPlaybackId, 'request-1');
 
   telemetry.apply(
@@ -203,14 +210,12 @@ test('uses stable instance and per-boot IDs with bounded metric labels', async (
 
 test('rebases lifecycle deduplication after a Liquidsoap sequence reset', async () => {
   const telemetry = service();
-  telemetry.apply(
-    snapshot({ liquidsoap_sequence: 20 }),
-    [lifecycle(20, 'track_started')],
-  );
-  telemetry.apply(
-    snapshot({ liquidsoap_sequence: 1 }),
-    [lifecycle(1, 'track_started')],
-  );
+  telemetry.apply(snapshot({ liquidsoap_sequence: 20 }), [
+    lifecycle(20, 'track_started'),
+  ]);
+  telemetry.apply(snapshot({ liquidsoap_sequence: 1 }), [
+    lifecycle(1, 'track_started'),
+  ]);
 
   assert.match(
     await telemetry.renderMetrics(),
@@ -266,7 +271,10 @@ test('renders a parseable process, build, dependency, and retry baseline', async
   assert.ok(!names.has('palazzo_nodejs_active_handles'));
   assert.ok(!names.has('palazzo_nodejs_active_requests'));
   assert.ok(!names.has('palazzo_nodejs_active_resources'));
-  assert.match(metrics, /palazzo_build_info\{service="palazzo",version="unknown"\} 1/);
+  assert.match(
+    metrics,
+    /palazzo_build_info\{service="palazzo",version="unknown"\} 1/,
+  );
   assert.match(metrics, /operation="telemetry_poll",result="success"/);
   assert.match(metrics, /operation="telemetry_poll",result="parse_failure"/);
   assert.match(metrics, /operation="telnet_connect"\} 1/);
@@ -289,13 +297,131 @@ test('preserves lifecycle ordering after level replay pressure', () => {
   for (let index = 0; index < 700; index += 1) {
     telemetry.emit('audio.levels', { index });
   }
-  telemetry.apply(
-    snapshot({ liquidsoap_sequence: 2, playing: false }),
-    [lifecycle(1, 'track_started'), lifecycle(2, 'track_ended')],
-  );
+  telemetry.apply(snapshot({ liquidsoap_sequence: 2, playing: false }), [
+    lifecycle(1, 'track_started'),
+    lifecycle(2, 'track_ended'),
+  ]);
 
   const lifecycleTypes = telemetry.replay
     .filter((event) => event.type.startsWith('track.'))
     .map((event) => event.type);
   assert.deepEqual(lifecycleTypes, ['track.started', 'track.ended']);
+});
+
+test('emits authoritative transition timestamps without media URLs', async () => {
+  const telemetry = service();
+  telemetry.setLiquidsoapRunning(true);
+  telemetry.apply(snapshot(), [lifecycle(1, 'track_started')]);
+  telemetry.expectTrackEnd('skipped');
+  telemetry.apply(snapshot({ liquidsoap_sequence: 2, playing: false }), [
+    lifecycle(1, 'track_started'),
+    lifecycle(2, 'track_ended'),
+  ]);
+  telemetry.apply(
+    snapshot({ liquidsoap_sequence: 3, playback_request_id: 'request-2' }),
+    [
+      lifecycle(1, 'track_started'),
+      lifecycle(2, 'track_ended'),
+      {
+        ...lifecycle(3, 'track_started'),
+        playback_request_id: 'request-2',
+        playback_id: 'request-2',
+      },
+    ],
+  );
+
+  const transitions = telemetry.replay.filter((event) =>
+    event.type.startsWith('playout.'),
+  );
+  assert.deepEqual(
+    transitions.map((event) => event.type),
+    [
+      'playout.started',
+      'playout.skipped',
+      'playout.started',
+      'playout.transitioned',
+    ],
+  );
+  assert.equal(
+    transitions[0].occurredAt,
+    new Date(1_700_000_001 * 1000).toISOString(),
+  );
+  assert.equal(
+    transitions[1].occurredAt,
+    new Date(1_700_000_002 * 1000).toISOString(),
+  );
+  assert.doesNotMatch(JSON.stringify(telemetry.replay), /https?:\/\//);
+  const initial = await firstValueFrom(telemetry.subscribe());
+  assert.doesNotMatch(JSON.stringify(initial), /https?:\/\//);
+  const metrics = await telemetry.renderMetrics();
+  assert.match(metrics, /event="transitioned"\} 1/);
+  assertBoundedLabels(parseExposition(metrics));
+});
+
+test('keeps preflight metric outcomes and reasons bounded', async () => {
+  const telemetry = service();
+  const data = {
+    programId: 'program-one',
+    playbackId: 'playback-one',
+    kind: 'song',
+    checkedAt: '2026-09-06T12:00:00.000Z',
+    expiresAt: '2026-09-06T12:05:00.000Z',
+  };
+  telemetry.reportPreflight('ready', 'none', data);
+  telemetry.reportPreflight('reused', 'cache_hit', data);
+  for (const reason of [
+    'outside_lookahead',
+    'missing',
+    'unreachable',
+    'timeout',
+    'corrupt',
+    'unsupported_media',
+    'invalid_metadata',
+  ]) {
+    telemetry.reportPreflight('failed', reason, data);
+  }
+
+  assertBoundedLabels(parseExposition(await telemetry.renderMetrics()));
+});
+
+test('persists a sequence reservation so a restarted process exposes a detectable gap', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'palazzo-events-'));
+  const path = join(directory, 'sequence.json');
+  const first = service({ PLAYBACK_EVENT_SEQUENCE_PATH: path });
+  await first.initialize();
+  first.reportPlayout(
+    'queued',
+    { playbackId: 'one' },
+    '2026-09-06T12:00:00.000Z',
+  );
+  const lastSequence = first.getState().sequence;
+
+  const restarted = service({ PLAYBACK_EVENT_SEQUENCE_PATH: path });
+  await restarted.initialize();
+  const snapshotEvent = await firstValueFrom(
+    restarted.subscribe(`${first.bootId}:${lastSequence}`),
+  );
+
+  assert.equal(snapshotEvent.type, 'snapshot');
+  assert.notEqual(snapshotEvent.bootId, first.bootId);
+  assert.ok(snapshotEvent.sequence > lastSequence);
+});
+
+test('distinguishes operator stops from natural ends using engine timestamps', () => {
+  const telemetry = service();
+  telemetry.apply(snapshot(), [lifecycle(1, 'track_started')]);
+  telemetry.expectTrackEnd('stopped');
+  telemetry.apply(snapshot({ liquidsoap_sequence: 2, playing: false }), [
+    lifecycle(1, 'track_started'),
+    lifecycle(2, 'track_ended'),
+  ]);
+
+  const stopped = telemetry.replay.find(
+    (event) => event.type === 'playout.stopped',
+  );
+  assert.equal(stopped.data.reason, 'operator');
+  assert.equal(
+    stopped.occurredAt,
+    new Date(1_700_000_002 * 1000).toISOString(),
+  );
 });

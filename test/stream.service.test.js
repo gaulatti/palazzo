@@ -13,7 +13,7 @@ function streamService() {
   const telemetry = new PlaybackTelemetryService(config);
   const service = new StreamService(config, telemetry, {
     initialize: async () => undefined,
-    activePlaylistPath: '/run/palazzo/active-filler.m3u',
+    activePlaylistPath: "/run/palazzo/active-filler.m3u",
   });
   const commands = [];
   service.telnet = {
@@ -150,7 +150,11 @@ test("prepares an intro before replacing the song and deduplicates retries", asy
     },
   };
 
-  const first = await service.playProgramSong("program-one", "command-42", payload);
+  const first = await service.playProgramSong(
+    "program-one",
+    "command-42",
+    payload,
+  );
   const duplicate = await service.playProgramSong(
     "program-one",
     "command-42",
@@ -177,14 +181,26 @@ test("prepares an intro before replacing the song and deduplicates retries", asy
   assert.equal(first.introPlaybackId, "intro-42");
   assert.equal(duplicate.duplicate, true);
   assert.equal(reordered.duplicate, true);
-  assert.equal(commands.filter((command) => command.startsWith("songs.push")).length, 1);
+  assert.equal(
+    commands.filter((command) => command.startsWith("songs.push")).length,
+    1,
+  );
   assert.ok(
     commands.indexOf("intros.flush_and_skip") <
       commands.findIndex((command) => command.startsWith("songs.flush")),
   );
-  assert.match(commands.find((command) => command.startsWith("intros.push")), /liq_amplify="0.7"/);
-  assert.match(commands.find((command) => command.startsWith("intros.push")), /palazzo_parent_playback_id="song-42"/);
-  assert.equal(JSON.parse(await readFile(join(directory, "commands.json"))).length, 1);
+  assert.match(
+    commands.find((command) => command.startsWith("intros.push")),
+    /liq_amplify="0.7"/,
+  );
+  assert.match(
+    commands.find((command) => command.startsWith("intros.push")),
+    /palazzo_parent_playback_id="song-42"/,
+  );
+  assert.equal(
+    JSON.parse(await readFile(join(directory, "commands.json"))).length,
+    1,
+  );
 });
 
 test("intro readiness failure degrades to song-only playout", async () => {
@@ -211,10 +227,147 @@ test("intro readiness failure degrades to song-only playout", async () => {
   });
 
   assert.equal(result.introPlaybackId, null);
-  assert.equal(commands.some((command) => command.startsWith("intros.push")), false);
-  assert.equal(commands.some((command) => command.startsWith("songs.push")), true);
+  assert.equal(
+    commands.some((command) => command.startsWith("intros.push")),
+    false,
+  );
+  assert.equal(
+    commands.some((command) => command.startsWith("songs.push")),
+    true,
+  );
   assert.equal(telemetry.getState().intro.status, "failed");
-  assert.match(await telemetry.renderMetrics(), /result="failed",reason="asset_unavailable"\} 1/);
+  const fallback = telemetry.replay.find(
+    (event) => event.type === "playout.fallback",
+  );
+  assert.equal(fallback.data.policy, "song_only");
+  assert.equal(fallback.data.failedPlaybackId, "intro");
+  assert.match(
+    await telemetry.renderMetrics(),
+    /result="failed",reason="asset_unavailable"\} 1/,
+  );
+});
+
+test("preflights valid, missing, corrupt, and slow assets without touching the active queue", async () => {
+  const { service, commands } = streamService();
+  service.assetProbe = async (url) => {
+    if (url.includes("missing")) throw new Error("HTTP error 404 Not Found");
+    if (url.includes("corrupt"))
+      throw new Error("Invalid data found when processing input");
+    if (url.includes("slow")) {
+      const error = new Error("probe timed out");
+      error.code = "ETIMEDOUT";
+      throw error;
+    }
+    return {
+      mediaType: "audio",
+      format: "mp3",
+      codec: "mp3",
+      durationSeconds: 120,
+      sampleRateHz: 48000,
+      channels: 2,
+      readablePacketBytes: 512,
+    };
+  };
+  const scheduledAt = new Date(Date.now() + 60_000).toISOString();
+  const result = await service.preflightProgramAssets("program-one", {
+    assets: ["valid", "missing", "corrupt", "slow"].map((name) => ({
+      programId: "program-one",
+      playbackId: name,
+      kind: "song",
+      url: `https://example.test/${name}.mp3`,
+      scheduledAt,
+    })),
+  });
+
+  assert.deepEqual(
+    result.assets.map(({ readiness, reason }) => ({ readiness, reason })),
+    [
+      { readiness: "ready", reason: "ready" },
+      { readiness: "quarantined", reason: "missing" },
+      { readiness: "quarantined", reason: "corrupt" },
+      { readiness: "quarantined", reason: "timeout" },
+    ],
+  );
+  assert.equal(result.assets[0].media.durationSeconds, 120);
+  assert.equal(
+    result.assets.some((asset) => "url" in asset),
+    false,
+  );
+  assert.deepEqual(commands, []);
+});
+
+test("enforces lookahead, concurrency, and bounded readiness-cache limits", async () => {
+  const { service } = streamService();
+  service.preflightConcurrency = 2;
+  service.preflightCacheEntries = 2;
+  service.preflightLookaheadMs = 120_000;
+  let active = 0;
+  let peak = 0;
+  service.assetProbe = async () => {
+    active += 1;
+    peak = Math.max(peak, active);
+    await new Promise((resolve) => setImmediate(resolve));
+    active -= 1;
+    return {
+      mediaType: "audio",
+      format: "mp3",
+      codec: "mp3",
+      durationSeconds: 30,
+      sampleRateHz: 44100,
+      channels: 2,
+      readablePacketBytes: 256,
+    };
+  };
+  const now = Date.now();
+  const assets = [0, 1].map((index) => ({
+    programId: "program-one",
+    playbackId: `asset-${index}`,
+    kind: "song",
+    url: `https://example.test/${index}.mp3`,
+    scheduledAt: new Date(now + 30_000).toISOString(),
+  }));
+  const first = await service.preflightProgramAssets("program-one", { assets });
+  const reused = await service.preflightProgramAssets("program-one", {
+    assets: [assets[1]],
+  });
+  const outside = await service.preflightProgramAssets("program-one", {
+    assets: [
+      {
+        ...assets[0],
+        playbackId: "outside",
+        scheduledAt: new Date(now + 300_000).toISOString(),
+      },
+    ],
+  });
+
+  assert.equal(peak, 2);
+  assert.equal(first.limits.cacheEntries, 2);
+  assert.equal(reused.assets[0].reused, true);
+  assert.equal(outside.assets[0].reason, "outside_lookahead");
+  assert.equal(service.getProgramPreflight("program-one").assets.length, 2);
+});
+
+test("rejects an invalid song before queue mutation and records a bounded preflight metric", async () => {
+  const { service, commands, telemetry } = streamService();
+  service.assetProbe = async () => {
+    throw new Error("No such file");
+  };
+  await assert.rejects(
+    service.playProgramSong("program-one", "command", {
+      song: {
+        programId: "program-one",
+        playbackId: "missing-song",
+        url: "https://example.test/missing.mp3",
+      },
+    }),
+    /song asset is not ready/,
+  );
+
+  assert.deepEqual(commands, []);
+  assert.match(
+    await telemetry.renderMetrics(),
+    /palazzo_media_preflight_total\{result="failed",reason="missing"\} 1/,
+  );
 });
 
 test("rejects cross-program assets before touching Liquidsoap", async () => {
@@ -267,5 +420,8 @@ test("records successful and malformed Liquidsoap telemetry poll outcomes", asyn
 
   const metrics = await telemetry.renderMetrics();
   assert.match(metrics, /operation="telemetry_poll",result="success"\} 1/);
-  assert.match(metrics, /operation="telemetry_poll",result="parse_failure"\} 1/);
+  assert.match(
+    metrics,
+    /operation="telemetry_poll",result="parse_failure"\} 1/,
+  );
 });

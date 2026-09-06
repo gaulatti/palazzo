@@ -33,6 +33,12 @@ Alcantara supplies authoritative URLs and IDs:
 ```
 
 Palazzo probes the song and optional intro before replacing the current song.
+The probe opens at least one audio packet and verifies format, duration, codec,
+sample rate, and channel count. A missing, corrupt, timed-out, unreachable, or
+non-audio song is quarantined and rejected before any Liquidsoap command. An
+invalid intro follows the explicit `song_only` fallback policy. It emits
+`preflight.failed`, `intro.failed`, and `playout.fallback` without exposing the
+media URL.
 It durably reserves the idempotency key, preloads the intro queue, arms it for
 the supplied parent song ID, and replaces the song. Liquidsoap keeps the intro
 source unavailable until that exact song begins, so an intro cannot play over
@@ -64,26 +70,66 @@ fades, and `duckGain` to the song mix. Manual instants remain on the separate
 
 All routes require the same program-scoped bearer authentication.
 
-| Method | Route | Purpose |
-| --- | --- | --- |
-| POST | `/playback/song` | Atomic song plus optional intro |
-| POST | `/playback/song/stop` | Stop the song queue |
-| POST | `/playback/instant` | Play an independent manual instant; body includes matching `programId`, authoritative `playbackId`, URL, and optional volume |
-| POST | `/playback/instant/stop` | Stop manual instants |
-| GET | `/playback/state` | Authoritative song, intro, position, and levels |
-| GET | `/playback/events` | Replay-safe SSE lifecycle stream |
-| GET | `/mixer` | Applied mixer state |
-| PUT | `/mixer` | Update mixer state |
+| Method | Route                    | Purpose                                                                                                                      |
+| ------ | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| POST   | `/playback/song`         | Atomic song plus optional intro                                                                                              |
+| POST   | `/playback/song/stop`    | Stop the song queue                                                                                                          |
+| PUT    | `/playback/preflight`    | Probe a bounded list of upcoming assets                                                                                      |
+| GET    | `/playback/preflight`    | Read current ready/quarantined/expired states                                                                                |
+| POST   | `/playback/instant`      | Play an independent manual instant; body includes matching `programId`, authoritative `playbackId`, URL, and optional volume |
+| POST   | `/playback/instant/stop` | Stop manual instants                                                                                                         |
+| GET    | `/playback/state`        | Authoritative song, intro, position, and levels                                                                              |
+| GET    | `/playback/events`       | Replay-safe SSE lifecycle stream                                                                                             |
+| GET    | `/mixer`                 | Applied mixer state                                                                                                          |
+| PUT    | `/mixer`                 | Update mixer state                                                                                                           |
 
 The event stream adds `intro.started`, `intro.ended`, and `intro.failed`.
 Each event carries the intro playback ID, parent song playback ID, program ID,
-request correlation, and authoritative URL where applicable. State exposes the
-active or most recent failed intro.
+request correlation. State exposes the active or most recent failed intro.
+SSE data removes all URL- and credential-shaped fields; callers obtain signed
+media URLs from their scheduling owner, never from the event journal.
+
+## Ahead-of-air preflight
+
+`PUT /v1/programs/{programId}/playback/preflight` accepts a bounded batch of
+upcoming assets:
+
+```json
+{
+  "assets": [
+    {
+      "programId": "program-1",
+      "playbackId": "song-playback-42",
+      "kind": "song",
+      "url": "https://media.example/signed/song.mp3",
+      "scheduledAt": "2026-09-06T18:15:00.000Z"
+    }
+  ]
+}
+```
+
+The default lookahead is 900 seconds, batch size is 20, concurrency is two,
+readiness retention is 300 seconds, and probe timeout is ten seconds.
+Configuration is clamped to 1–86,400 seconds of lookahead, 1–100 assets per
+batch, 1–8 concurrent probes, 1–512 retained states, 1–3,600 seconds of TTL,
+and 100–30,000 ms per probe. Work outside the window is deterministically
+quarantined as `outside_lookahead`. Readiness metadata is a bounded
+least-recently-used cache; Palazzo deliberately warms zero media bytes so it
+does not assume ownership of expiring signed content.
+
+Each response reports `ready`, `quarantined`, or `expired`, a closed reason,
+`checkedAt`, `expiresAt`, and verified media facts. A matching unexpired URL
+digest is reused. The public result never returns the URL or its digest.
 
 The private metrics endpoint exposes
 `palazzo_paired_playout_commands_total` and
 `palazzo_intro_lifecycle_total`. Their result and reason labels are closed
-enums; IDs, URLs, program names, and error strings never become labels.
+enums; IDs, URLs, program names, and error strings never become labels. The
+preflight and transition contracts add `palazzo_media_preflight_total` and
+`palazzo_playout_transitions_total` with closed reason/event labels.
+
+See [Media preflight runbook](media-preflight-runbook.md) for quarantine,
+fallback, and consumer recovery procedures.
 
 Legacy root routes remain available during Alcantara migration, but new callers
 should use this program-scoped contract.

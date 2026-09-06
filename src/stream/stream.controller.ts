@@ -21,6 +21,7 @@ import {
   type MixerPayload,
   type ProgramSongPayload,
   type ProgramInstantPayload,
+  type ProgramPreflightRequest,
 } from "./stream.service";
 import { BroadcastLifecycleService } from "./broadcast-lifecycle.service";
 import {
@@ -73,22 +74,22 @@ export class StreamController {
     return this.lifecycle.start(idempotencyKey, commandSequence, fillerVersion);
   }
 
-  @Get('v1/programs/:programId/fillers/:version')
+  @Get("v1/programs/:programId/fillers/:version")
   async getFiller(
-    @Param('programId') programId: string,
-    @Param('version') version: string,
-    @Headers('authorization') authorization?: string,
+    @Param("programId") programId: string,
+    @Param("version") version: string,
+    @Headers("authorization") authorization?: string,
   ) {
     await this.lifecycle.authorize(programId, authorization);
     return this.fillerStore.getPublicState(version);
   }
 
-  @Put('v1/programs/:programId/fillers/:version')
+  @Put("v1/programs/:programId/fillers/:version")
   async prepareFiller(
-    @Param('programId') programId: string,
-    @Param('version') version: string,
-    @Headers('authorization') authorization: string | undefined,
-    @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @Param("programId") programId: string,
+    @Param("version") version: string,
+    @Headers("authorization") authorization: string | undefined,
+    @Headers("idempotency-key") idempotencyKey: string | undefined,
     @Body() request: FillerPreparationRequest,
   ) {
     await this.lifecycle.authorize(programId, authorization);
@@ -116,6 +117,25 @@ export class StreamController {
     await this.lifecycle.authorize(programId, authorization);
     this.lifecycle.startFromPlaybackCommand();
     return this.streamService.playProgramSong(programId, idempotencyKey, data);
+  }
+
+  @Put("v1/programs/:programId/playback/preflight")
+  async preflightProgramAssets(
+    @Param("programId") programId: string,
+    @Headers("authorization") authorization: string | undefined,
+    @Body() data: ProgramPreflightRequest,
+  ) {
+    await this.lifecycle.authorize(programId, authorization);
+    return this.streamService.preflightProgramAssets(programId, data);
+  }
+
+  @Get("v1/programs/:programId/playback/preflight")
+  async getProgramPreflight(
+    @Param("programId") programId: string,
+    @Headers("authorization") authorization: string | undefined,
+  ) {
+    await this.lifecycle.authorize(programId, authorization);
+    return this.streamService.getProgramPreflight(programId);
   }
 
   @Post("v1/programs/:programId/playback/song/stop")
