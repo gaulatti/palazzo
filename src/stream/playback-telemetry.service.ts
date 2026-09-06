@@ -1,6 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import { Gauge, Registry, collectDefaultMetrics } from 'prom-client';
 import {
   Observable,
@@ -14,11 +16,7 @@ import {
 
 export interface LiquidsoapLifecycleEvent {
   sequence: number;
-  event_type:
-    | 'track_started'
-    | 'track_ended'
-    | 'intro_started'
-    | 'intro_ended';
+  event_type: 'track_started' | 'track_ended' | 'intro_started' | 'intro_ended';
   playback_request_id: string;
   playback_id: string;
   parent_playback_id: string;
@@ -69,6 +67,14 @@ export type PlaybackEventType =
   | 'intro.started'
   | 'intro.ended'
   | 'intro.failed'
+  | 'playout.queued'
+  | 'preflight.ready'
+  | 'preflight.failed'
+  | 'playout.started'
+  | 'playout.transitioned'
+  | 'playout.stopped'
+  | 'playout.skipped'
+  | 'playout.fallback'
   | 'playback.position'
   | 'audio.levels'
   | 'heartbeat';
@@ -136,6 +142,7 @@ export interface PlaybackState {
 }
 
 const MAX_REPLAY_EVENTS = 512;
+const SEQUENCE_RESERVATION_SIZE = 1_000_000_000;
 const LEVEL_EVENT_INTERVAL_MS = 100;
 const BUILD_VERSION_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
 const NORMALIZED_METHODS = new Set([
@@ -166,6 +173,7 @@ const NORMALIZED_ROUTES = new Set([
   '/v1/programs/:programId/playback/song/stop',
   '/v1/programs/:programId/playback/instant',
   '/v1/programs/:programId/playback/instant/stop',
+  '/v1/programs/:programId/playback/preflight',
   '/v1/programs/:programId/playback/state',
   '/v1/programs/:programId/playback/events',
   '/v1/programs/:programId/mixer',
@@ -177,6 +185,8 @@ export class PlaybackTelemetryService {
   readonly bootId = randomUUID();
 
   private sequence = 0;
+  private sequenceCeiling = SEQUENCE_RESERVATION_SIZE;
+  private readonly sequenceJournalPath: string;
   private liquidsoapSequence = 0;
   private running = false;
   private connected = false;
@@ -208,6 +218,14 @@ export class PlaybackTelemetryService {
   private readonly dependencyResults = new Map<string, number>();
   private readonly pairedCommandResults = new Map<string, number>();
   private readonly introLifecycleResults = new Map<string, number>();
+  private readonly preflightResults = new Map<string, number>();
+  private readonly playoutTransitions = new Map<string, number>();
+  private pendingTrackEnd: {
+    disposition: 'skipped' | 'stopped';
+    expiresAt: number;
+  } | null = null;
+  private lastEndedTrack: { playbackId: string; occurredAt: number } | null =
+    null;
   private readonly httpMetrics = new Map<
     string,
     { count: number; durationSeconds: number }
@@ -216,6 +234,9 @@ export class PlaybackTelemetryService {
 
   constructor(config: ConfigService) {
     this.instanceId = config.get<string>('PALAZZO_INSTANCE_ID') ?? 'palazzo';
+    this.sequenceJournalPath =
+      config.get<string>('PLAYBACK_EVENT_SEQUENCE_PATH')?.trim() ||
+      '/var/lib/palazzo/fillers/playback-event-sequence.json';
     collectDefaultMetrics({
       prefix: 'palazzo_',
       register: this.baselineRegistry,
@@ -245,6 +266,46 @@ export class PlaybackTelemetryService {
       registers: [this.baselineRegistry],
     });
     buildInfo.set({ service: 'palazzo', version }, 1);
+  }
+
+  /**
+   * Reserves a durable sequence range before telemetry begins. A new process
+   * therefore has a fresh boot ID and a sequence greater than any value the
+   * previous process could have emitted from its reserved range. Consumers can
+   * detect the boot boundary and reconcile from the mandatory snapshot.
+   */
+  async initialize(): Promise<void> {
+    let nextSequence = 0;
+    try {
+      const parsed = JSON.parse(
+        await readFile(this.sequenceJournalPath, 'utf8'),
+      ) as { nextSequence?: unknown };
+      if (
+        typeof parsed.nextSequence === 'number' &&
+        Number.isSafeInteger(parsed.nextSequence) &&
+        parsed.nextSequence >= 0
+      ) {
+        nextSequence = parsed.nextSequence;
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw new Error('playback event sequence journal is unavailable');
+      }
+    }
+    this.sequence = nextSequence;
+    this.sequenceCeiling = nextSequence + SEQUENCE_RESERVATION_SIZE;
+    if (!Number.isSafeInteger(this.sequenceCeiling)) {
+      throw new Error('playback event sequence is exhausted');
+    }
+    const directory = dirname(this.sequenceJournalPath);
+    const temporary = `${this.sequenceJournalPath}.tmp`;
+    await mkdir(directory, { recursive: true });
+    await writeFile(
+      temporary,
+      JSON.stringify({ nextSequence: this.sequenceCeiling }),
+      { mode: 0o600 },
+    );
+    await rename(temporary, this.sequenceJournalPath);
   }
 
   apply(
@@ -409,6 +470,55 @@ export class PlaybackTelemetryService {
     this.emit('intro.failed', data, occurredAt);
   }
 
+  reportPreflight(
+    result: 'ready' | 'failed' | 'reused',
+    reason:
+      | 'none'
+      | 'cache_hit'
+      | 'outside_lookahead'
+      | 'missing'
+      | 'unreachable'
+      | 'timeout'
+      | 'corrupt'
+      | 'unsupported_media'
+      | 'invalid_metadata',
+    data: {
+      programId: string;
+      playbackId: string;
+      kind: 'song' | 'intro' | 'instant';
+      checkedAt: string;
+      expiresAt: string;
+    },
+  ): void {
+    const key = `${result}\t${reason}`;
+    this.preflightResults.set(key, (this.preflightResults.get(key) ?? 0) + 1);
+    this.emit(result === 'failed' ? 'preflight.failed' : 'preflight.ready', {
+      ...data,
+      reason,
+      reused: result === 'reused',
+    });
+  }
+
+  reportPlayout(
+    event: 'queued' | 'fallback',
+    data: Record<string, unknown>,
+    occurredAt = new Date().toISOString(),
+  ): void {
+    this.countPlayoutTransition(event);
+    this.emit(`playout.${event}`, data, occurredAt);
+  }
+
+  expectTrackEnd(disposition: 'skipped' | 'stopped'): void {
+    this.pendingTrackEnd = {
+      disposition,
+      expiresAt: Date.now() + 30_000,
+    };
+  }
+
+  cancelExpectedTrackEnd(): void {
+    this.pendingTrackEnd = null;
+  }
+
   shutdown(): void {
     this.live.complete();
   }
@@ -477,7 +587,7 @@ export class PlaybackTelemetryService {
       sequence: snapshot.sequence,
       type: 'snapshot',
       occurredAt: new Date().toISOString(),
-      data: { state: snapshot },
+      data: sanitizeEventData({ state: snapshot }),
     };
     const coalescedLive = merge(
       this.live.pipe(
@@ -578,7 +688,6 @@ export class PlaybackTelemetryService {
       title: event.title || null,
       artist: event.artist || null,
       coverUrl: event.cover_url || null,
-      url: event.url,
       liquidsoapSequence: event.sequence,
     };
     const occurredAt = new Date(event.occurred_at * 1_000).toISOString();
@@ -593,20 +702,28 @@ export class PlaybackTelemetryService {
         status: 'playing',
       };
       this.observeIntroLifecycle('started', 'none');
-      this.emit('intro.started', {
-        ...data,
-        playbackId: event.playback_id,
-        parentPlaybackId: event.parent_playback_id,
-        programId: event.program_id,
-      }, occurredAt);
+      this.emit(
+        'intro.started',
+        {
+          ...data,
+          playbackId: event.playback_id,
+          parentPlaybackId: event.parent_playback_id,
+          programId: event.program_id,
+        },
+        occurredAt,
+      );
     } else if (event.event_type === 'intro_ended') {
       this.observeIntroLifecycle('ended', 'none');
-      this.emit('intro.ended', {
-        ...data,
-        playbackId: event.playback_id,
-        parentPlaybackId: event.parent_playback_id,
-        programId: event.program_id,
-      }, occurredAt);
+      this.emit(
+        'intro.ended',
+        {
+          ...data,
+          playbackId: event.playback_id,
+          parentPlaybackId: event.parent_playback_id,
+          programId: event.program_id,
+        },
+        occurredAt,
+      );
       if (this.intro?.playbackId === event.playback_id) this.intro = null;
     } else if (event.event_type === 'track_started') {
       this.lifecycleStarted += 1;
@@ -619,12 +736,78 @@ export class PlaybackTelemetryService {
         startedAt: occurredAt,
       };
       this.emit('track.started', data, occurredAt);
+      this.countPlayoutTransition('started');
+      this.emit(
+        'playout.started',
+        {
+          playbackRequestId: event.playback_request_id,
+          playbackId: event.playback_id || event.playback_request_id,
+          programId: event.program_id,
+          liquidsoapSequence: event.sequence,
+        },
+        occurredAt,
+      );
+      const startedAt = event.occurred_at * 1_000;
+      if (
+        this.lastEndedTrack &&
+        startedAt >= this.lastEndedTrack.occurredAt &&
+        startedAt - this.lastEndedTrack.occurredAt <= 30_000
+      ) {
+        this.countPlayoutTransition('transitioned');
+        this.emit(
+          'playout.transitioned',
+          {
+            fromPlaybackId: this.lastEndedTrack.playbackId,
+            toPlaybackId: event.playback_id || event.playback_request_id,
+            programId: event.program_id,
+            liquidsoapSequence: event.sequence,
+          },
+          occurredAt,
+        );
+      }
+      this.lastEndedTrack = null;
     } else {
       this.lifecycleEnded += 1;
       if (this.track?.playbackRequestId === event.playback_request_id) {
         this.track = null;
       }
       this.emit('track.ended', data, occurredAt);
+      const disposition =
+        this.pendingTrackEnd && this.pendingTrackEnd.expiresAt >= Date.now()
+          ? this.pendingTrackEnd.disposition
+          : null;
+      this.pendingTrackEnd = null;
+      this.lastEndedTrack = {
+        playbackId: event.playback_id || event.playback_request_id,
+        occurredAt: event.occurred_at * 1_000,
+      };
+      if (disposition === 'skipped') {
+        this.countPlayoutTransition('skipped');
+        this.emit(
+          'playout.skipped',
+          {
+            playbackRequestId: event.playback_request_id,
+            playbackId: event.playback_id || event.playback_request_id,
+            programId: event.program_id,
+            reason: 'replacement',
+            liquidsoapSequence: event.sequence,
+          },
+          occurredAt,
+        );
+      } else {
+        this.countPlayoutTransition('stopped');
+        this.emit(
+          'playout.stopped',
+          {
+            playbackRequestId: event.playback_request_id,
+            playbackId: event.playback_id || event.playback_request_id,
+            programId: event.program_id,
+            reason: disposition === 'stopped' ? 'operator' : 'natural_end',
+            liquidsoapSequence: event.sequence,
+          },
+          occurredAt,
+        );
+      }
     }
   }
 
@@ -633,6 +816,9 @@ export class PlaybackTelemetryService {
     data: Record<string, unknown>,
     occurredAt = new Date().toISOString(),
   ): void {
+    if (this.sequence >= this.sequenceCeiling) {
+      throw new Error('playback event sequence reservation is exhausted');
+    }
     this.sequence += 1;
     const event: PlaybackEvent = {
       schemaVersion: 1,
@@ -642,7 +828,7 @@ export class PlaybackTelemetryService {
       sequence: this.sequence,
       type,
       occurredAt,
-      data,
+      data: sanitizeEventData(data),
     };
     this.replay.push(event);
     this.snapshotByEventId.set(event.id, this.getState());
@@ -708,6 +894,10 @@ export class PlaybackTelemetryService {
       '# TYPE palazzo_paired_playout_commands_total counter',
       '# HELP palazzo_intro_lifecycle_total Intro lifecycle transitions by bounded result and reason.',
       '# TYPE palazzo_intro_lifecycle_total counter',
+      '# HELP palazzo_media_preflight_total Media preflight outcomes by bounded result and reason.',
+      '# TYPE palazzo_media_preflight_total counter',
+      '# HELP palazzo_playout_transitions_total Authoritative playout transitions by bounded event.',
+      '# TYPE palazzo_playout_transitions_total counter',
     ];
     for (const [key, count] of [...this.pairedCommandResults].sort(([a], [b]) =>
       a.localeCompare(b),
@@ -717,16 +907,64 @@ export class PlaybackTelemetryService {
         `palazzo_paired_playout_commands_total{result="${result}",reason="${reason}"} ${count}`,
       );
     }
-    for (const [key, count] of [...this.introLifecycleResults].sort(([a], [b]) =>
-      a.localeCompare(b),
+    for (const [key, count] of [...this.introLifecycleResults].sort(
+      ([a], [b]) => a.localeCompare(b),
     )) {
       const [result, reason] = key.split('\t');
       lines.push(
         `palazzo_intro_lifecycle_total{result="${result}",reason="${reason}"} ${count}`,
       );
     }
+    for (const [key, count] of [...this.preflightResults].sort(([a], [b]) =>
+      a.localeCompare(b),
+    )) {
+      const [result, reason] = key.split('\t');
+      lines.push(
+        `palazzo_media_preflight_total{result="${result}",reason="${reason}"} ${count}`,
+      );
+    }
+    for (const [event, count] of [...this.playoutTransitions].sort(([a], [b]) =>
+      a.localeCompare(b),
+    )) {
+      lines.push(
+        `palazzo_playout_transitions_total{event="${event}"} ${count}`,
+      );
+    }
     return lines;
   }
+
+  private countPlayoutTransition(
+    event:
+      | 'queued'
+      | 'started'
+      | 'transitioned'
+      | 'stopped'
+      | 'skipped'
+      | 'fallback',
+  ): void {
+    this.playoutTransitions.set(
+      event,
+      (this.playoutTransitions.get(event) ?? 0) + 1,
+    );
+  }
+}
+
+function sanitizeEventData(
+  value: Record<string, unknown>,
+): Record<string, unknown> {
+  return sanitizeValue(value) as Record<string, unknown>;
+}
+
+function sanitizeValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sanitizeValue);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(
+        ([key]) => !/(url|authorization|credential|password|token)/i.test(key),
+      )
+      .map(([key, entry]) => [key, sanitizeValue(entry)]),
+  );
 }
 
 function trackFromSnapshot(

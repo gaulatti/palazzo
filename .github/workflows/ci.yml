@@ -86,7 +86,35 @@ jobs:
             -f lavfi -i sine=frequency=440:sample_rate=44100 -t 2 /tmp/filler.wav
           docker exec --detach palazzo-ci node -e \
             'require("node:http").createServer((_,response)=>require("node:fs").createReadStream("/tmp/filler.wav").pipe(response)).listen(3200,"127.0.0.1")'
+          for attempt in $(seq 1 20); do
+            if docker exec palazzo-ci node -e \
+              'fetch("http://127.0.0.1:3200/filler.wav").then(response=>{if(!response.ok)process.exit(1)}).catch(()=>process.exit(1))'; then
+              break
+            fi
+            sleep 0.1
+          done
+          docker exec palazzo-ci node -e \
+            'fetch("http://127.0.0.1:3200/filler.wav").then(response=>{if(!response.ok)process.exit(1)}).catch(()=>process.exit(1))'
           FILLER_SHA=$(docker exec palazzo-ci sha256sum /tmp/filler.wav | cut -d ' ' -f 1)
+          PREFLIGHT_AT=$(date -u -d '+60 seconds' '+%Y-%m-%dT%H:%M:%S.000Z')
+          jq --null-input --arg scheduledAt "$PREFLIGHT_AT" \
+            '{assets:[{programId:"program-ci",playbackId:"ci-upcoming",kind:"song",url:"http://127.0.0.1:3200/filler.wav?signed=redacted",scheduledAt:$scheduledAt}]}' \
+            > /tmp/palazzo-preflight.json
+          curl --fail --silent \
+            --header 'Authorization: Bearer ci-control-token' \
+            --header 'Content-Type: application/json' \
+            --request PUT \
+            --data-binary @/tmp/palazzo-preflight.json \
+            http://127.0.0.1:3100/v1/programs/program-ci/playback/preflight \
+            | jq --exit-status \
+              '.assets[0].readiness == "ready" and .assets[0].media.durationSeconds > 0 and .assets[0].media.sampleRateHz == 44100 and (.assets[0] | has("url") | not)'
+          curl --fail --silent \
+            --header 'Authorization: Bearer ci-control-token' \
+            http://127.0.0.1:3100/v1/programs/program-ci/playback/preflight \
+            | jq --exit-status \
+              '.assets[0].playbackId == "ci-upcoming" and (.assets[0] | has("url") | not)'
+          curl --fail --silent http://127.0.0.1:3100/playback/state \
+            | jq --exit-status '.status == "idle"'
           jq --null-input --arg checksum "$FILLER_SHA" \
             '{commandId:"ci-prepare",mode:"ordered",assets:[{id:"ci-filler",sha256:$checksum,downloadUrl:"http://127.0.0.1:3200/filler.wav?signed=redacted"}]}' \
             > /tmp/palazzo-filler.json

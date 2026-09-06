@@ -155,3 +155,38 @@ test('program instant rejects cross-program assets and maps authoritative IDs', 
   });
   assert.equal(played[0].playbackRequestId, 'instant');
 });
+
+test('program preflight authenticates before probing or reading readiness', async () => {
+  const calls = [];
+  const controller = new StreamController(
+    {
+      preflightProgramAssets: async (...args) => {
+        calls.push(['preflight', ...args]);
+        return { assets: [] };
+      },
+      getProgramPreflight: (...args) => {
+        calls.push(['read', ...args]);
+        return { assets: [] };
+      },
+    },
+    {
+      authorize: async (...args) => calls.push(['authorize', ...args]),
+    },
+    {},
+  );
+  const payload = { assets: [] };
+
+  await controller.preflightProgramAssets(
+    'program-one',
+    'Bearer redacted',
+    payload,
+  );
+  await controller.getProgramPreflight('program-one', 'Bearer redacted');
+
+  assert.deepEqual(calls, [
+    ['authorize', 'program-one', 'Bearer redacted'],
+    ['preflight', 'program-one', payload],
+    ['authorize', 'program-one', 'Bearer redacted'],
+    ['read', 'program-one'],
+  ]);
+});

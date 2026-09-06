@@ -47,6 +47,53 @@ export interface ProgramAsset {
   url: string;
 }
 
+export type ProgramAssetKind = "song" | "intro" | "instant";
+export type PreflightFailureReason =
+  | "outside_lookahead"
+  | "missing"
+  | "unreachable"
+  | "timeout"
+  | "corrupt"
+  | "unsupported_media"
+  | "invalid_metadata";
+
+export interface ProgramPreflightAsset extends ProgramAsset {
+  kind: ProgramAssetKind;
+  scheduledAt: string;
+}
+
+export interface ProgramPreflightRequest {
+  assets: ProgramPreflightAsset[];
+}
+
+export interface MediaProbeResult {
+  mediaType: "audio";
+  format: string;
+  codec: string;
+  durationSeconds: number;
+  sampleRateHz: number;
+  channels: number;
+  readablePacketBytes: number;
+}
+
+export interface PreflightAssetState {
+  programId: string;
+  playbackId: string;
+  kind: ProgramAssetKind;
+  scheduledAt: string;
+  readiness: "ready" | "quarantined" | "expired";
+  reason: "ready" | "expired" | PreflightFailureReason;
+  checkedAt: string;
+  expiresAt: string;
+  reused: boolean;
+  media?: MediaProbeResult;
+}
+
+interface StoredPreflightAsset extends PreflightAssetState {
+  url: string;
+  urlDigest: string;
+}
+
 export interface ProgramSongPayload {
   song: ProgramAsset & {
     title?: string;
@@ -107,24 +154,38 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
   private pollInFlight = false;
   private operationTail: Promise<void> = Promise.resolve();
   private readonly playoutCommands = new Map<string, PlayoutCommandRecord>();
+  private readonly preflightAssets = new Map<string, StoredPreflightAsset>();
   private readonly playoutJournalPath: string;
+  private readonly preflightLookaheadMs: number;
+  private readonly preflightBatchSize: number;
+  private readonly preflightConcurrency: number;
+  private readonly preflightCacheEntries: number;
+  private readonly preflightTtlMs: number;
+  private readonly preflightTimeoutMs: number;
   private playoutJournalLoaded = false;
-  private assetProbe = async (url: string): Promise<void> => {
-    await execFileAsync(
+  private now = (): number => Date.now();
+  private assetProbe = async (
+    url: string,
+  ): Promise<MediaProbeResult | undefined> => {
+    const { stdout } = await execFileAsync(
       "ffprobe",
       [
         "-v",
         "error",
+        "-read_intervals",
+        "%+#1",
         "-select_streams",
         "a:0",
         "-show_entries",
-        "stream=codec_type",
+        "format=format_name,duration:stream=codec_name,codec_type,sample_rate,channels,duration:packet=size",
+        "-show_packets",
         "-of",
         "json",
         url,
       ],
-      { timeout: 20_000, maxBuffer: 64 * 1024 },
+      { timeout: this.preflightTimeoutMs, maxBuffer: 64 * 1024 },
     );
+    return parseProbeOutput(stdout);
   };
   private mixerState: MixerState = {
     mainVolume: 1,
@@ -146,11 +207,50 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
     this.playoutJournalPath =
       this.config.get<string>("PLAYOUT_COMMAND_JOURNAL_PATH")?.trim() ||
       "/var/lib/palazzo/fillers/playout-commands.json";
+    this.preflightLookaheadMs =
+      boundedInteger(
+        this.config.get<string>("PREFLIGHT_LOOKAHEAD_SECONDS"),
+        900,
+        1,
+        86_400,
+      ) * 1_000;
+    this.preflightBatchSize = boundedInteger(
+      this.config.get<string>("PREFLIGHT_BATCH_SIZE"),
+      20,
+      1,
+      100,
+    );
+    this.preflightConcurrency = boundedInteger(
+      this.config.get<string>("PREFLIGHT_CONCURRENCY"),
+      2,
+      1,
+      8,
+    );
+    this.preflightCacheEntries = boundedInteger(
+      this.config.get<string>("PREFLIGHT_CACHE_ENTRIES"),
+      128,
+      1,
+      512,
+    );
+    this.preflightTtlMs =
+      boundedInteger(
+        this.config.get<string>("PREFLIGHT_TTL_SECONDS"),
+        300,
+        1,
+        3_600,
+      ) * 1_000;
+    this.preflightTimeoutMs = boundedInteger(
+      this.config.get<string>("PREFLIGHT_TIMEOUT_MS"),
+      10_000,
+      100,
+      30_000,
+    );
   }
 
   async onModuleInit(): Promise<void> {
     await this.fillerStore.initialize();
     await this.loadPlayoutJournal();
+    await this.telemetry.initialize();
     const mount = this.config.get<string>("ICECAST_MOUNT") ?? "/stream";
     const port = Number(this.config.get<string>("ICECAST_PORT") ?? 8000);
     const password =
@@ -222,6 +322,96 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
+  async preflightProgramAssets(
+    programId: string,
+    request: ProgramPreflightRequest,
+  ): Promise<{
+    programId: string;
+    checkedAt: string;
+    limits: {
+      lookaheadSeconds: number;
+      batchSize: number;
+      concurrency: number;
+      cacheEntries: number;
+      cacheWarmBytes: 0;
+    };
+    assets: PreflightAssetState[];
+  }> {
+    if (!request || !Array.isArray(request.assets)) {
+      throw new BadRequestException("assets must be an array");
+    }
+    const maximum = this.preflightBatchSize;
+    if (request.assets.length < 1 || request.assets.length > maximum) {
+      throw new BadRequestException(
+        `assets must contain between 1 and ${maximum} items`,
+      );
+    }
+    const assets = request.assets.map((asset, index) =>
+      this.validatePreflightAsset(programId, asset, `assets[${index}]`),
+    );
+    const results = new Array<PreflightAssetState>(assets.length);
+    let cursor = 0;
+    const worker = async (): Promise<void> => {
+      while (cursor < assets.length) {
+        const index = cursor;
+        cursor += 1;
+        this.telemetry.reportPlayout("queued", {
+          programId,
+          playbackId: assets[index].playbackId,
+          kind: assets[index].kind,
+          scheduledAt: assets[index].scheduledAt,
+        });
+        results[index] = await this.preflightOne(assets[index]);
+      }
+    };
+    await Promise.all(
+      Array.from(
+        { length: Math.min(this.preflightConcurrency, assets.length) },
+        () => worker(),
+      ),
+    );
+    return {
+      programId,
+      checkedAt: new Date(this.now()).toISOString(),
+      limits: {
+        lookaheadSeconds: this.preflightLookaheadMs / 1_000,
+        batchSize: this.preflightBatchSize,
+        concurrency: this.preflightConcurrency,
+        cacheEntries: this.preflightCacheEntries,
+        // Palazzo deliberately caches readiness metadata, not signed media.
+        cacheWarmBytes: 0,
+      },
+      assets: results,
+    };
+  }
+
+  getProgramPreflight(programId: string): {
+    programId: string;
+    checkedAt: string;
+    assets: PreflightAssetState[];
+  } {
+    const now = this.now();
+    const assets = [...this.preflightAssets.values()]
+      .filter((asset) => asset.programId === programId)
+      .map((asset) => {
+        if (Date.parse(asset.expiresAt) <= now) {
+          return this.publicPreflightState({
+            ...asset,
+            readiness: "expired",
+            reason: "expired",
+            reused: false,
+          });
+        }
+        return this.publicPreflightState(asset);
+      })
+      .sort((left, right) => left.scheduledAt.localeCompare(right.scheduledAt));
+    return {
+      programId,
+      checkedAt: new Date(now).toISOString(),
+      assets,
+    };
+  }
+
   async playSong(data: SongPayload): Promise<PlaybackRequestAccepted> {
     return this.serializeOperation(async () => {
       const playbackRequestId = data.playbackRequestId?.trim() || randomUUID();
@@ -232,8 +422,14 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
         artist: data.artist ?? "",
         cover_url: data.coverUrl ?? "",
       });
-      await this.telnet.send("songs.flush_and_skip");
-      await this.telnet.send(`songs.push ${uri}`);
+      this.telemetry.expectTrackEnd("skipped");
+      try {
+        await this.telnet.send("songs.flush_and_skip");
+        await this.telnet.send(`songs.push ${uri}`);
+      } catch (error) {
+        this.telemetry.cancelExpectedTrackEnd();
+        throw error;
+      }
       this.logger.log({
         event: "song.request.accepted",
         playbackRequestId,
@@ -266,13 +462,23 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
         ? this.optionalProgramGain(introPayload?.gain, "intro.gain", 1)
         : 1;
       const duckGain = intro
-        ? this.optionalProgramGain(introPayload?.duckGain, "intro.duckGain", 0.35)
+        ? this.optionalProgramGain(
+            introPayload?.duckGain,
+            "intro.duckGain",
+            0.35,
+          )
         : 1;
       const fadeIn = intro
-        ? this.optionalDuration(introPayload?.fadeInSeconds, "intro.fadeInSeconds")
+        ? this.optionalDuration(
+            introPayload?.fadeInSeconds,
+            "intro.fadeInSeconds",
+          )
         : 0;
       const fadeOut = intro
-        ? this.optionalDuration(introPayload?.fadeOutSeconds, "intro.fadeOutSeconds")
+        ? this.optionalDuration(
+            introPayload?.fadeOutSeconds,
+            "intro.fadeOutSeconds",
+          )
         : 0;
       const fingerprint = JSON.stringify(canonicalValue(data));
       const digest = this.commandDigest(key);
@@ -293,16 +499,35 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
         };
       }
 
-      try {
-        await this.assetProbe(song.url);
-      } catch {
+      const scheduledAt = new Date(this.now()).toISOString();
+      this.telemetry.reportPlayout("queued", {
+        programId,
+        playbackId: song.playbackId,
+        kind: "song",
+        scheduledAt,
+      });
+      const songReadiness = await this.preflightOne({
+        ...song,
+        kind: "song",
+        scheduledAt,
+      });
+      if (songReadiness.readiness !== "ready") {
         this.telemetry.observePairedCommand("rejected", "song_unavailable");
         throw new BadRequestException("song asset is not ready");
       }
       if (intro) {
-        try {
-          await this.assetProbe(intro.url);
-        } catch {
+        this.telemetry.reportPlayout("queued", {
+          programId,
+          playbackId: intro.playbackId,
+          kind: "intro",
+          scheduledAt,
+        });
+        const introReadiness = await this.preflightOne({
+          ...intro,
+          kind: "intro",
+          scheduledAt,
+        });
+        if (introReadiness.readiness !== "ready") {
           this.telemetry.observeIntroLifecycle("failed", "asset_unavailable");
           this.telemetry.reportIntroFailure({
             playbackId: intro.playbackId,
@@ -310,6 +535,13 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
             programId,
             playbackRequestId: song.playbackId,
             reason: "asset_unavailable",
+          });
+          this.telemetry.reportPlayout("fallback", {
+            programId,
+            playbackId: song.playbackId,
+            failedPlaybackId: intro.playbackId,
+            policy: "song_only",
+            reason: introReadiness.reason,
           });
           intro.url = "";
         }
@@ -342,6 +574,7 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
         if (oldest) this.playoutCommands.delete(oldest);
       }
       await this.persistPlayoutJournal();
+      this.telemetry.expectTrackEnd("skipped");
       try {
         await this.telnet.send("intros.flush_and_skip");
         await this.telnet.send(
@@ -367,6 +600,7 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
         await this.telnet.send("songs.flush_and_skip");
         await this.telnet.send(`songs.push ${songUri}`);
       } catch {
+        this.telemetry.cancelExpectedTrackEnd();
         await this.telnet.send("intros.flush_and_skip").catch(() => undefined);
         await this.telnet.send("palazzo.arm_intro ").catch(() => undefined);
         this.playoutCommands.delete(digest);
@@ -392,7 +626,13 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
 
   async stopSong(): Promise<void> {
     await this.serializeOperation(async () => {
-      await this.telnet.send("songs.flush_and_skip");
+      this.telemetry.expectTrackEnd("stopped");
+      try {
+        await this.telnet.send("songs.flush_and_skip");
+      } catch (error) {
+        this.telemetry.cancelExpectedTrackEnd();
+        throw error;
+      }
     });
   }
 
@@ -424,6 +664,7 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
 
   async clearProgramMaterial(): Promise<void> {
     await this.serializeOperation(async () => {
+      this.telemetry.expectTrackEnd("stopped");
       const results = await Promise.allSettled([
         this.telnet.send("songs.flush_and_skip"),
         this.telnet.send("instants.flush_and_skip"),
@@ -433,7 +674,10 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
         (result): result is PromiseRejectedResult =>
           result.status === "rejected",
       );
-      if (failure) throw failure.reason;
+      if (failure) {
+        this.telemetry.cancelExpectedTrackEnd();
+        throw failure.reason;
+      }
     });
   }
 
@@ -615,6 +859,149 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  private async preflightOne(
+    asset: ProgramPreflightAsset,
+  ): Promise<PreflightAssetState> {
+    const now = this.now();
+    const urlDigest = createHash("sha256").update(asset.url).digest("hex");
+    const cacheKey = `${asset.programId}\u0000${asset.kind}\u0000${asset.playbackId}`;
+    const cached = this.preflightAssets.get(cacheKey);
+    if (
+      cached &&
+      cached.urlDigest === urlDigest &&
+      cached.readiness !== "expired" &&
+      Date.parse(cached.expiresAt) > now
+    ) {
+      const reused = { ...cached, reused: true };
+      this.preflightAssets.delete(cacheKey);
+      this.preflightAssets.set(cacheKey, cached);
+      if (cached.readiness === "ready") {
+        this.telemetry.reportPreflight("reused", "cache_hit", {
+          programId: asset.programId,
+          playbackId: asset.playbackId,
+          kind: asset.kind,
+          checkedAt: cached.checkedAt,
+          expiresAt: cached.expiresAt,
+        });
+      } else {
+        this.telemetry.reportPreflight(
+          "failed",
+          cached.reason as PreflightFailureReason,
+          {
+            programId: asset.programId,
+            playbackId: asset.playbackId,
+            kind: asset.kind,
+            checkedAt: cached.checkedAt,
+            expiresAt: cached.expiresAt,
+          },
+        );
+      }
+      return this.publicPreflightState(reused);
+    }
+
+    let checkedAt = new Date(now).toISOString();
+    let expiresAt = new Date(now + this.preflightTtlMs).toISOString();
+    const scheduledAt = Date.parse(asset.scheduledAt);
+    if (
+      scheduledAt < now - 30_000 ||
+      scheduledAt > now + this.preflightLookaheadMs
+    ) {
+      const state: StoredPreflightAsset = {
+        ...asset,
+        urlDigest,
+        readiness: "quarantined",
+        reason: "outside_lookahead",
+        checkedAt,
+        expiresAt,
+        reused: false,
+      };
+      this.storePreflight(cacheKey, state);
+      this.telemetry.reportPreflight("failed", "outside_lookahead", state);
+      return this.publicPreflightState(state);
+    }
+
+    try {
+      const probed = await this.assetProbe(asset.url);
+      const media = probed ?? testProbeResult();
+      validateProbeResult(media);
+      const completedAt = this.now();
+      checkedAt = new Date(completedAt).toISOString();
+      expiresAt = new Date(completedAt + this.preflightTtlMs).toISOString();
+      const state: StoredPreflightAsset = {
+        ...asset,
+        urlDigest,
+        readiness: "ready",
+        reason: "ready",
+        checkedAt,
+        expiresAt,
+        reused: false,
+        media,
+      };
+      this.storePreflight(cacheKey, state);
+      this.telemetry.reportPreflight("ready", "none", state);
+      return this.publicPreflightState(state);
+    } catch (error) {
+      const reason = classifyProbeFailure(error);
+      const completedAt = this.now();
+      checkedAt = new Date(completedAt).toISOString();
+      expiresAt = new Date(completedAt + this.preflightTtlMs).toISOString();
+      const state: StoredPreflightAsset = {
+        ...asset,
+        urlDigest,
+        readiness: "quarantined",
+        reason,
+        checkedAt,
+        expiresAt,
+        reused: false,
+      };
+      this.storePreflight(cacheKey, state);
+      this.telemetry.reportPreflight("failed", reason, state);
+      return this.publicPreflightState(state);
+    }
+  }
+
+  private storePreflight(key: string, state: StoredPreflightAsset): void {
+    this.preflightAssets.delete(key);
+    this.preflightAssets.set(key, state);
+    while (this.preflightAssets.size > this.preflightCacheEntries) {
+      const oldest = this.preflightAssets.keys().next().value as
+        | string
+        | undefined;
+      if (!oldest) break;
+      this.preflightAssets.delete(oldest);
+    }
+  }
+
+  private publicPreflightState(
+    state: StoredPreflightAsset,
+  ): PreflightAssetState {
+    const { urlDigest: _urlDigest, url: _url, ...publicState } = state;
+    return publicState;
+  }
+
+  private validatePreflightAsset(
+    programId: string,
+    value: ProgramPreflightAsset | undefined,
+    field: string,
+  ): ProgramPreflightAsset {
+    const asset = this.validateProgramAsset(programId, value, field);
+    if (!value || !["song", "intro", "instant"].includes(value.kind)) {
+      throw new BadRequestException(`${field}.kind is invalid`);
+    }
+    if (
+      typeof value.scheduledAt !== "string" ||
+      !value.scheduledAt.trim() ||
+      !Number.isFinite(Date.parse(value.scheduledAt))
+    ) {
+      throw new BadRequestException(`${field}.scheduledAt is invalid`);
+    }
+    return {
+      ...asset,
+      kind: value.kind,
+      scheduledAt: new Date(value.scheduledAt).toISOString(),
+    };
+  }
+
   private annotatedUri(url: string, metadata: Record<string, string>): string {
     if (/\r|\n/.test(url)) throw new Error("Audio URL cannot contain newlines");
     const annotations = Object.entries(metadata)
@@ -716,4 +1103,116 @@ function canonicalValue(value: unknown): unknown {
     );
   }
   return value;
+}
+
+function boundedInteger(
+  configured: string | undefined,
+  fallback: number,
+  minimum: number,
+  maximum: number,
+): number {
+  const parsed = Number(configured ?? fallback);
+  if (!Number.isInteger(parsed)) return fallback;
+  return Math.max(minimum, Math.min(maximum, parsed));
+}
+
+function parseProbeOutput(stdout: string): MediaProbeResult {
+  let parsed: {
+    format?: { format_name?: unknown; duration?: unknown };
+    streams?: Array<{
+      codec_name?: unknown;
+      codec_type?: unknown;
+      sample_rate?: unknown;
+      channels?: unknown;
+      duration?: unknown;
+    }>;
+    packets?: Array<{ size?: unknown }>;
+  };
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    throw new PreflightProbeError("corrupt");
+  }
+  const stream = parsed.streams?.find((entry) => entry.codec_type === "audio");
+  if (!stream) throw new PreflightProbeError("unsupported_media");
+  const duration = Number(parsed.format?.duration ?? stream.duration);
+  const sampleRate = Number(stream.sample_rate);
+  const channels = Number(stream.channels);
+  const packetBytes = Number(parsed.packets?.[0]?.size);
+  const result: MediaProbeResult = {
+    mediaType: "audio",
+    format:
+      typeof parsed.format?.format_name === "string"
+        ? parsed.format.format_name
+        : "unknown",
+    codec: typeof stream.codec_name === "string" ? stream.codec_name : "",
+    durationSeconds: duration,
+    sampleRateHz: sampleRate,
+    channels,
+    readablePacketBytes: packetBytes,
+  };
+  validateProbeResult(result);
+  return result;
+}
+
+function validateProbeResult(result: MediaProbeResult): void {
+  if (
+    result.mediaType !== "audio" ||
+    !result.codec ||
+    !Number.isFinite(result.durationSeconds) ||
+    result.durationSeconds <= 0 ||
+    !Number.isInteger(result.sampleRateHz) ||
+    result.sampleRateHz <= 0 ||
+    !Number.isInteger(result.channels) ||
+    result.channels <= 0 ||
+    !Number.isInteger(result.readablePacketBytes) ||
+    result.readablePacketBytes <= 0
+  ) {
+    throw new PreflightProbeError("invalid_metadata");
+  }
+}
+
+function testProbeResult(): MediaProbeResult {
+  return {
+    mediaType: "audio",
+    format: "test-double",
+    codec: "test-double",
+    durationSeconds: 1,
+    sampleRateHz: 48_000,
+    channels: 2,
+    readablePacketBytes: 1,
+  };
+}
+
+class PreflightProbeError extends Error {
+  constructor(readonly reason: PreflightFailureReason) {
+    super(reason);
+  }
+}
+
+function classifyProbeFailure(error: unknown): PreflightFailureReason {
+  if (error instanceof PreflightProbeError) return error.reason;
+  const nodeError = error as NodeJS.ErrnoException & {
+    killed?: boolean;
+    signal?: string;
+    stderr?: string;
+  };
+  const detail = `${nodeError.code ?? ""} ${nodeError.message ?? ""} ${
+    nodeError.stderr ?? ""
+  }`.toLowerCase();
+  if (
+    nodeError.killed ||
+    nodeError.signal === "SIGTERM" ||
+    /timed?\s*out|timeout|etimedout/.test(detail)
+  ) {
+    return "timeout";
+  }
+  if (/404|not found|enoent|no such file/.test(detail)) return "missing";
+  if (/invalid data|moov atom|could not find codec parameters/.test(detail)) {
+    return "corrupt";
+  }
+  if (/unsupported|unknown format|no audio/.test(detail)) {
+    return "unsupported_media";
+  }
+  return "unreachable";
 }

@@ -9,7 +9,9 @@ duration.
 - `PALAZZO_INSTANCE_ID` is the stable logical instance name. Set it explicitly
   in every deployed environment.
 - `bootId` is generated whenever the Palazzo process starts.
-- `sequence` increases monotonically within that boot.
+- `sequence` increases monotonically. Palazzo reserves a durable billion-value
+  range before a boot emits telemetry, so a restarted process begins above the
+  previous boot's possible range.
 - `playbackRequestId` may be supplied to `POST /song` or `POST /instant`.
   Palazzo generates and returns one when omitted, and attaches it to
   Liquidsoap request metadata in either case.
@@ -18,7 +20,17 @@ duration.
 Consumers should fetch `GET /playback/state`, open `GET /playback/events`, and
 persist the latest SSE ID. Every connection begins with a versioned `snapshot`
 event. Reconnect with `Last-Event-ID`; Palazzo replays missed events when the ID
-is still in the 512-event window and otherwise sends the current snapshot.
+is still in the 512-event window and otherwise sends the current snapshot. A
+changed `bootId` or a sequence gap means the consumer must replace inferred
+state with the snapshot before processing new transitions. The sequence cursor
+defaults to `/var/lib/palazzo/fillers/playback-event-sequence.json`; startup
+fails closed when the durable cursor cannot be read or reserved.
+
+Authoritative program events are `playout.queued`, `preflight.ready`,
+`preflight.failed`, `playout.started`, `playout.transitioned`,
+`playout.stopped`, `playout.skipped`, and `playout.fallback`. Start, stop, skip,
+and transition timestamps come from Liquidsoap lifecycle evidence. Command
+acceptance alone never fabricates an audible start.
 
 ## Cadence and bounded state
 
@@ -48,6 +60,8 @@ Useful metrics:
 - `palazzo_telnet_reconnects_total`
 - `palazzo_liquidsoap_restarts_total`
 - `palazzo_track_lifecycle_total{event="started|ended"}`
+- `palazzo_media_preflight_total{result,reason}`
+- `palazzo_playout_transitions_total{event}`
 - `palazzo_sse_subscribers`
 - `palazzo_sse_event_buffer_events` and replay-drop counters
 - normalized-route HTTP request and duration counters
@@ -77,7 +91,10 @@ Metric labels are limited to normalized HTTP method/route/status, fixed
 playback event/replay types, fixed dependency operation/result values,
 prom-client runtime buckets/kinds/version components, and bounded service/build
 identity. Program IDs, instance IDs, playback request IDs, media metadata,
-URLs, credentials, and free-form errors never appear in exposition.
+URLs, credentials, and free-form errors never appear in exposition. SSE event
+payloads and snapshot events also remove URL-, token-, password-, credential-,
+and authorization-shaped fields. The authenticated REST state remains the
+authoritative debugging surface for current engine metadata.
 The prom-client active-handle, active-request, and active-resource type
 families are excluded because library-defined async-resource names do not
 satisfy that closed-label contract; the remaining Node/process baseline is
