@@ -353,7 +353,35 @@ test('emits authoritative transition timestamps without media URLs', async () =>
   assert.doesNotMatch(JSON.stringify(telemetry.replay), /https?:\/\//);
   const initial = await firstValueFrom(telemetry.subscribe());
   assert.doesNotMatch(JSON.stringify(initial), /https?:\/\//);
-  assert.match(await telemetry.renderMetrics(), /event="transitioned"\} 1/);
+  const metrics = await telemetry.renderMetrics();
+  assert.match(metrics, /event="transitioned"\} 1/);
+  assertBoundedLabels(parseExposition(metrics));
+});
+
+test('keeps preflight metric outcomes and reasons bounded', async () => {
+  const telemetry = service();
+  const data = {
+    programId: 'program-one',
+    playbackId: 'playback-one',
+    kind: 'song',
+    checkedAt: '2026-09-06T12:00:00.000Z',
+    expiresAt: '2026-09-06T12:05:00.000Z',
+  };
+  telemetry.reportPreflight('ready', 'none', data);
+  telemetry.reportPreflight('reused', 'cache_hit', data);
+  for (const reason of [
+    'outside_lookahead',
+    'missing',
+    'unreachable',
+    'timeout',
+    'corrupt',
+    'unsupported_media',
+    'invalid_metadata',
+  ]) {
+    telemetry.reportPreflight('failed', reason, data);
+  }
+
+  assertBoundedLabels(parseExposition(await telemetry.renderMetrics()));
 });
 
 test('persists a sequence reservation so a restarted process exposes a detectable gap', async () => {
