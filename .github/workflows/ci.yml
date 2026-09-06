@@ -85,7 +85,7 @@ jobs:
           docker exec palazzo-ci ffmpeg -hide_banner -loglevel error -y \
             -f lavfi -i sine=frequency=440:sample_rate=44100 -t 2 /tmp/filler.wav
           docker exec --detach palazzo-ci node -e \
-            'require("node:http").createServer((_,response)=>require("node:fs").createReadStream("/tmp/filler.wav").pipe(response)).listen(3200,"127.0.0.1")'
+            'const fs=require("node:fs");const media="/tmp/filler.wav";require("node:http").createServer((_,response)=>{response.setHeader("Content-Length",fs.statSync(media).size);response.setHeader("Accept-Ranges","bytes");fs.createReadStream(media).pipe(response)}).listen(3200,"127.0.0.1")'
           for attempt in $(seq 1 20); do
             if docker exec palazzo-ci node -e \
               'fetch("http://127.0.0.1:3200/filler.wav").then(response=>{if(!response.ok)process.exit(1)}).catch(()=>process.exit(1))'; then
