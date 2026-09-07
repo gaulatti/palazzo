@@ -17,7 +17,7 @@ const template = (): Template => {
   );
 };
 
-test("owns Palazzo credentials, logging, and DNS", () => {
+test("owns Palazzo credentials and DNS without application logging", () => {
   const rendered = template();
   rendered.hasResourceProperties("AWS::SecretsManager::Secret", {
     Name: "broadcast/production/config",
@@ -28,10 +28,7 @@ test("owns Palazzo credentials, logging, and DNS", () => {
   rendered.hasResourceProperties("AWS::SecretsManager::Secret", {
     Name: "broadcast/production/icecast-source-password",
   });
-  rendered.hasResourceProperties("AWS::Logs::LogGroup", {
-    LogGroupName: "/services/palazzo",
-    RetentionInDays: 30,
-  });
+  rendered.resourceCountIs("AWS::Logs::LogGroup", 0);
   rendered.hasResourceProperties("AWS::Route53::RecordSet", {
     Name: "palazzo.gaulatti.com.",
     ResourceRecords: ["203.0.113.10"],
@@ -47,7 +44,8 @@ test("grants the Cumulus host runtime access and owns the deployment role", () =
   });
   const policies = JSON.stringify(rendered.findResources("AWS::IAM::Policy"));
   expect(policies).toContain("secretsmanager:GetSecretValue");
-  expect(policies).toContain("logs:PutLogEvents");
+  expect(policies).not.toContain("logs:CreateLogStream");
+  expect(policies).not.toContain("logs:PutLogEvents");
   expect(policies).toContain("ssm:SendCommand");
   expect(policies).toContain("ssm:resourceTag/Name");
   expect(policies).toContain("macondo-services");

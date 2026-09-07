@@ -6,7 +6,6 @@ import {
   StackProps,
 } from "aws-cdk-lib";
 import { Policy, PolicyStatement, Role } from "aws-cdk-lib/aws-iam";
-import { LogGroup, RetentionDays } from "aws-cdk-lib/aws-logs";
 import { ARecord, HostedZone, RecordTarget } from "aws-cdk-lib/aws-route53";
 import { Secret } from "aws-cdk-lib/aws-secretsmanager";
 import { Construct } from "constructs";
@@ -54,11 +53,6 @@ export class PalazzoInfrastructureStack extends Stack {
     });
     icecastSecret.applyRemovalPolicy(RemovalPolicy.RETAIN);
 
-    const logGroup = new LogGroup(this, "ServiceLogGroup", {
-      logGroupName: "/services/palazzo",
-      retention: RetentionDays.ONE_MONTH,
-      removalPolicy: RemovalPolicy.RETAIN,
-    });
     const hostPolicy = new Policy(this, "PalazzoCumulusHostPolicy", {
       policyName: "palazzo-cumulus-host",
       statements: [
@@ -68,10 +62,6 @@ export class PalazzoInfrastructureStack extends Stack {
             "secretsmanager:GetSecretValue",
           ],
           resources: [broadcastSecret.secretArn, icecastSecret.secretArn],
-        }),
-        new PolicyStatement({
-          actions: ["logs:CreateLogStream", "logs:PutLogEvents"],
-          resources: [logGroup.logGroupArn],
         }),
       ],
     });

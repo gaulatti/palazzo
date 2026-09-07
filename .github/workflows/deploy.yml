@@ -78,6 +78,9 @@ jobs:
             docker run -d --name palazzo-candidate \
               --network broadcast-control \
               --volume /etc/palazzo/control-token:/run/secrets/palazzo-control-token:ro \
+              --log-driver=local \
+              --log-opt max-size=10m \
+              --log-opt max-file=3 \
               -e PALAZZO_PORT=3100 \
               -e PALAZZO_INSTANCE_ID=palazzo-production-candidate \
               -e PROGRAM_ID="${{ vars.PROGRAM_ID }}" \
@@ -123,6 +126,9 @@ jobs:
               -e ICECAST_SOURCE_PASSWORD="${{ secrets.ICECAST_SOURCE_PASSWORD }}" \
               --volume palazzo-fillers:/var/lib/palazzo/fillers \
               --restart=always \
+              --log-driver=local \
+              --log-opt max-size=10m \
+              --log-opt max-file=3 \
               "$IMAGE"; then
               docker rm -f palazzo >/dev/null 2>&1 || true
               if [ "$rollback_available" = true ]; then

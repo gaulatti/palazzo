@@ -61,6 +61,11 @@ On Cumulus, nginx exposes the same stream at `palazzo.gaulatti.com` and the
 Modo Italiano listener hostname `radio.modoitaliano.fm`; the latter redirects
 its root to `/stream` and includes the public CORS header used by radio clients.
 
+Container application logs use Docker's host-local `local` driver, bounded to
+three 10 MB files per container. Operators can inspect them with
+`docker logs --tail 200 palazzo`; Palazzo does not send application logs to
+CloudWatch.
+
 Palazzo boots in `reconciliation-required`: container or process startup never
 pretends a prior operator Start/Stop succeeded. Alcantara reconciles it through
 the authenticated lifecycle API. Start becomes ready only when Liquidsoap, its

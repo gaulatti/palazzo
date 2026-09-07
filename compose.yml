@@ -27,6 +27,11 @@ services:
         - action: rebuild
           path: ./tsconfig.build.json
     restart: unless-stopped
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
     secrets:
       - palazzo-control-token
     networks:

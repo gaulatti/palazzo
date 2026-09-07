@@ -64,6 +64,9 @@ trap cleanup_candidate EXIT
 docker run -d --name palazzo-candidate \
   --network broadcast-control \
   --volume /etc/palazzo/control-token:/run/secrets/palazzo-control-token:ro \
+  --log-driver=local \
+  --log-opt max-size=10m \
+  --log-opt max-file=3 \
   -e PALAZZO_PORT=3100 \
   -e PALAZZO_INSTANCE_ID=palazzo-production-candidate \
   -e PROGRAM_ID="$program_id" \
@@ -109,10 +112,9 @@ if ! docker run -d --name palazzo \
   -e ICECAST_PORT=8000 \
   -e ICECAST_SOURCE_PASSWORD="$icecast_source_password" \
   --restart=always \
-  --log-driver=awslogs \
-  --log-opt awslogs-region=us-east-1 \
-  --log-opt awslogs-group=/services/palazzo \
-  --log-opt "awslogs-stream=palazzo-$(date +%Y%m%dT%H%M%S)" \
+  --log-driver=local \
+  --log-opt max-size=10m \
+  --log-opt max-file=3 \
   "$image"; then
   docker rm -f palazzo >/dev/null 2>&1 || true
   if [ "$rollback_available" = true ]; then
