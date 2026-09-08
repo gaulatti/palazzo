@@ -63,6 +63,9 @@ jobs:
           docker run --rm --detach --name palazzo-ci \
             --publish 127.0.0.1:3100:3100 \
             --volume /tmp/palazzo-control-token:/run/secrets/palazzo-control-token:ro \
+            --log-driver=local \
+            --log-opt max-size=10m \
+            --log-opt max-file=3 \
             --env PALAZZO_PORT=3100 \
             --env PALAZZO_INSTANCE_ID=palazzo-ci \
             --env PROGRAM_ID=program-ci \
@@ -70,6 +73,9 @@ jobs:
             --env ICECAST_SOURCE_PASSWORD=ci-password \
             palazzo:ci
           trap 'docker stop palazzo-ci' EXIT
+          docker inspect palazzo-ci \
+            | jq --exit-status \
+              '.[0].HostConfig.LogConfig.Type == "local" and .[0].HostConfig.LogConfig.Config == {"max-file":"3","max-size":"10m"}'
           for attempt in $(seq 1 30); do
             if curl --fail --silent http://127.0.0.1:3100/playback/state > /tmp/palazzo-state.json \
               && jq --exit-status \
