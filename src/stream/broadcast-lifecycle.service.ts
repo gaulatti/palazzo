@@ -6,6 +6,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { createHash } from 'node:crypto';
 import { PlaybackTelemetryService } from './playback-telemetry.service';
 import { StreamService } from './stream.service';
 import { FillerStoreService } from './filler-store.service';
