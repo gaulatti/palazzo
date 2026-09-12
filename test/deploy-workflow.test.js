@@ -11,9 +11,6 @@ test('deployment fails before replacing production when prerequisites are absent
   const network = workflow.indexOf(
     'docker network inspect broadcast-control >/dev/null',
   );
-  const controlToken = workflow.indexOf(
-    'test -s /etc/palazzo/control-token',
-  );
   const fillerVolume = workflow.indexOf(
     'docker volume create palazzo-fillers >/dev/null',
   );
@@ -21,8 +18,7 @@ test('deployment fails before replacing production when prerequisites are absent
 
   assert.notEqual(failFast, -1);
   assert.ok(failFast < network);
-  assert.ok(network < controlToken);
-  assert.ok(controlToken < fillerVolume);
+  assert.ok(network < fillerVolume);
   assert.ok(fillerVolume < replacement);
 });
 
@@ -35,12 +31,7 @@ test('deployment verifies a candidate and retains a rollback container', async (
   assert.match(workflow, /rolling back/);
   assert.match(workflow, /palazzo:\$\{\{ github\.sha \}\}/);
   assert.match(workflow, /--build-arg BUILD_VERSION=\$\{\{ github\.sha \}\}/);
-  assert.equal(
-    workflow.match(
-      /--volume \/etc\/palazzo\/control-token:\/run\/secrets\/palazzo-control-token:ro/g,
-    )?.length,
-    2,
-  );
+  assert.doesNotMatch(workflow, /control-token|PALAZZO_CONTROL_TOKEN/);
   assert.match(workflow, /palazzo-fillers:\/var\/lib\/palazzo\/fillers/);
   assert.doesNotMatch(workflow, /\/opt\/palazzo/);
 });

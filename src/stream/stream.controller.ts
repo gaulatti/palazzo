@@ -54,23 +54,19 @@ export class StreamController {
   ) {}
 
   @Get("v1/programs/:programId/automation")
-  async getAutomation(
-    @Param("programId") programId: string,
-    @Headers("authorization") authorization?: string,
-  ): Promise<unknown> {
-    await this.lifecycle.authorize(programId, authorization);
+  async getAutomation(@Param("programId") programId: string): Promise<unknown> {
+    this.lifecycle.assertProgram(programId);
     return this.lifecycle.getState();
   }
 
   @Post("v1/programs/:programId/automation/start")
   async startAutomation(
     @Param("programId") programId: string,
-    @Headers("authorization") authorization?: string,
     @Headers("idempotency-key") idempotencyKey?: string,
     @Headers("x-command-sequence") commandSequence?: string,
     @Headers("x-filler-version") fillerVersion?: string,
   ): Promise<unknown> {
-    await this.lifecycle.authorize(programId, authorization);
+    this.lifecycle.assertProgram(programId);
     return this.lifecycle.start(idempotencyKey, commandSequence, fillerVersion);
   }
 
@@ -78,9 +74,8 @@ export class StreamController {
   async getFiller(
     @Param("programId") programId: string,
     @Param("version") version: string,
-    @Headers("authorization") authorization?: string,
   ) {
-    await this.lifecycle.authorize(programId, authorization);
+    this.lifecycle.assertProgram(programId);
     return this.fillerStore.getPublicState(version);
   }
 
@@ -88,33 +83,30 @@ export class StreamController {
   async prepareFiller(
     @Param("programId") programId: string,
     @Param("version") version: string,
-    @Headers("authorization") authorization: string | undefined,
     @Headers("idempotency-key") idempotencyKey: string | undefined,
     @Body() request: FillerPreparationRequest,
   ) {
-    await this.lifecycle.authorize(programId, authorization);
+    this.lifecycle.assertProgram(programId);
     return this.fillerStore.prepare(version, request, idempotencyKey?.trim());
   }
 
   @Post("v1/programs/:programId/automation/stop")
   async stopAutomation(
     @Param("programId") programId: string,
-    @Headers("authorization") authorization?: string,
     @Headers("idempotency-key") idempotencyKey?: string,
     @Headers("x-command-sequence") commandSequence?: string,
   ): Promise<unknown> {
-    await this.lifecycle.authorize(programId, authorization);
+    this.lifecycle.assertProgram(programId);
     return this.lifecycle.stop(idempotencyKey, commandSequence);
   }
 
   @Post("v1/programs/:programId/playback/song")
   async playProgramSong(
     @Param("programId") programId: string,
-    @Headers("authorization") authorization: string | undefined,
     @Headers("idempotency-key") idempotencyKey: string | undefined,
     @Body() data: ProgramSongPayload,
   ) {
-    await this.lifecycle.authorize(programId, authorization);
+    this.lifecycle.assertProgram(programId);
     this.lifecycle.startFromPlaybackCommand();
     return this.streamService.playProgramSong(programId, idempotencyKey, data);
   }
@@ -122,28 +114,21 @@ export class StreamController {
   @Put("v1/programs/:programId/playback/preflight")
   async preflightProgramAssets(
     @Param("programId") programId: string,
-    @Headers("authorization") authorization: string | undefined,
     @Body() data: ProgramPreflightRequest,
   ) {
-    await this.lifecycle.authorize(programId, authorization);
+    this.lifecycle.assertProgram(programId);
     return this.streamService.preflightProgramAssets(programId, data);
   }
 
   @Get("v1/programs/:programId/playback/preflight")
-  async getProgramPreflight(
-    @Param("programId") programId: string,
-    @Headers("authorization") authorization: string | undefined,
-  ) {
-    await this.lifecycle.authorize(programId, authorization);
+  async getProgramPreflight(@Param("programId") programId: string) {
+    this.lifecycle.assertProgram(programId);
     return this.streamService.getProgramPreflight(programId);
   }
 
   @Post("v1/programs/:programId/playback/song/stop")
-  async stopProgramSong(
-    @Param("programId") programId: string,
-    @Headers("authorization") authorization?: string,
-  ) {
-    await this.lifecycle.authorize(programId, authorization);
+  async stopProgramSong(@Param("programId") programId: string) {
+    this.lifecycle.assertProgram(programId);
     await this.streamService.stopSong();
     return { ok: true };
   }
@@ -151,10 +136,9 @@ export class StreamController {
   @Post("v1/programs/:programId/playback/instant")
   async playProgramInstant(
     @Param("programId") programId: string,
-    @Headers("authorization") authorization: string | undefined,
     @Body() data: ProgramInstantPayload,
   ) {
-    await this.lifecycle.authorize(programId, authorization);
+    this.lifecycle.assertProgram(programId);
     this.lifecycle.requireReady();
     if (!data.url) throw new BadRequestException("url is required");
     if (data.programId !== programId) {
@@ -170,51 +154,40 @@ export class StreamController {
   }
 
   @Post("v1/programs/:programId/playback/instant/stop")
-  async stopProgramInstants(
-    @Param("programId") programId: string,
-    @Headers("authorization") authorization?: string,
-  ) {
-    await this.lifecycle.authorize(programId, authorization);
+  async stopProgramInstants(@Param("programId") programId: string) {
+    this.lifecycle.assertProgram(programId);
     await this.streamService.stopAllInstants();
     return { ok: true };
   }
 
   @Get("v1/programs/:programId/mixer")
-  async getProgramMixer(
-    @Param("programId") programId: string,
-    @Headers("authorization") authorization?: string,
-  ) {
-    await this.lifecycle.authorize(programId, authorization);
+  async getProgramMixer(@Param("programId") programId: string) {
+    this.lifecycle.assertProgram(programId);
     return this.streamService.getMixer();
   }
 
   @Put("v1/programs/:programId/mixer")
   async updateProgramMixer(
     @Param("programId") programId: string,
-    @Headers("authorization") authorization: string | undefined,
     @Body() data: MixerPayload,
   ) {
-    await this.lifecycle.authorize(programId, authorization);
+    this.lifecycle.assertProgram(programId);
     this.lifecycle.requireReady();
     return this.streamService.updateMixer(data);
   }
 
   @Get("v1/programs/:programId/playback/state")
-  async getProgramPlaybackState(
-    @Param("programId") programId: string,
-    @Headers("authorization") authorization?: string,
-  ) {
-    await this.lifecycle.authorize(programId, authorization);
+  async getProgramPlaybackState(@Param("programId") programId: string) {
+    this.lifecycle.assertProgram(programId);
     return this.streamService.telemetry.getState();
   }
 
   @Sse("v1/programs/:programId/playback/events")
   async programPlaybackEvents(
     @Param("programId") programId: string,
-    @Headers("authorization") authorization: string | undefined,
     @Headers("last-event-id") lastEventId?: string,
   ): Promise<Observable<MessageEvent>> {
-    await this.lifecycle.authorize(programId, authorization);
+    this.lifecycle.assertProgram(programId);
     return this.streamService.telemetry.subscribe(lastEventId).pipe(
       map((event) => ({
         id: event.id,
@@ -302,10 +275,7 @@ export class StreamController {
   /** Exposes bounded-cardinality Prometheus telemetry on the private API. */
   @Get("metrics")
   @Header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-  async getMetrics(
-    @Headers("authorization") authorization?: string,
-  ): Promise<string> {
-    await this.lifecycle.authorizeMachine(authorization);
+  async getMetrics(): Promise<string> {
     const telemetry = await this.streamService.telemetry.renderMetrics();
     return `${telemetry}${this.fillerStore.renderMetrics()}`;
   }

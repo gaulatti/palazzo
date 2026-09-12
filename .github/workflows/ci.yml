@@ -59,10 +59,8 @@ jobs:
 
       - name: Start and verify pinned runtime
         run: |
-          printf 'ci-control-token\n' > /tmp/palazzo-control-token
           docker run --rm --detach --name palazzo-ci \
             --publish 127.0.0.1:3100:3100 \
-            --volume /tmp/palazzo-control-token:/run/secrets/palazzo-control-token:ro \
             --log-driver=local \
             --log-opt max-size=10m \
             --log-opt max-file=3 \
@@ -107,7 +105,6 @@ jobs:
             '{assets:[{programId:"program-ci",playbackId:"ci-upcoming",kind:"song",url:"http://127.0.0.1:3200/filler.wav?signed=redacted",scheduledAt:$scheduledAt}]}' \
             > /tmp/palazzo-preflight.json
           curl --fail --silent \
-            --header 'Authorization: Bearer ci-control-token' \
             --header 'Content-Type: application/json' \
             --request PUT \
             --data-binary @/tmp/palazzo-preflight.json \
@@ -115,7 +112,6 @@ jobs:
             | jq --exit-status \
               '.assets[0].readiness == "ready" and .assets[0].media.durationSeconds > 0 and .assets[0].media.sampleRateHz == 44100 and (.assets[0] | has("url") | not)'
           curl --fail --silent \
-            --header 'Authorization: Bearer ci-control-token' \
             http://127.0.0.1:3100/v1/programs/program-ci/playback/preflight \
             | jq --exit-status \
               '.assets[0].playbackId == "ci-upcoming" and (.assets[0] | has("url") | not)'
@@ -125,38 +121,24 @@ jobs:
             '{commandId:"ci-prepare",mode:"ordered",assets:[{id:"ci-filler",sha256:$checksum,downloadUrl:"http://127.0.0.1:3200/filler.wav?signed=redacted"}]}' \
             > /tmp/palazzo-filler.json
           curl --fail --silent \
-            --header 'Authorization: Bearer ci-control-token' \
             --header 'Idempotency-Key: ci-prepare' \
             --header 'Content-Type: application/json' \
             --request PUT \
             --data-binary @/tmp/palazzo-filler.json \
             http://127.0.0.1:3100/v1/programs/program-ci/fillers/ci-v1 \
             | jq --exit-status '.ready == true and .assets[0].id == "ci-filler"'
-          unauthorized_status=$(curl --silent \
-            --output /tmp/palazzo-metrics-unauthorized.json \
-            --write-out '%{http_code}' \
-            http://127.0.0.1:3100/metrics)
-          test "$unauthorized_status" = 401
-          wrong_token_status=$(curl --silent \
-            --output /tmp/palazzo-metrics-wrong-token.json \
-            --write-out '%{http_code}' \
-            --header 'Authorization: Bearer wrong-ci-token' \
-            http://127.0.0.1:3100/metrics)
-          test "$wrong_token_status" = 401
           curl --fail --silent \
             --dump-header /tmp/palazzo-metrics-headers.txt \
-            --header 'Authorization: Bearer ci-control-token' \
             http://127.0.0.1:3100/metrics \
             > /tmp/palazzo-metrics.txt
           grep --ignore-case 'content-type: text/plain; version=0.0.4' \
             /tmp/palazzo-metrics-headers.txt
           node test/verify-prometheus-exposition.js /tmp/palazzo-metrics.txt
-          if grep --extended-regexp 'program-ci|ci-control-token|wrong-ci-token' /tmp/palazzo-metrics.txt; then
-            echo 'metrics exposed private identifiers or credentials'
+          if grep --extended-regexp 'program-ci' /tmp/palazzo-metrics.txt; then
+            echo 'metrics exposed private identifiers'
              exit 1
            fi
           curl --fail --silent \
-            --header 'Authorization: Bearer ci-control-token' \
             --header 'Idempotency-Key: ci-start' \
             --header 'X-Command-Sequence: 1' \
             --header 'X-Filler-Version: ci-v1' \
@@ -165,7 +147,6 @@ jobs:
             | jq --exit-status '.actualState == "ready" and .readiness == true and .filler.activeVersion == "ci-v1"'
           docker exec palazzo-ci node -e 'fetch("http://127.0.0.1:8000/stream").then(async response=>{const reader=response.body.getReader();let total=0;while(total<16384){const chunk=await reader.read();if(chunk.done)break;total+=chunk.value.length}if(total<16384)throw new Error("Icecast filler stream starved")}).catch(error=>{console.error(error.message);process.exit(1)})'
           curl --fail --silent \
-            --header 'Authorization: Bearer ci-control-token' \
             --header 'Idempotency-Key: ci-stop' \
             --header 'X-Command-Sequence: 2' \
             --request POST \

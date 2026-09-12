@@ -35,8 +35,9 @@ test('preserves the on-premises gate and adds the fail-closed Cumulus path', () 
   assert.match(workflow, /role\/palazzo-github-deploy/);
   assert.match(workflow, /Name=tag:Name,Values=macondo-services/);
   assert.match(workflow, /Expected exactly one running Macondo service host/);
-  assert.match(workflow, /broadcast\/production\/config/);
   assert.match(workflow, /broadcast\/production\/icecast-source-password/);
+  assert.doesNotMatch(workflow, /palazzo-control-token|PALAZZO_CONTROL_TOKEN/);
+  assert.doesNotMatch(deployScript, /palazzoControlToken|PALAZZO_CONTROL_TOKEN/);
   assert.doesNotMatch(workflow, /MacondoStack/);
   assert.doesNotMatch(workflow, /route53 change-resource-record-sets/);
   assert.match(workflow, /deploy\/cumulus\.sh/);

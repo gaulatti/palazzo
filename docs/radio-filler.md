@@ -8,7 +8,7 @@ network availability.
 
 ## Private API
 
-All routes require the same bearer token and exact `PROGRAM_ID` as the
+All routes require the exact `PROGRAM_ID` on the private control network as the
 broadcast lifecycle API.
 
 | Method | Path | Purpose |

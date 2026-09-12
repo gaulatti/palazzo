@@ -17,14 +17,8 @@ const template = (): Template => {
   );
 };
 
-test("owns Palazzo credentials and DNS without application logging", () => {
+test("owns the Icecast credential and DNS without application logging", () => {
   const rendered = template();
-  rendered.hasResourceProperties("AWS::SecretsManager::Secret", {
-    Name: "broadcast/production/config",
-    GenerateSecretString: Match.objectLike({
-      GenerateStringKey: "palazzoControlToken",
-    }),
-  });
   rendered.hasResourceProperties("AWS::SecretsManager::Secret", {
     Name: "broadcast/production/icecast-source-password",
   });

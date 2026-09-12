@@ -24,7 +24,7 @@ Reason classes are closed: `outside_lookahead`, `missing`, `unreachable`,
 
 Investigate elevated `palazzo_media_preflight_total{result="failed",...}` by
 reason. IDs and URLs are intentionally absent from metrics; use the
-authenticated readiness endpoint and the scheduling owner together.
+private readiness endpoint and the scheduling owner together.
 
 ## Consumer reconciliation
 

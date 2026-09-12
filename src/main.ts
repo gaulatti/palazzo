@@ -60,7 +60,6 @@ async function bootstrap(): Promise<void> {
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: [
       'Content-Type',
-      'Authorization',
       'Last-Event-ID',
       'Idempotency-Key',
       'X-Command-Sequence',

@@ -9,7 +9,6 @@ services:
       - PALAZZO_PORT=3100
       - PALAZZO_INSTANCE_ID=${PALAZZO_INSTANCE_ID:-palazzo-local}
       - PROGRAM_ID=${PROGRAM_ID:-program-local}
-      - PALAZZO_CONTROL_TOKEN_FILE=/run/secrets/palazzo-control-token
       - LIFECYCLE_TRANSITION_TIMEOUT_MS=${LIFECYCLE_TRANSITION_TIMEOUT_MS:-5000}
       - ICECAST_PORT=${ICECAST_PORT:-8000}
       - ICECAST_SOURCE_PASSWORD=${ICECAST_SOURCE_PASSWORD:-palazzo-source}
@@ -32,17 +31,11 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    secrets:
-      - palazzo-control-token
     networks:
       - default
       - broadcast-control
     volumes:
       - palazzo-fillers:/var/lib/palazzo/fillers
-
-secrets:
-  palazzo-control-token:
-    file: ${PALAZZO_CONTROL_TOKEN_FILE:-./secrets/palazzo-control-token}
 
 networks:
   broadcast-control:

@@ -9,9 +9,9 @@ Stop control program automation without creating or destroying that transport.
 The API is bound to host loopback by the supplied Compose stack and joins the
 private external `broadcast-control` network. Only the Icecast listener mount
 may be published separately. Configure `PROGRAM_ID`, `PALAZZO_INSTANCE_ID`, and
-a non-empty `PALAZZO_CONTROL_TOKEN_FILE` secret.
+the private `broadcast-control` network.
 
-All lifecycle requests require `Authorization: Bearer <token>`. Start and Stop
+All lifecycle requests stay on the private network. Start and Stop
 also require a bounded `Idempotency-Key` and monotonically increasing positive
 `X-Command-Sequence`.
 
@@ -23,14 +23,14 @@ also require a bounded `Idempotency-Key` and monotonically increasing positive
 
 Another program ID returns 404 after authentication. Reusing a key for the
 same command returns the current lifecycle state without repeating effects;
-reusing it for another action or sequence returns 409. Raw keys and bearer
+reusing it for another action or sequence returns 409. Raw keys
 tokens are never returned, retained, or logged.
 
 Start refuses a missing or unprepared filler version. The bound version is
 immutable until Stop; filler edits prepare a later version without changing the
 active session. See [radio-filler.md](radio-filler.md).
 
-An authenticated program-scoped song command also reconciles
+A program-scoped song command also reconciles
 `reconciliation-required` to Ready when Liquidsoap, control telemetry, and
 Icecast are all healthy. This preserves direct Alcantara playout across a
 Palazzo process restart without weakening the dependency checks. Explicit
@@ -60,29 +60,23 @@ Liquidsoap, control telemetry, or Icecast changes actual state to `degraded`
 and identifies each dependency separately. A failed queue clear or readiness
 timeout returns 503 and `failed`; a newer command is required to reconcile.
 
-Program playback uses the same authentication and readiness boundary. See
+Program playback uses the same private-network, program-scope, and readiness boundary. See
 [Program-scoped playout](program-playout.md) for the atomic song-intro
 contract, failure semantics, events, and migration routes.
 
 ## Deployment prerequisites
 
-Local Compose requires the external `broadcast-control` network and the token
-file configured by `PALAZZO_CONTROL_TOKEN_FILE`:
+Local Compose requires the external `broadcast-control` network:
 
 ```bash
 docker network create broadcast-control
-mkdir -p secrets
-openssl rand -hex 32 > secrets/palazzo-control-token
 ```
 
-Production deployment fails closed unless the host already has a non-empty
-regular file at `/etc/palazzo/control-token`, the `broadcast-control` network,
-and the GitHub Actions `PROGRAM_ID` repository variable. Before replacing the
+Production deployment fails closed unless the `broadcast-control` network and
+the GitHub Actions `PROGRAM_ID` repository variable exist. Before replacing the
 live container, the workflow starts the immutable commit image as a candidate
-and verifies its transport and authenticated lifecycle API. It retains the old
-container for rollback until those checks pass in production. Provisioning or
-rotating the production token is a separate operator action; the workflow only
-mounts it read-only.
+and verifies its transport and private lifecycle API. It retains the old
+container for rollback until those checks pass in production.
 
 ## Recovery checks
 

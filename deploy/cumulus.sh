@@ -4,44 +4,20 @@ set -euo pipefail
 
 ghcr_user="$1"
 ghcr_token_base64="$2"
-broadcast_secret_id="$3"
-icecast_secret_id="$4"
-image="$5"
-nginx_config_base64="$6"
-program_id="$7"
+icecast_secret_id="$3"
+image="$4"
+nginx_config_base64="$5"
+program_id="$6"
 docker_config_dir='/tmp/palazzo-docker-config'
 
-test -n "$broadcast_secret_id"
 test -n "$icecast_secret_id"
 test -n "$program_id"
-
-broadcast_payload="$(aws secretsmanager get-secret-value \
-  --region us-east-1 \
-  --secret-id "$broadcast_secret_id" \
-  --query SecretString \
-  --output text)"
-control_token="$(BROADCAST_PAYLOAD="$broadcast_payload" python3 - <<'PY'
-import json
-import os
-
-payload = json.loads(os.environ['BROADCAST_PAYLOAD'])
-token = payload.get('palazzoControlToken')
-if not isinstance(token, str) or not 16 <= len(token) <= 4096:
-    raise SystemExit('Palazzo control token is invalid')
-print(token)
-PY
-)"
 icecast_source_password="$(aws secretsmanager get-secret-value \
   --region us-east-1 \
   --secret-id "$icecast_secret_id" \
   --query SecretString \
   --output text)"
 test -n "$icecast_source_password"
-
-install -d -m 0700 /etc/palazzo
-umask 077
-printf '%s' "$control_token" > /etc/palazzo/control-token
-unset broadcast_payload control_token
 
 rm -rf "$docker_config_dir"
 install -d -m 0700 "$docker_config_dir"
@@ -63,14 +39,12 @@ trap cleanup_candidate EXIT
 
 docker run -d --name palazzo-candidate \
   --network broadcast-control \
-  --volume /etc/palazzo/control-token:/run/secrets/palazzo-control-token:ro \
   --log-driver=local \
   --log-opt max-size=10m \
   --log-opt max-file=3 \
   -e PALAZZO_PORT=3100 \
   -e PALAZZO_INSTANCE_ID=palazzo-production-candidate \
   -e PROGRAM_ID="$program_id" \
-  -e PALAZZO_CONTROL_TOKEN_FILE=/run/secrets/palazzo-control-token \
   -e ICECAST_PORT=8000 \
   -e ICECAST_SOURCE_PASSWORD="$icecast_source_password" \
   "$image"
@@ -101,14 +75,12 @@ fi
 
 if ! docker run -d --name palazzo \
   --network broadcast-control \
-  --volume /etc/palazzo/control-token:/run/secrets/palazzo-control-token:ro \
   --volume palazzo-fillers:/var/lib/palazzo/fillers \
   -p 127.0.0.1:3100:3100 \
   -p 127.0.0.1:8000:8000 \
   -e PALAZZO_PORT=3100 \
   -e PALAZZO_INSTANCE_ID=palazzo-production \
   -e PROGRAM_ID="$program_id" \
-  -e PALAZZO_CONTROL_TOKEN_FILE=/run/secrets/palazzo-control-token \
   -e ICECAST_PORT=8000 \
   -e ICECAST_SOURCE_PASSWORD="$icecast_source_password" \
   --restart=always \

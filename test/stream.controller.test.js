@@ -25,13 +25,13 @@ test('a song command starts automation before entering the playback queue', asyn
   assert.deepEqual(calls, ['start']);
 });
 
-test('lifecycle endpoints authenticate before issuing a command', async () => {
+test('lifecycle endpoints enforce the configured program before issuing a command', async () => {
   const calls = [];
   const controller = new StreamController(
     {},
     {
-      authorize: async (program, authorization) => {
-        calls.push(['authorize', program, authorization]);
+      assertProgram: (program) => {
+        calls.push(['program', program]);
       },
       start: async (key, sequence, version) => {
         calls.push(['start', key, sequence, version]);
@@ -43,20 +43,19 @@ test('lifecycle endpoints authenticate before issuing a command', async () => {
 
   const response = await controller.startAutomation(
     'program-one',
-    'Bearer redacted',
     'command-one',
     '1',
     'filler-v1',
   );
 
   assert.deepEqual(calls, [
-    ['authorize', 'program-one', 'Bearer redacted'],
+    ['program', 'program-one'],
     ['start', 'command-one', '1', 'filler-v1'],
   ]);
   assert.equal(response.actualState, 'ready');
 });
 
-test('metrics authenticate before rendering the collector', async () => {
+test('metrics render on the private control interface', async () => {
   const calls = [];
   const controller = new StreamController(
     {
@@ -67,11 +66,7 @@ test('metrics authenticate before rendering the collector', async () => {
         },
       },
     },
-    {
-      authorizeMachine: async (authorization) => {
-        calls.push(['authorize', authorization]);
-      },
-    },
+    {},
     {
       renderMetrics: () => {
         calls.push(['filler-render']);
@@ -80,20 +75,16 @@ test('metrics authenticate before rendering the collector', async () => {
     },
   );
 
-  const response = await controller.getMetrics('Bearer redacted');
+  const response = await controller.getMetrics();
 
   assert.equal(
     response,
     'palazzo_build_info 1\npalazzo_filler_prepared_versions 1\n',
   );
-  assert.deepEqual(calls, [
-    ['authorize', 'Bearer redacted'],
-    ['render'],
-    ['filler-render'],
-  ]);
+  assert.deepEqual(calls, [['render'], ['filler-render']]);
 });
 
-test('program playback authenticates and preserves the idempotency key', async () => {
+test('program playback enforces program scope and preserves the idempotency key', async () => {
   const calls = [];
   const controller = new StreamController(
     {
@@ -103,7 +94,7 @@ test('program playback authenticates and preserves the idempotency key', async (
       },
     },
     {
-      authorize: async (...args) => calls.push(['authorize', ...args]),
+      assertProgram: (...args) => calls.push(['program', ...args]),
       startFromPlaybackCommand: () => calls.push(['start']),
     },
     {},
@@ -116,15 +107,10 @@ test('program playback authenticates and preserves the idempotency key', async (
     },
   };
 
-  await controller.playProgramSong(
-    'program-one',
-    'Bearer token',
-    'command',
-    payload,
-  );
+  await controller.playProgramSong('program-one', 'command', payload);
 
   assert.deepEqual(calls, [
-    ['authorize', 'program-one', 'Bearer token'],
+    ['program', 'program-one'],
     ['start'],
     ['play', 'program-one', 'command', payload],
   ]);
@@ -135,20 +121,20 @@ test('program instant rejects cross-program assets and maps authoritative IDs', 
   const controller = new StreamController(
     { playInstant: async (payload) => played.push(payload) },
     {
-      authorize: async () => undefined,
+      assertProgram: () => undefined,
       requireReady: () => undefined,
     },
     {},
   );
   await assert.rejects(
-    controller.playProgramInstant('program-one', 'Bearer token', {
+    controller.playProgramInstant('program-one', {
       programId: 'program-two',
       playbackId: 'instant',
       url: 'https://example.test/instant.mp3',
     }),
     /belongs to another program/,
   );
-  await controller.playProgramInstant('program-one', 'Bearer token', {
+  await controller.playProgramInstant('program-one', {
     programId: 'program-one',
     playbackId: 'instant',
     url: 'https://example.test/instant.mp3',
@@ -156,7 +142,7 @@ test('program instant rejects cross-program assets and maps authoritative IDs', 
   assert.equal(played[0].playbackRequestId, 'instant');
 });
 
-test('program preflight authenticates before probing or reading readiness', async () => {
+test('program preflight enforces program scope before probing or reading readiness', async () => {
   const calls = [];
   const controller = new StreamController(
     {
@@ -170,23 +156,19 @@ test('program preflight authenticates before probing or reading readiness', asyn
       },
     },
     {
-      authorize: async (...args) => calls.push(['authorize', ...args]),
+      assertProgram: (...args) => calls.push(['program', ...args]),
     },
     {},
   );
   const payload = { assets: [] };
 
-  await controller.preflightProgramAssets(
-    'program-one',
-    'Bearer redacted',
-    payload,
-  );
-  await controller.getProgramPreflight('program-one', 'Bearer redacted');
+  await controller.preflightProgramAssets('program-one', payload);
+  await controller.getProgramPreflight('program-one');
 
   assert.deepEqual(calls, [
-    ['authorize', 'program-one', 'Bearer redacted'],
+    ['program', 'program-one'],
     ['preflight', 'program-one', payload],
-    ['authorize', 'program-one', 'Bearer redacted'],
+    ['program', 'program-one'],
     ['read', 'program-one'],
   ]);
 });

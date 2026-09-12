@@ -31,19 +31,6 @@ export class PalazzoInfrastructureStack extends Stack {
       { mutable: true },
     );
 
-    const broadcastSecret = new Secret(this, "BroadcastRuntimeSecret", {
-      secretName: "broadcast/production/config",
-      generateSecretString: {
-        secretStringTemplate: JSON.stringify({
-          palazzoAllowedUrls: "http://palazzo:3100",
-        }),
-        generateStringKey: "palazzoControlToken",
-        passwordLength: 64,
-        excludePunctuation: true,
-      },
-    });
-    broadcastSecret.applyRemovalPolicy(RemovalPolicy.RETAIN);
-
     const icecastSecret = new Secret(this, "IcecastSourceSecret", {
       secretName: "broadcast/production/icecast-source-password",
       generateSecretString: {
@@ -61,7 +48,7 @@ export class PalazzoInfrastructureStack extends Stack {
             "secretsmanager:DescribeSecret",
             "secretsmanager:GetSecretValue",
           ],
-          resources: [broadcastSecret.secretArn, icecastSecret.secretArn],
+          resources: [icecastSecret.secretArn],
         }),
       ],
     });
@@ -81,9 +68,6 @@ export class PalazzoInfrastructureStack extends Stack {
     const githubDeployRole = createGitHubDeployRole(this);
     new CfnOutput(this, "GitHubDeployRoleArn", {
       value: githubDeployRole.roleArn,
-    });
-    new CfnOutput(this, "BroadcastRuntimeSecretArn", {
-      value: broadcastSecret.secretArn,
     });
     new CfnOutput(this, "IcecastSourceSecretArn", {
       value: icecastSecret.secretArn,

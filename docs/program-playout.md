@@ -1,13 +1,13 @@
 # Program-scoped playout
 
-Palazzo exposes an authenticated machine-to-machine surface under
+Palazzo exposes a private machine-to-machine surface under
 `/v1/programs/{programId}`. The configured `PROGRAM_ID` is the only accepted
-scope; another program returns 404 after bearer authentication.
+scope; another program returns 404.
 
 ## Atomic song and recorded intro
 
 `POST /v1/programs/{programId}/playback/song` requires
-`Authorization: Bearer <control-token>` and a bounded `Idempotency-Key`.
+a bounded `Idempotency-Key`.
 Alcantara supplies authoritative URLs and IDs:
 
 ```json
@@ -47,7 +47,7 @@ the previous song or without its parent. Retries return the original IDs with
 journal lives on the persistent Palazzo data volume, preserving at-most-once
 behavior across process and container restarts.
 
-After a Palazzo process restart, the first authenticated song command moves a
+After a Palazzo process restart, the first program-scoped song command moves a
 healthy transport from `reconciliation-required` to Ready before entering the
 playback queue. It still fails closed if Liquidsoap, its control telemetry, or
 the Icecast source connection is unavailable. Explicit lifecycle Start is
@@ -68,7 +68,7 @@ fades, and `duckGain` to the song mix. Manual instants remain on the separate
 
 ## Program surface
 
-All routes require the same program-scoped bearer authentication.
+All routes are confined to the private control network and exact configured program.
 
 | Method | Route                    | Purpose                                                                                                                      |
 | ------ | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |

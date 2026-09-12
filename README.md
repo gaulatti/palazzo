@@ -8,8 +8,6 @@ Single Docker container: NestJS + Liquidsoap + Icecast2.
 
 ```bash
 cp .env.example .env
-mkdir -p secrets
-openssl rand -hex 32 > secrets/palazzo-control-token
 docker network create broadcast-control 2>/dev/null || true
 docker compose up -d
 ```
@@ -18,7 +16,7 @@ API: `http://localhost:3100` — Stream: `http://localhost:8000/stream`
 
 ## API
 
-Automation clients should use the authenticated program-scoped surface in
+Automation clients should use the private program-scoped surface in
 [Program-scoped playout](docs/program-playout.md). It provides atomic
 song-plus-intro playout, program-scoped instant/mixer/state/event routes,
 durable idempotency, and explicit intro lifecycle reporting.
@@ -32,11 +30,11 @@ All endpoints at a glance:
 | `GET`  | `/status`                                  | Stream health and metadata                                |
 | `GET`  | `/playback/state`                          | Authoritative current playback snapshot                   |
 | `GET`  | `/playback/events`                         | Replay-safe Server-Sent Events                            |
-| `GET`  | `/metrics`                                 | Authenticated Prometheus telemetry                        |
-| `GET`  | `/v1/programs/:programId/automation`       | Authenticated automation lifecycle state                  |
+| `GET`  | `/metrics`                                 | Private Prometheus telemetry                              |
+| `GET`  | `/v1/programs/:programId/automation`       | Private automation lifecycle state                        |
 | `POST` | `/v1/programs/:programId/automation/start` | Start the program automation without restarting transport |
 | `POST` | `/v1/programs/:programId/automation/stop`  | Clear program material while preserving the Icecast mount |
-| `PUT`  | `/v1/programs/:programId/fillers/:version` | Prepare immutable local radio filler from authenticated Alcantara input |
+| `PUT`  | `/v1/programs/:programId/fillers/:version` | Prepare immutable local radio filler from private Alcantara input |
 | `GET`  | `/v1/programs/:programId/fillers/:version` | Read filler readiness without exposing signed source data |
 | `POST` | `/song`                                    | Push a song, skips current                                |
 | `POST` | `/song/stop`                               | Skip current song                                         |
@@ -52,9 +50,8 @@ travel with the Liquidsoap request and reappear in lifecycle,
 position, and state telemetry. Level samples are emitted at no more than 10 Hz,
 position at 1 Hz, and heartbeats approximately every 10 seconds.
 
-The control API, SSE feed, metrics, and unauthenticated Liquidsoap command
-socket are private interfaces. `/metrics` requires the same mounted bearer
-token as lifecycle control. The provided Compose and deployment mappings bind
+The control API, SSE feed, metrics, and Liquidsoap command socket are private
+interfaces. The provided Compose and deployment mappings bind
 the API to host loopback and join the private `broadcast-control` network;
 publish only Icecast (or route it through a reverse proxy) for listeners.
 On Cumulus, nginx exposes the same stream at `palazzo.gaulatti.com` and the
@@ -68,7 +65,7 @@ CloudWatch.
 
 Palazzo boots in `reconciliation-required`: container or process startup never
 pretends a prior operator Start/Stop succeeded. Alcantara reconciles it through
-the authenticated lifecycle API. Start becomes ready only when Liquidsoap, its
+the private lifecycle API. Start becomes ready only when Liquidsoap, its
 control/telemetry connection, and the Icecast source output are healthy. Stop
 flushes both queues and waits for authoritative idle while leaving Liquidsoap
 and the 24x7 Icecast mount connected. See

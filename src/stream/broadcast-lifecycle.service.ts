@@ -4,11 +4,8 @@ import {
   Injectable,
   NotFoundException,
   ServiceUnavailableException,
-  UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { createHash, timingSafeEqual } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
 import { PlaybackTelemetryService } from './playback-telemetry.service';
 import { StreamService } from './stream.service';
 import { FillerStoreService } from './filler-store.service';
@@ -39,7 +36,6 @@ export class BroadcastLifecycleService {
   readonly programId: string;
   readonly instanceId: string;
 
-  private readonly tokenFile: string;
   private readonly transitionTimeoutMs: number;
   private readonly bootedAt = new Date().toISOString();
   private requestedState: RequestedState = 'reconciliation-required';
@@ -66,9 +62,6 @@ export class BroadcastLifecycleService {
     if (!this.programId) throw new Error('PROGRAM_ID is required');
     this.instanceId =
       config.get<string>('PALAZZO_INSTANCE_ID')?.trim() || 'palazzo';
-    this.tokenFile =
-      config.get<string>('PALAZZO_CONTROL_TOKEN_FILE')?.trim() ||
-      '/run/secrets/palazzo-control-token';
     const configuredTimeout = Number(
       config.get<string>('LIFECYCLE_TRANSITION_TIMEOUT_MS') ?? 5_000,
     );
@@ -80,26 +73,9 @@ export class BroadcastLifecycleService {
     this.transitionTimeoutMs = configuredTimeout;
   }
 
-  async authorize(programId: string, authorization?: string): Promise<void> {
-    await this.authorizeMachine(authorization);
+  assertProgram(programId: string): void {
     if (programId !== this.programId) {
       throw new NotFoundException('program not found');
-    }
-  }
-
-  async authorizeMachine(authorization?: string): Promise<void> {
-    let expected: string;
-    try {
-      expected = (await readFile(this.tokenFile, 'utf8')).trim();
-    } catch {
-      throw new UnauthorizedException('control authentication unavailable');
-    }
-    const prefix = 'Bearer ';
-    const supplied = authorization?.startsWith(prefix)
-      ? authorization.slice(prefix.length)
-      : '';
-    if (!expected || !this.equalSecret(supplied, expected)) {
-      throw new UnauthorizedException('unauthorized');
     }
   }
 
@@ -381,11 +357,5 @@ export class BroadcastLifecycleService {
       () => undefined,
     );
     return result;
-  }
-
-  private equalSecret(supplied: string, expected: string): boolean {
-    const left = Buffer.from(supplied);
-    const right = Buffer.from(expected);
-    return left.length === right.length && timingSafeEqual(left, right);
   }
 }

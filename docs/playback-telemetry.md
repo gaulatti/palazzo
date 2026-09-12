@@ -81,10 +81,9 @@ calls, so it deliberately exposes no fabricated Docker dependency metric.
 
 Liquidsoap Telnet has no authentication and binds only to `127.0.0.1` inside
 the container. The API and SSE mappings bind to host loopback in Compose and
-deployment. `GET /metrics` additionally requires `Authorization: Bearer ...`
-using the same mounted token file as lifecycle control. The central
-`gaulatti/prometheus` deployment must join `broadcast-control`, mount the
-matching token, and scrape `http://palazzo:3100/metrics`; central scrape,
+deployment. `GET /metrics` is available only on that private interface. The
+central `gaulatti/prometheus` deployment must join `broadcast-control` and
+scrape `http://palazzo:3100/metrics`; central scrape,
 dashboard, and alert configuration remain outside this repository.
 
 Metric labels are limited to normalized HTTP method/route/status, fixed
@@ -93,7 +92,7 @@ prom-client runtime buckets/kinds/version components, and bounded service/build
 identity. Program IDs, instance IDs, playback request IDs, media metadata,
 URLs, credentials, and free-form errors never appear in exposition. SSE event
 payloads and snapshot events also remove URL-, token-, password-, credential-,
-and authorization-shaped fields. The authenticated REST state remains the
+and credential-shaped fields. The private REST state remains the
 authoritative debugging surface for current engine metadata.
 The prom-client active-handle, active-request, and active-resource type
 families are excluded because library-defined async-resource names do not
@@ -110,7 +109,7 @@ Node 22.22.0 image by immutable digest. Before changing either digest:
    `liquidsoap --check` command.
 3. Build the image for both `linux/amd64` and `linux/arm64`.
 4. Play a known finite track and verify request ID, metadata, start, position,
-   non-zero levels, end, idle state, SSE replay, and an authenticated metrics
+   non-zero levels, end, idle state, SSE replay, and a private metrics
    scrape that parses as Prometheus text.
 5. Interrupt the command connection while a track plays and verify Palazzo
    marks telemetry stale without emitting a false `track.ended` event.

@@ -59,7 +59,6 @@ jobs:
 
             test -n "${{ vars.PROGRAM_ID }}"
             docker network inspect broadcast-control >/dev/null
-            test -s /etc/palazzo/control-token
             docker volume create palazzo-fillers >/dev/null
             if docker inspect palazzo-candidate >/dev/null 2>&1 || docker inspect palazzo-rollback >/dev/null 2>&1; then
               echo "A previous Palazzo deployment candidate or rollback container requires operator review"
@@ -77,14 +76,12 @@ jobs:
 
             docker run -d --name palazzo-candidate \
               --network broadcast-control \
-              --volume /etc/palazzo/control-token:/run/secrets/palazzo-control-token:ro \
               --log-driver=local \
               --log-opt max-size=10m \
               --log-opt max-file=3 \
               -e PALAZZO_PORT=3100 \
               -e PALAZZO_INSTANCE_ID=palazzo-production-candidate \
               -e PROGRAM_ID="${{ vars.PROGRAM_ID }}" \
-              -e PALAZZO_CONTROL_TOKEN_FILE=/run/secrets/palazzo-control-token \
               -e ICECAST_PORT=8000 \
               -e ICECAST_SOURCE_PASSWORD="${{ secrets.ICECAST_SOURCE_PASSWORD }}" \
               "$IMAGE"
@@ -115,13 +112,11 @@ jobs:
 
             if ! docker run -d --name palazzo \
               --network broadcast-control \
-              --volume /etc/palazzo/control-token:/run/secrets/palazzo-control-token:ro \
               -p 127.0.0.1:${{ vars.PALAZZO_PORT }}:3100 \
               -p 127.0.0.1:${{ vars.ICECAST_PORT }}:8000 \
               -e PALAZZO_PORT=3100 \
               -e PALAZZO_INSTANCE_ID=palazzo-production \
               -e PROGRAM_ID="${{ vars.PROGRAM_ID }}" \
-              -e PALAZZO_CONTROL_TOKEN_FILE=/run/secrets/palazzo-control-token \
               -e ICECAST_PORT=8000 \
               -e ICECAST_SOURCE_PASSWORD="${{ secrets.ICECAST_SOURCE_PASSWORD }}" \
               --volume palazzo-fillers:/var/lib/palazzo/fillers \
@@ -185,7 +180,6 @@ jobs:
           fi
           CUMULUS_INSTANCE_ID="$(jq -r '.[0]' <<<"$INSTANCE_IDS")"
 
-          BROADCAST_SECRET_ID='broadcast/production/config'
           ICECAST_SECRET_ID='broadcast/production/icecast-source-password'
 
           SCRIPT_BASE64="$(base64 -w 0 deploy/cumulus.sh)"
@@ -195,7 +189,6 @@ jobs:
             --arg script "$SCRIPT_BASE64" \
             --arg user "$GITHUB_ACTOR" \
             --arg token "$TOKEN_BASE64" \
-            --arg broadcastSecret "$BROADCAST_SECRET_ID" \
             --arg icecastSecret "$ICECAST_SECRET_ID" \
             --arg image "ghcr.io/${GITHUB_REPOSITORY}/palazzo:${GITHUB_SHA}" \
             --arg nginx "$NGINX_BASE64" \
@@ -203,7 +196,7 @@ jobs:
             '[
               "printf %s " + ($script | @sh) + " | base64 -d > /tmp/deploy-palazzo.sh",
               "chmod 0700 /tmp/deploy-palazzo.sh",
-              "deployment_status=0; /tmp/deploy-palazzo.sh " + ([$user, $token, $broadcastSecret, $icecastSecret, $image, $nginx, $programId] | map(@sh) | join(" ")) + " || deployment_status=$?; rm -f /tmp/deploy-palazzo.sh; exit $deployment_status"
+              "deployment_status=0; /tmp/deploy-palazzo.sh " + ([$user, $token, $icecastSecret, $image, $nginx, $programId] | map(@sh) | join(" ")) + " || deployment_status=$?; rm -f /tmp/deploy-palazzo.sh; exit $deployment_status"
             ] | join("\n")')"
           PARAMETERS="$(jq -cn --arg command "$REMOTE_COMMAND" '{commands:[$command],executionTimeout:["600"]}')"
           COMMAND_ID="$(aws ssm send-command \

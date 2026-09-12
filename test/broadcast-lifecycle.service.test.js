@@ -1,7 +1,4 @@
 const assert = require('node:assert/strict');
-const { mkdtemp, rm, writeFile } = require('node:fs/promises');
-const { tmpdir } = require('node:os');
-const { join } = require('node:path');
 const test = require('node:test');
 const {
   BroadcastLifecycleService,
@@ -249,15 +246,11 @@ test('rejects replayed sequences and key reuse for another action', async () => 
   });
 });
 
-test('private authentication rejects missing credentials and wrong program scope', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'palazzo-auth-'));
-  const tokenFile = join(directory, 'token');
-  await writeFile(tokenFile, 'test-control-token\n');
+test('private control rejects the wrong single-program scope without credentials', () => {
   const state = playback();
   const values = {
     PROGRAM_ID: 'program-one',
     PALAZZO_INSTANCE_ID: 'palazzo-test',
-    PALAZZO_CONTROL_TOKEN_FILE: tokenFile,
   };
   const service = new BroadcastLifecycleService(
     { get: (key) => values[key] },
@@ -265,21 +258,9 @@ test('private authentication rejects missing credentials and wrong program scope
     { getState: () => state },
     { getActiveVersion: () => null, activate: async () => undefined, deactivate: async () => undefined },
   );
-  try {
-    await assert.rejects(service.authorize('program-one'), /unauthorized/);
-    await assert.rejects(service.authorizeMachine(), /unauthorized/);
-    await assert.rejects(
-      service.authorizeMachine('Bearer wrong-control-token'),
-      /unauthorized/,
-    );
-    await assert.rejects(
-      service.authorize('wrong-program', 'Bearer test-control-token'),
-      /program not found/,
-    );
-    await service.authorizeMachine('Bearer test-control-token');
-    await service.authorize('program-one', 'Bearer test-control-token');
-    assert.doesNotMatch(JSON.stringify(service.getState()), /test-control-token/);
-  } finally {
-    await rm(directory, { recursive: true });
-  }
+  assert.throws(
+    () => service.assertProgram('wrong-program'),
+    /program not found/,
+  );
+  service.assertProgram('program-one');
 });
