@@ -63,6 +63,10 @@ three 10 MB files per container. Operators can inspect them with
 `docker logs --tail 200 palazzo`; Palazzo does not send application logs to
 CloudWatch.
 
+For a failed Cumulus deployment, the GitHub Actions job shows SSM remote stdout
+and stderr as separate lines and annotates the remote exit code. A missing
+deployment token is reported by name without showing its value.
+
 Palazzo boots in `reconciliation-required`: container or process startup never
 pretends a prior operator Start/Stop succeeded. Alcantara reconciles it through
 the private lifecycle API. Start becomes ready only when Liquidsoap, its
