@@ -40,6 +40,7 @@ All endpoints at a glance:
 | `POST` | `/song/stop`                               | Skip current song                                         |
 | `POST` | `/instant`                                 | Push a jingle/SFX                                         |
 | `POST` | `/instant/stop`                            | Stop all instants                                         |
+| `GET`  | `/v1/programs/:programId/output/audio` | Return the configured Icecast audio on the private API |
 | `GET`  | `/mixer`                                   | Read the applied song, instant, and main mixer state      |
 | `PUT`  | `/mixer`                                   | Apply song, instant, and main volume/mute controls        |
 | `GET`  | `/proxy-audio?url=`                        | CORS proxy for audio URLs                                 |
@@ -91,3 +92,13 @@ Telemetry operations and migration guidance:
 ## License
 
 MIT
+
+## Program audio return
+
+Alcántara monitors the encoded output through
+`GET /v1/programs/:programId/output/audio`. Palazzo connects only to its own
+configured `ICECAST_PORT`/`ICECAST_MOUNT` on loopback, preserving content type
+and forwarding bytes incrementally. This private program-scoped endpoint needs
+no public listener hostname. Closing the client closes the Icecast connection
+without changing broadcast playback. See the wiki API Reference for errors and
+monitor metrics.

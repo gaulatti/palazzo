@@ -73,6 +73,7 @@ test('metrics render on the private control interface', async () => {
         return 'palazzo_filler_prepared_versions 1\n';
       },
     },
+    { renderMetrics: async () => '' },
   );
 
   const response = await controller.getMetrics();

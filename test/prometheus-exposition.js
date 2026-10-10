@@ -71,6 +71,9 @@ function assertBoundedLabels(samples) {
     ]),
     outcome: new Set(["conflict", "failure", "success"]),
     result: new Set([
+      "opened",
+      "closed",
+      "aborted",
       "accepted",
       "deduplicated",
       "ended",
@@ -117,6 +120,7 @@ function assertBoundedLabels(samples) {
       "/v1/programs/:programId/automation/stop",
       "/v1/programs/:programId/fillers/:version",
       "/v1/programs/:programId/mixer",
+      "/v1/programs/:programId/output/audio",
       "/v1/programs/:programId/playback/events",
       "/v1/programs/:programId/playback/instant",
       "/v1/programs/:programId/playback/instant/stop",

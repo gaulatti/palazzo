@@ -155,6 +155,7 @@ const NORMALIZED_METHODS = new Set([
   'PUT',
 ]);
 const NORMALIZED_ROUTES = new Set([
+  '/v1/programs/:programId/output/audio',
   '/status',
   '/song',
   '/song/stop',

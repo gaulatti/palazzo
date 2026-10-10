@@ -3,6 +3,7 @@ import { APP_INTERCEPTOR } from '@nestjs/core';
 import { MetricsInterceptor } from './metrics.interceptor';
 import { StreamController } from './stream.controller';
 import { StreamService } from './stream.service';
+import { ProgramMonitorService } from './program-monitor.service';
 import { PlaybackTelemetryService } from './playback-telemetry.service';
 import { BroadcastLifecycleService } from './broadcast-lifecycle.service';
 import { FillerStoreService } from './filler-store.service';
@@ -21,6 +22,7 @@ import { FillerStoreService } from './filler-store.service';
     PlaybackTelemetryService,
     FillerStoreService,
     StreamService,
+    ProgramMonitorService,
     BroadcastLifecycleService,
     { provide: APP_INTERCEPTOR, useClass: MetricsInterceptor },
   ],

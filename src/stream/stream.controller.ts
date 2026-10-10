@@ -10,6 +10,7 @@ import {
   Post,
   Put,
   Query,
+  Res,
   Sse,
   StreamableFile,
 } from "@nestjs/common";
@@ -24,6 +25,8 @@ import {
   type ProgramPreflightRequest,
 } from "./stream.service";
 import { BroadcastLifecycleService } from "./broadcast-lifecycle.service";
+import { ProgramMonitorService } from './program-monitor.service';
+import type { ServerResponse } from 'node:http';
 import {
   FillerStoreService,
   type FillerPreparationRequest,
@@ -51,7 +54,29 @@ export class StreamController {
     private readonly streamService: StreamService,
     private readonly lifecycle: BroadcastLifecycleService,
     private readonly fillerStore: FillerStoreService,
+    private readonly monitor: ProgramMonitorService,
   ) {}
+
+  @Get('v1/programs/:programId/output/audio')
+  @Header('Cache-Control', 'no-store')
+  @Header('X-Accel-Buffering', 'no')
+  async programAudio(
+    @Param('programId') programId: string,
+    @Res({ passthrough: true }) reply: { raw: ServerResponse },
+  ): Promise<StreamableFile> {
+    this.lifecycle.assertProgram(programId);
+    const abort = new AbortController();
+    const close = () => abort.abort();
+    reply.raw.once('close', close);
+    try {
+      const output = await this.monitor.open(abort.signal);
+      output.stream.once('close', () => reply.raw.removeListener('close', close));
+      return new StreamableFile(output.stream, { type: output.type });
+    } catch (error) {
+      reply.raw.removeListener('close', close);
+      throw error;
+    }
+  }
 
   @Get("v1/programs/:programId/automation")
   async getAutomation(@Param("programId") programId: string): Promise<unknown> {
@@ -277,7 +302,7 @@ export class StreamController {
   @Header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
   async getMetrics(): Promise<string> {
     const telemetry = await this.streamService.telemetry.renderMetrics();
-    return `${telemetry}${this.fillerStore.renderMetrics()}`;
+    return `${telemetry}${this.fillerStore.renderMetrics()}${await this.monitor.renderMetrics()}`;
   }
 
   /**
