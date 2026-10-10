@@ -102,3 +102,9 @@ and forwarding bytes incrementally. This private program-scoped endpoint needs
 no public listener hostname. Closing the client closes the Icecast connection
 without changing broadcast playback. See the wiki API Reference for errors and
 monitor metrics.
+
+Production dependency verification uses `npm audit --omit=dev --audit-level=high`.
+The Fastify override pins 5.12.5 while keeping NestJS on version 11; remove or
+update it only after the adapter resolves a patched version and the HTTP/runtime
+gates pass. The unused Dockerode SDK is removed: Palazzo manages its Liquidsoap
+child process directly. These dependency corrections preserve metric contracts.
