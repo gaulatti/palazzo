@@ -26,11 +26,7 @@ const assertBoundedLocalLogging = (definition, expectedContainers) => {
 };
 
 test('preserves the on-premises gate and adds the fail-closed Cumulus path', () => {
-  assert.equal(
-    workflow.match(/uses: actions\/checkout@v4/g)?.length,
-    2,
-    'the independent deploy job must check out its deployment definitions',
-  );
+  assert.match(workflow, /- name: Checkout deployment definitions\s+uses: actions\/checkout@v4/);
   assert.match(workflow, /if: vars\.ON_PREMISES == 'true'/);
   assert.match(workflow, /if: vars\.ON_PREMISES != 'true'/);
   assert.match(workflow, /role\/palazzo-github-deploy/);

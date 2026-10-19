@@ -104,6 +104,28 @@ the container, and provider calls wait for real verification to finish. A bot
 merge explicitly dispatches the existing deployment workflow for runtime changes;
 deployment completion and live stream health remain separate checks.
 
+## Post-deployment wiki documentation
+
+A successful `Deploy` workflow runs Clouseau's wiki generator against the exact
+deployed source revision and the existing wiki. It plans all affected pages
+together, generates the required changes and checks their factual support and
+internal links. A separate publisher verifies deployment again and publishes the
+complete update in one non-force Git commit. Failed deployment, unsupported
+claims or concurrent human wiki edits prevent publication.
+
+`.github/clouseau-wiki.json` selects the public source evidence and binds
+publication to the `deploy` job in `deploy.yml`. The generator has read-only
+permissions and the DeepSeek key; the publisher has wiki write permission and no
+provider key. Drafts and diagnostics are retained by workflow run and attempt.
+An already documented source revision skips model calls.
+
+For a read-only preview, dispatch `Deploy` with `validate_wiki_only=true`. This
+skips the build and deployment jobs, validates the generated draft and checks
+wiki write access with a dry run. It does not publish the draft.
+
+Documentation is its own delivery stage. Ticket closeout remains a separate
+stage; publishing wiki pages does not close issues or declare a ticket solved.
+
 ## Documentation
 
 - [Architecture](wiki/Architecture) — System design, data flow, Liquidsoap engine
