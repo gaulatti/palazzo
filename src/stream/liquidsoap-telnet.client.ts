@@ -1,4 +1,5 @@
 import { Socket } from 'node:net';
+import { StringDecoder } from 'node:string_decoder';
 
 const RESPONSE_TERMINATOR = /\r?\nEND\r?\n/;
 
@@ -18,6 +19,7 @@ export interface LiquidsoapTelnetClientOptions {
 export class LiquidsoapTelnetClient {
   private socket: Socket | null = null;
   private buffer = '';
+  private decoder = new StringDecoder('utf8');
   private hasConnected = false;
   private tail: Promise<unknown> = Promise.resolve();
   private current:
@@ -50,6 +52,7 @@ export class LiquidsoapTelnetClient {
     this.socket?.destroy();
     this.socket = null;
     this.buffer = '';
+    this.decoder = new StringDecoder('utf8');
   }
 
   private async execute(command: string): Promise<string> {
@@ -125,6 +128,7 @@ export class LiquidsoapTelnetClient {
           ),
         );
         this.buffer = '';
+        this.decoder = new StringDecoder('utf8');
         this.socket = socket;
         resolve(socket);
       });
@@ -132,7 +136,7 @@ export class LiquidsoapTelnetClient {
   }
 
   private onData(chunk: Buffer): void {
-    this.buffer += chunk.toString('utf8');
+    this.buffer += this.decoder.write(chunk);
     const match = RESPONSE_TERMINATOR.exec(this.buffer);
     if (!match || !this.current) return;
 
@@ -150,6 +154,7 @@ export class LiquidsoapTelnetClient {
     socket.destroy();
     this.socket = null;
     this.buffer = '';
+    this.decoder = new StringDecoder('utf8');
   }
 
   private rejectCurrent(error: Error): void {
