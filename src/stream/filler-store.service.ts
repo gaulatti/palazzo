@@ -310,7 +310,6 @@ export class FillerStoreService {
       this.outcomes.success += 1;
       this.preparationState = this.publicManifest(manifest);
       await this.cleanup();
-      return this.preparationState;
     } catch (error) {
       this.outcomes.failure += 1;
       const reason = this.boundedReason(error);
@@ -327,6 +326,7 @@ export class FillerStoreService {
     } finally {
       await rm(staging, { recursive: true, force: true });
     }
+    return this.preparationState;
   }
 
   private validateRequest(request: FillerPreparationRequest, key?: string) {

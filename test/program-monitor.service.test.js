@@ -10,10 +10,11 @@ const { EventEmitter } = require("node:events");
 async function fixture(handler) {
   const server = createServer(handler);
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = server.address().port;
   const service = new ProgramMonitorService({
     get: (key) =>
       ({
-        ICECAST_PORT: server.address().port,
+        ICECAST_PORT: port,
         ICECAST_MOUNT: "/custom-output",
       })[key],
   });
@@ -183,6 +184,73 @@ test("the Fastify route returns live audio and exposes the actual collector afte
   assertBoundedLabels(parseExposition(payload));
   assert.match(payload, /palazzo_program_monitor_connections 0/);
   assert.match(payload, /sessions_total\{result="aborted"\} 1/);
+  // All disconnect/metric assertions precede teardown. Node's HTTP pool may
+  // retain the fixture's keep-alive sockets after the audio reader aborts.
+  app.getHttpServer().closeAllConnections();
   await app.close();
   await close();
+});
+
+test('complete and truncated upstream audio have distinct bounded outcomes', async (t) => {
+  for (const truncate of [false, true]) {
+    let response;
+    const context = await fixture((_req, res) => {
+      response = res;
+      res.writeHead(200, { 'Content-Type': 'audio/mpeg' });
+      if (truncate) res.write(Buffer.from([255, 251]));
+      else res.end(Buffer.from([255, 251]));
+    });
+    const output = await context.service.open(new AbortController().signal);
+    output.stream.on('error', () => {});
+    if (truncate) {
+      await new Promise((resolve) => output.stream.once('data', resolve));
+      const closed = new Promise((resolve) => output.stream.once('close', resolve));
+      response.destroy();
+      await closed;
+    } else {
+      const chunks = [];
+      for await (const chunk of output.stream) chunks.push(chunk);
+      assert.deepEqual(Buffer.concat(chunks), Buffer.from([255, 251]));
+    }
+    await new Promise(setImmediate);
+    const metrics = await context.service.renderMetrics();
+    assert.match(metrics, /palazzo_program_monitor_connections 0/);
+    assert.match(metrics, new RegExp(`sessions_total\\{result="${truncate ? 'failure' : 'closed'}"\\} 1`));
+    await context.close();
+  }
+});
+
+test('missing Content-Type, refused connections and cancellation before headers reject explicitly', async () => {
+  const context = await fixture((_req, res) => res.end('not identified as audio'));
+  await assert.rejects(context.service.open(new AbortController().signal), /unavailable/);
+  const abort = new AbortController();
+  abort.abort();
+  await assert.rejects(context.service.open(abort.signal), /unavailable/);
+  assert.match(await context.service.renderMetrics(), /result="aborted"\} 1/);
+  await context.close();
+  await assert.rejects(context.service.open(new AbortController().signal), /unavailable/);
+});
+
+test('header timeouts terminate the real HTTP request and default configuration remains loopback-only', async (t) => {
+  const http = require('node:http');
+  const { once } = require('node:events');
+  const server = http.createServer(() => {});
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => { server.closeAllConnections(); return new Promise((resolve) => server.close(resolve)); });
+  const request = http.request;
+  t.mock.method(http, 'request', (options) => {
+    assert.equal(options.hostname, '127.0.0.1');
+    assert.equal(options.port, 8000);
+    assert.equal(options.path, '/stream');
+    return request({ ...options, port: server.address().port });
+  });
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const service = new ProgramMonitorService({ get: () => undefined });
+  const received = once(server, 'request');
+  const pending = service.open(new AbortController().signal);
+  await received;
+  t.mock.timers.tick(8000);
+  await assert.rejects(pending, /unavailable/);
+  assert.match(await service.renderMetrics(), /result="failure"\} 1/);
 });

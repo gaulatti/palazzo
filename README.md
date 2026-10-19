@@ -81,6 +81,29 @@ Full details: [API Reference](wiki/API-Reference)
 Telemetry operations and migration guidance:
 [docs/playback-telemetry.md](docs/playback-telemetry.md).
 
+## Pull request verification
+
+Every PR runs unit tests with exact 100% line and branch coverage over all
+application sources, type-checking, the production dependency audit, workflow
+security tests, and real Liquidsoap/Icecast container checks. Run
+`npm run test:coverage` locally with Node 22.22.0 and ffmpeg/ffprobe installed.
+Native c8 reports include unloaded bootstrap/module files; Clouseau independently
+checks the complete source inventory and exact counters.
+
+After those checks pass, the pinned Clouseau reviewer assesses purpose, need,
+proportionality, technical findings and test integrity. Jev grades its qualified
+narrow factors; independent DeepSeek reviews handle the remaining questions.
+Passing reviews receive a bot approval and native auto-merge under main's branch
+protection. Unresolved product-direction decisions go to gaulatti. Intent
+confirmation never waives tests, coverage or integrity. See
+[the purpose contract](.github/clouseau.md) and
+[Continuous Verification](https://github.com/gaulatti/palazzo/wiki/Continuous-Verification).
+
+Verification and AI review run separately: metadata reassessment does not rebuild
+the container, and provider calls wait for real verification to finish. A bot
+merge explicitly dispatches the existing deployment workflow for runtime changes;
+deployment completion and live stream health remain separate checks.
+
 ## Documentation
 
 - [Architecture](wiki/Architecture) — System design, data flow, Liquidsoap engine

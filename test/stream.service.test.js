@@ -7,6 +7,7 @@ const {
   PlaybackTelemetryService,
 } = require("../dist/stream/playback-telemetry.service.js");
 const { StreamService } = require("../dist/stream/stream.service.js");
+const { mediaProbeResult } = require('./media-probe-fixture');
 
 function streamService() {
   const config = { get: () => undefined };
@@ -131,7 +132,7 @@ test("prepares an intro before replacing the song and deduplicates retries", asy
   const directory = await mkdtemp(join(tmpdir(), "palazzo-playout-"));
   const { service, commands } = streamService();
   service.playoutJournalPath = join(directory, "commands.json");
-  service.assetProbe = async () => undefined;
+  service.assetProbe = async () => mediaProbeResult();
   const payload = {
     song: {
       programId: "program-one",
@@ -211,6 +212,7 @@ test("intro readiness failure degrades to song-only playout", async () => {
   service.assetProbe = async () => {
     probes += 1;
     if (probes === 2) throw new Error("unavailable");
+    return mediaProbeResult();
   };
 
   const result = await service.playProgramSong("program-one", "command", {
@@ -372,7 +374,7 @@ test("rejects an invalid song before queue mutation and records a bounded prefli
 
 test("rejects cross-program assets before touching Liquidsoap", async () => {
   const { service, commands } = streamService();
-  service.assetProbe = async () => undefined;
+  service.assetProbe = async () => mediaProbeResult();
   await assert.rejects(
     service.playProgramSong("program-one", "command", {
       song: {

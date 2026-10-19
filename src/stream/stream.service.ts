@@ -166,7 +166,7 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
   private now = (): number => Date.now();
   private assetProbe = async (
     url: string,
-  ): Promise<MediaProbeResult | undefined> => {
+  ): Promise<MediaProbeResult> => {
     const { stdout } = await execFileAsync(
       "ffprobe",
       [
@@ -921,8 +921,7 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
-      const probed = await this.assetProbe(asset.url);
-      const media = probed ?? testProbeResult();
+      const media = await this.assetProbe(asset.url);
       validateProbeResult(media);
       const completedAt = this.now();
       checkedAt = new Date(completedAt).toISOString();
@@ -964,10 +963,8 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
     this.preflightAssets.delete(key);
     this.preflightAssets.set(key, state);
     while (this.preflightAssets.size > this.preflightCacheEntries) {
-      const oldest = this.preflightAssets.keys().next().value as
-        | string
-        | undefined;
-      if (!oldest) break;
+      // An over-capacity map is nonempty; every key is a scoped asset identity.
+      const oldest = this.preflightAssets.keys().next().value!;
       this.preflightAssets.delete(oldest);
     }
   }
@@ -1157,6 +1154,7 @@ function parseProbeOutput(stdout: string): MediaProbeResult {
 
 function validateProbeResult(result: MediaProbeResult): void {
   if (
+    !result ||
     result.mediaType !== "audio" ||
     !result.codec ||
     !Number.isFinite(result.durationSeconds) ||
@@ -1170,18 +1168,6 @@ function validateProbeResult(result: MediaProbeResult): void {
   ) {
     throw new PreflightProbeError("invalid_metadata");
   }
-}
-
-function testProbeResult(): MediaProbeResult {
-  return {
-    mediaType: "audio",
-    format: "test-double",
-    codec: "test-double",
-    durationSeconds: 1,
-    sampleRateHz: 48_000,
-    channels: 2,
-    readablePacketBytes: 1,
-  };
 }
 
 class PreflightProbeError extends Error {

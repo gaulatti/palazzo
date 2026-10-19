@@ -74,3 +74,55 @@ test('reconnects after a dropped persistent connection', async () => {
   client.close();
   await close(server);
 });
+
+test('timed out commands reject, destroy the socket and clear the pending response', async (t) => {
+  const server = net.createServer((socket) => {
+    socket.on('data', (chunk) => { if (chunk.toString().trim() !== 'timeout') socket.write('recovered\r\nEND\r\n'); });
+  });
+  const port = await listen(server);
+  const client = new LiquidsoapTelnetClient({ port, commandTimeoutMs: 25 });
+  t.after(async () => { client.close(); await close(server); });
+  await assert.rejects(client.send('timeout'), /timed out after 25ms/);
+  assert.equal(client.current, undefined);
+  assert.equal(client.socket === null || client.socket.destroyed, true);
+  client.onData(Buffer.from('\r\nEND\r\n'));
+});
+
+test('failed connections retry with a bound and expose the last dependency error', async () => {
+  const reservation = net.createServer();
+  const port = await listen(reservation);
+  await close(reservation);
+  const client = new LiquidsoapTelnetClient({ host: '127.0.0.1', port, maxReconnectAttempts: 2, reconnectBaseDelayMs: 1 });
+  await assert.rejects(client.send('never sent'), /Unable to connect.*2 attempts.*ECONNREFUSED/);
+  client.close();
+  const disabled = new LiquidsoapTelnetClient({ port, maxReconnectAttempts: 0 });
+  await assert.rejects(disabled.send('never sent'), /0 attempts: unknown error/);
+  disabled.close();
+});
+
+test('retry diagnostics normalize non-Error transport rejections', async (t) => {
+  const client = new LiquidsoapTelnetClient({ port: 1, maxReconnectAttempts: 1 });
+  t.mock.method(client, 'connect', async () => { throw 'transport fixture'; });
+  await assert.rejects(client.send('command'), /transport fixture/);
+  client.close();
+});
+
+test('write callback failures and socket error events reject active commands without hanging the queue', async (t) => {
+  const server = net.createServer((socket) => socket.resume());
+  const port = await listen(server);
+  const client = new LiquidsoapTelnetClient({ port });
+  t.after(async () => { client.close(); await close(server); });
+  // Inject an OS write failure at the socket callback, after a real TCP connect.
+  const socket = await client.connectWithRetry();
+  const write = t.mock.method(socket, 'write', function (chunk, encoding, callback) {
+    queueMicrotask(() => callback(new Error('EPIPE fixture')));
+    return false;
+  });
+  await assert.rejects(client.send('write-failure'), /EPIPE fixture/);
+  write.mock.restore();
+  const pending = client.send('socket-failure');
+  await new Promise((resolve) => server.once('connection', resolve));
+  await new Promise(setImmediate);
+  client.socket.emit('error', new Error('ECONNRESET fixture'));
+  await assert.rejects(pending, /ECONNRESET fixture/);
+});

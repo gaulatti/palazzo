@@ -1,0 +1,11 @@
+.git
+node_modules
+dist
+coverage
+wiki
+.agents
+.clouseau-ci
+.clouseau-review
+.env
+secrets
+*.log

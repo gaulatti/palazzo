@@ -1,11 +1,27 @@
 name: Deploy
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
     paths:
-      - '**'
+      - 'src/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'nest-cli.json'
+      - 'tsconfig.json'
+      - 'tsconfig.build.json'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - 'docker-entrypoint.sh'
+      - 'compose.yml'
+      - 'deploy/**'
+      - '.github/workflows/deploy.yml'
+
+concurrency:
+  group: palazzo-production
+  cancel-in-progress: false
 
 jobs:
   build:

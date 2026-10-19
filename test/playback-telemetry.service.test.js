@@ -425,3 +425,94 @@ test('distinguishes operator stops from natural ends using engine timestamps', (
     new Date(1_700_000_002 * 1000).toISOString(),
   );
 });
+
+test('journal initialization rejects unreadable/corrupt and exhausted reservations and validates stored sequences', async (t) => {
+  const { writeFile, rm } = require('node:fs/promises');
+  const root = await mkdtemp(join(tmpdir(), 'palazzo-sequence-errors-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  for (const [contents, expected] of [['{bad', /unavailable/], [JSON.stringify({ nextSequence: Number.MAX_SAFE_INTEGER }), /exhausted/]]) {
+    const path = join(root, 'invalid.json');
+    await writeFile(path, contents);
+    const telemetry = service({ PLAYBACK_EVENT_SEQUENCE_PATH: path });
+    await assert.rejects(telemetry.initialize(), expected);
+    telemetry.shutdown();
+  }
+  const unreadable = service({ PLAYBACK_EVENT_SEQUENCE_PATH: root });
+  await assert.rejects(unreadable.initialize(), /unavailable/);
+  unreadable.shutdown();
+  for (const nextSequence of ['1', 1.2, -1]) {
+    const path = join(root, `value-${nextSequence}.json`);
+    await writeFile(path, JSON.stringify({ nextSequence }));
+    const telemetry = service({ PLAYBACK_EVENT_SEQUENCE_PATH: path });
+    await telemetry.initialize();
+    telemetry.reportPlayout('queued', {});
+    assert.equal(telemetry.getState().sequence, 1);
+    telemetry.shutdown();
+  }
+});
+
+test('engine snapshots clear ended intros and normalize unavailable metadata and nonfinite levels', () => {
+  const telemetry = service();
+  telemetry.apply(snapshot({ intro_playing: true, intro_playback_id: 'intro', intro_started_at: 1 }), []);
+  telemetry.apply(snapshot({ intro_playing: false, title: '', artist: '', cover_url: '', elapsed: NaN, remaining: -1, song_rms: NaN, song_peak: 5, instant_rms: -1, instant_peak: Infinity }), []);
+  const state = telemetry.getState();
+  assert.equal(state.intro, null);
+  assert.equal(state.track.title, null);
+  assert.equal(state.track.artist, null);
+  assert.equal(state.track.coverUrl, null);
+  assert.equal(state.positionSeconds, 0);
+  assert.equal(state.remainingSeconds, null);
+  assert.deepEqual(state.levels.song, { rms: 0, peak: 1 });
+  assert.deepEqual(state.levels.instant, { rms: 0, peak: 0 });
+  telemetry.shutdown();
+});
+
+test('lifecycle handles missing optional metadata, unrelated endings and nonadjacent engine timestamps', () => {
+  const telemetry = service();
+  const event = (sequence, type, occurred_at) => ({ ...lifecycle(sequence, type), playback_id: '', title: '', artist: '', cover_url: '', occurred_at });
+  telemetry.apply(snapshot({ liquidsoap_sequence: 1 }), [event(1, 'track_started', 100)]);
+  telemetry.expectTrackEnd('stopped');
+  telemetry.cancelExpectedTrackEnd();
+  telemetry.apply(snapshot({ liquidsoap_sequence: 2 }), [{ ...event(2, 'track_ended', 110), playback_request_id: 'other' }]);
+  assert.equal(telemetry.replay.findLast((e) => e.type === 'playout.stopped').data.reason, 'natural_end');
+  telemetry.apply(snapshot({ liquidsoap_sequence: 3 }), [event(3, 'track_started', 90)]);
+  telemetry.apply(snapshot({ liquidsoap_sequence: 4 }), [event(4, 'track_ended', 100)]);
+  telemetry.apply(snapshot({ liquidsoap_sequence: 5 }), [event(5, 'track_started', 140)]);
+  assert.equal(telemetry.replay.filter((e) => e.type === 'playout.transitioned').length, 0);
+  telemetry.apply(snapshot({ liquidsoap_sequence: 6, playing: false }), [event(6, 'intro_ended', 150)]);
+  assert.equal(telemetry.getState().track, null);
+  telemetry.shutdown();
+});
+
+test('replay evicts non-level events and sanitizes nested objects and arrays without losing public values', async () => {
+  const telemetry = service();
+  for (let index = 0; index < 700; index += 1) telemetry.reportPlayout('queued', { index });
+  telemetry.reportPlayout('queued', { nested: [null, 'ok', { token: 'private', url: 'private', safe: 4 }], value: null });
+  assert.deepEqual(telemetry.replay.at(-1).data, { nested: [null, 'ok', { safe: 4 }], value: null });
+  assert.match(await telemetry.renderMetrics(), /replay_dropped_total\{type="other"\} [1-9]/);
+  assert.ok(telemetry.replay.length <= 512);
+  telemetry.shutdown();
+});
+
+test('legacy engine IDs remain correlated through skips and the next transition', () => {
+  const telemetry = service();
+  telemetry.apply(snapshot(), [{ ...lifecycle(1, 'track_started'), playback_id: '' }]);
+  telemetry.expectTrackEnd('skipped');
+  telemetry.apply(snapshot({ liquidsoap_sequence: 2, playing: false }), [{ ...lifecycle(2, 'track_ended'), playback_id: '' }]);
+  telemetry.apply(snapshot({ liquidsoap_sequence: 3 }), [{ ...lifecycle(3, 'track_started'), playback_id: '' }]);
+  assert.equal(telemetry.replay.findLast((e) => e.type === 'playout.skipped').data.playbackId, 'request-1');
+  assert.equal(telemetry.replay.findLast((e) => e.type === 'playout.transitioned').data.toPlaybackId, 'request-1');
+  telemetry.shutdown();
+});
+
+test('exhausted event reservations refuse to emit beyond the durable sequence ceiling', () => {
+  const telemetry = service();
+  // Reachable after one reserved billion-event range; set the precondition
+  // directly rather than generating a billion events in a unit test.
+  telemetry.sequence = telemetry.sequenceCeiling;
+  const before = telemetry.replay.length;
+  assert.throws(() => telemetry.reportPlayout('queued', {}), /reservation is exhausted/);
+  assert.equal(telemetry.replay.length, before);
+  assert.equal(telemetry.getState().sequence, telemetry.sequenceCeiling);
+  telemetry.shutdown();
+});

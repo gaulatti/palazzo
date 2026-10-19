@@ -1,0 +1,11 @@
+{
+  "all": true,
+  "src": ["dist"],
+  "include": ["dist/**/*.js"],
+  "exclude": [],
+  "reporter": ["text", "json", "json-summary", "lcov"],
+  "check-coverage": true,
+  "per-file": true,
+  "lines": 100,
+  "branches": 100
+}
