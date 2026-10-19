@@ -56,6 +56,11 @@ from the old socket cannot complete or reject the replacement's command. A
 successful recovery still counts one Telnet reconnect attempt; ignored stale
 callbacks do not trigger another reconnect or change the retry limits.
 
+Telnet response text is decoded incrementally as UTF-8 before line framing, so
+artist names and other metadata survive a character split across TCP chunks.
+Closing or replacing a connection discards its partial character along with its
+response buffer; bytes from different connections are never combined.
+
 Useful metrics:
 
 - `palazzo_build_info{service="palazzo",version="..."}`
