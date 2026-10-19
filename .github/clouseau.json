@@ -41,7 +41,7 @@
   },
   "local_review": {
     "mode": "optional",
-    "reviewer_digest": "3dc3835d765338a42f6281c7365da9a7cb8ddcc5468f4c055b2c53c1b5cf1048",
+    "reviewer_digest": "3d600841ce1616881a47d19dd3a5f696129ebc912b41dd01e32edacc7461b0f8",
     "max_age_seconds": 3600,
     "keys": [
       {
