@@ -6,3 +6,6 @@ secrets/
 /tmp/
 .DS_Store
 wiki
+coverage/
+/.clouseau-ci
+/.clouseau-review

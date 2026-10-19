@@ -31,7 +31,7 @@ function playback(overrides = {}) {
   };
 }
 
-function fixture({ state = playback(), clearError } = {}) {
+function fixture({ state = playback(), clearError, clearState, config = {} } = {}) {
   let currentState = state;
   let clears = 0;
   const telemetry = { getState: () => currentState };
@@ -39,7 +39,7 @@ function fixture({ state = playback(), clearError } = {}) {
     clearProgramMaterial: async () => {
       clears += 1;
       if (clearError) throw clearError;
-      currentState = playback();
+      currentState = clearState ?? playback();
     },
   };
   let activeVersion = null;
@@ -56,6 +56,7 @@ function fixture({ state = playback(), clearError } = {}) {
     PROGRAM_ID: 'program-one',
     PALAZZO_INSTANCE_ID: 'palazzo-test',
     LIFECYCLE_TRANSITION_TIMEOUT_MS: '5',
+    ...config,
   };
   const service = new BroadcastLifecycleService(
     { get: (key) => values[key] },
@@ -81,6 +82,60 @@ test('boots in reconciliation-required state without assuming prior success', ()
   assert.equal(state.requestedState, 'reconciliation-required');
   assert.equal(state.actualState, 'reconciliation-required');
   assert.equal(state.readiness, false);
+});
+
+test('lifecycle validates configuration and command identity before any queue effect', async () => {
+  for (const config of [{ PROGRAM_ID: undefined }, { PROGRAM_ID: ' ' }, { LIFECYCLE_TRANSITION_TIMEOUT_MS: '0' }, { LIFECYCLE_TRANSITION_TIMEOUT_MS: '1.2' }]) {
+    assert.throws(() => fixture({ config }), /required|positive integer/);
+  }
+  const context = fixture({ config: { PALAZZO_INSTANCE_ID: undefined } });
+  assert.equal(context.service.getState().instanceId, 'palazzo');
+  assert.throws(() => context.service.requireReady(), (error) => error.getStatus() === 409);
+  for (const [key, sequence] of [[undefined, '1'], [' ', '1'], ['x'.repeat(201), '1'], ['key', undefined], ['key', '0'], ['key', '1.5']]) {
+    await assert.rejects(context.service.stop(key, sequence), (error) => error.getStatus() === 400);
+  }
+  assert.equal(context.clears, 0);
+});
+
+test('a repeated playback command retains readiness and cannot interrupt a pending transition', async () => {
+  const context = fixture({ config: { LIFECYCLE_TRANSITION_TIMEOUT_MS: '1000' } });
+  context.service.startFromPlaybackCommand();
+  const stamp = context.service.getState().timestamps.readyAt;
+  context.service.startFromPlaybackCommand();
+  assert.equal(context.service.getState().timestamps.readyAt, stamp);
+  context.setState(playback({ icecast: { connected: false } }));
+  const starting = context.service.start('not-ready', '1', 'v1');
+  await new Promise(setImmediate);
+  assert.equal(context.service.getState().transition, 'starting');
+  assert.throws(() => context.service.startFromPlaybackCommand(), (error) => error.getStatus() === 409);
+  context.setState(playback());
+  assert.equal((await starting).readiness, true);
+  const failed = fixture({ state: playback({ icecast: { connected: false } }) }).service;
+  await assert.rejects(failed.start('not-ready', '1', 'v1'), (error) => error.getStatus() === 503);
+  await assert.rejects(failed.start('not-ready', '1', 'v1'), (error) => error.getStatus() === 503 && error.getResponse().commandResult.duplicate);
+});
+
+test('Stop reports dependency degradation and refuses to claim idle when sound remains', async () => {
+  const unavailable = playback({ icecast: { connected: false } });
+  const context = fixture({ state: unavailable, clearState: unavailable });
+  assert.equal(context.service.getState().actualState, 'degraded');
+  const stopped = await context.service.stop('stop-degraded', '1');
+  assert.equal(stopped.actualState, 'degraded');
+  const audible = fixture({ clearState: playback({ status: 'playing', levels: { instant: { peak: 0.5 } } }) });
+  await assert.rejects(audible.service.stop('not-idle', '1'), (error) => error.getStatus() === 503 && error.getResponse().actualState === 'failed');
+  const instant = fixture({ clearState: playback({ levels: { instant: { peak: 0.5 } } }) });
+  await assert.rejects(instant.service.stop('instant-not-idle', '1'), (error) => error.getStatus() === 503);
+});
+
+test('idempotency is bound to sequence and filler version and the bounded journal evicts oldest commands', async () => {
+  const { service } = fixture();
+  await service.start('start', '1', 'v1');
+  await assert.rejects(service.start('start', '2', 'v1'), (error) => error.getStatus() === 409);
+  await assert.rejects(service.start('start', '1', 'v2'), (error) => error.getStatus() === 409);
+  for (let sequence = 2; sequence <= 258; sequence += 1) await service.stop(`stop-${sequence}`, String(sequence));
+  const reused = await service.stop('stop-2', '259');
+  assert.equal(reused.commandResult.duplicate, undefined);
+  assert.equal(service.getState().lastSequence, 259);
 });
 
 test('a playback command starts healthy automation', () => {

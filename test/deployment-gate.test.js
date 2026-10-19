@@ -4,6 +4,7 @@ const test = require('node:test');
 
 const workflow = readFileSync('.github/workflows/deploy.yml', 'utf8');
 const ciWorkflow = readFileSync('.github/workflows/ci.yml', 'utf8');
+const runtimeCheck = readFileSync('test/runtime/verify-station.sh', 'utf8');
 const deployScript = readFileSync('deploy/cumulus.sh', 'utf8');
 const compose = readFileSync('compose.yml', 'utf8');
 const nginx = readFileSync('deploy/cumulus.nginx.conf', 'utf8');
@@ -60,13 +61,14 @@ test('publishes the Modo Italiano listener through the Palazzo stream', () => {
 test('keeps every deployment container log local and bounded', () => {
   assertBoundedLocalLogging(workflow, 2);
   assertBoundedLocalLogging(deployScript, 2);
-  assertBoundedLocalLogging(ciWorkflow, 1);
+  assertBoundedLocalLogging(`${ciWorkflow}\n${runtimeCheck}`, 1);
   assert.match(compose, /logging:\s+driver: local/);
   assert.match(compose, /max-size: "10m"/);
   assert.match(compose, /max-file: "3"/);
   assert.doesNotMatch(compose, /awslogs|\/services\/palazzo/);
-  assert.match(ciWorkflow, /HostConfig\.LogConfig\.Type == "local"/);
-  assert.match(ciWorkflow, /"max-file":"3","max-size":"10m"/);
+  assert.match(runtimeCheck, /HostConfig\.LogConfig\.Type == "local"/);
+  assert.match(runtimeCheck, /"max-file":"3","max-size":"10m"/);
+  assert.match(ciWorkflow, /run: bash test\/runtime\/verify-station\.sh/);
 
   assert.match(workflow, /docker logs --tail 200 palazzo-candidate/);
   assert.match(workflow, /docker logs --tail 200 palazzo/);

@@ -1,40 +1,129 @@
-name: CI
-
+name: Palazzo CI
+run-name: >-
+  ${{ github.event_name == 'pull_request' && format('Verify PR #{0}', github.event.pull_request.number) ||
+      inputs.check_author && 'Verify repair author' ||
+      github.event_name == 'push' && 'Verify main' ||
+      format('PR review ({0})', github.event.pull_request.number || github.event.issue.number || inputs.pull_request || github.ref_name) }}
 on:
-  pull_request:
   push:
-    branches:
-      - main
-
+    branches: [main]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      pull_request:
+        description: PR number to reassess without executing contributor code; empty runs verification
+        type: string
+        required: false
+      check_author:
+        description: Inspect existing repair author identity and repository access without writing or deploying
+        type: boolean
+        default: false
 permissions:
   contents: read
-
+concurrency:
+  group: palazzo-ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.issue.number || inputs.pull_request || github.ref }}
+  cancel-in-progress: true
 jobs:
-  test:
+  unit:
+    if: &verify-code >-
+      github.event_name == 'pull_request' || github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && inputs.pull_request == '' && !inputs.check_author)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
         with:
           node-version: 22.22.0
           cache: npm
-
       - name: Install dependencies
         run: npm ci
-
-      - name: Test
-        run: npm test
-
+      - name: Ensure local media test tools
+        run: |
+          if ! command -v ffmpeg >/dev/null || ! command -v ffprobe >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends ffmpeg
+          fi
+      - name: Test application with complete source coverage
+        run: npm run test:coverage
       - name: Type-check
         run: npm run typecheck
-
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=high
+      - name: Test approval policy
+        uses: gaulatti/clouseau@2098d0cd7f617fe82fac53ed1c1ca757fa559aee
+        with:
+          operation: test
+      - name: Check out pinned reviewer for consumer integration tests
+        uses: actions/checkout@v4
+        with:
+          repository: gaulatti/clouseau
+          ref: 2098d0cd7f617fe82fac53ed1c1ca757fa559aee
+          path: .clouseau-ci
+          persist-credentials: false
+      - name: Test workflow routing
+        run: |
+          npm ci --prefix .github/tests --ignore-scripts --no-audit --no-fund
+          npm test --prefix .github/tests
+      - name: Retain native application coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: application-coverage-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            coverage/coverage-final.json
+            coverage/coverage-summary.json
+            coverage/lcov.info
+          if-no-files-found: error
+
+  verify:
+    name: >-
+      ${{ (github.event_name == 'pull_request' || github.event_name == 'push' ||
+          (github.event_name == 'workflow_dispatch' && inputs.pull_request == '' && !inputs.check_author)) && 'verify' || 'metadata-only' }}
+    needs: [unit, container]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require passing unit and real radio runtime checks
+        if: >-
+          always() && (github.event_name == 'pull_request' || github.event_name == 'push' ||
+          (github.event_name == 'workflow_dispatch' && inputs.pull_request == '' && !inputs.check_author))
+        env:
+          UNIT_RESULT: ${{ needs.unit.result }}
+          RUNTIME_RESULT: ${{ needs.container.result }}
+        run: test "$UNIT_RESULT" = success && test "$RUNTIME_RESULT" = success
+      - uses: actions/checkout@v4
+        if: *verify-code
+        with:
+          persist-credentials: false
+      - name: Load this run's native coverage report
+        if: *verify-code
+        uses: actions/download-artifact@v4
+        with:
+          name: application-coverage-${{ github.run_id }}-${{ github.run_attempt }}
+          path: coverage
+      - name: Enforce 100% line and branch coverage
+        if: *verify-code
+        uses: gaulatti/clouseau@2098d0cd7f617fe82fac53ed1c1ca757fa559aee
+        with:
+          operation: coverage
+          coverage-format: istanbul
+          coverage-report: coverage/coverage-final.json
+          source-directory: src
 
   container:
+    if: *verify-code
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -58,98 +147,195 @@ jobs:
             --test /workspace/test/runtime/filler-store.service.test.js
 
       - name: Start and verify pinned runtime
-        run: |
-          docker run --rm --detach --name palazzo-ci \
-            --publish 127.0.0.1:3100:3100 \
-            --log-driver=local \
-            --log-opt max-size=10m \
-            --log-opt max-file=3 \
-            --env PALAZZO_PORT=3100 \
-            --env PALAZZO_INSTANCE_ID=palazzo-ci \
-            --env PROGRAM_ID=program-ci \
-            --env ICECAST_PORT=8000 \
-            --env ICECAST_SOURCE_PASSWORD=ci-password \
-            palazzo:ci
-          trap 'docker stop palazzo-ci' EXIT
-          docker inspect palazzo-ci \
-            | jq --exit-status \
-              '.[0].HostConfig.LogConfig.Type == "local" and .[0].HostConfig.LogConfig.Config == {"max-file":"3","max-size":"10m"}'
-          for attempt in $(seq 1 30); do
-            if curl --fail --silent http://127.0.0.1:3100/playback/state > /tmp/palazzo-state.json \
-              && jq --exit-status \
-                '.schemaVersion == 1 and .liquidsoap.running == true and .liquidsoap.connected == true and .icecast.connected == true' \
-                /tmp/palazzo-state.json > /dev/null; then
-              break
-            fi
-            sleep 1
-          done
-          jq --exit-status \
-            '.schemaVersion == 1 and .liquidsoap.running == true and .liquidsoap.connected == true and .icecast.connected == true' \
-            /tmp/palazzo-state.json
-          docker exec palazzo-ci ffmpeg -hide_banner -loglevel error -y \
-            -f lavfi -i sine=frequency=440:sample_rate=44100 -t 2 /tmp/filler.wav
-          docker exec --detach palazzo-ci node -e \
-            'const fs=require("node:fs");const media="/tmp/filler.wav";require("node:http").createServer((_,response)=>{response.setHeader("Content-Length",fs.statSync(media).size);response.setHeader("Accept-Ranges","bytes");fs.createReadStream(media).pipe(response)}).listen(3200,"127.0.0.1")'
-          for attempt in $(seq 1 20); do
-            if docker exec palazzo-ci node -e \
-              'fetch("http://127.0.0.1:3200/filler.wav").then(response=>{if(!response.ok)process.exit(1)}).catch(()=>process.exit(1))'; then
-              break
-            fi
-            sleep 0.1
-          done
-          docker exec palazzo-ci node -e \
-            'fetch("http://127.0.0.1:3200/filler.wav").then(response=>{if(!response.ok)process.exit(1)}).catch(()=>process.exit(1))'
-          FILLER_SHA=$(docker exec palazzo-ci sha256sum /tmp/filler.wav | cut -d ' ' -f 1)
-          PREFLIGHT_AT=$(date -u -d '+60 seconds' '+%Y-%m-%dT%H:%M:%S.000Z')
-          jq --null-input --arg scheduledAt "$PREFLIGHT_AT" \
-            '{assets:[{programId:"program-ci",playbackId:"ci-upcoming",kind:"song",url:"http://127.0.0.1:3200/filler.wav?signed=redacted",scheduledAt:$scheduledAt}]}' \
-            > /tmp/palazzo-preflight.json
-          curl --fail --silent \
-            --header 'Content-Type: application/json' \
-            --request PUT \
-            --data-binary @/tmp/palazzo-preflight.json \
-            http://127.0.0.1:3100/v1/programs/program-ci/playback/preflight \
-            | jq --exit-status \
-              '.assets[0].readiness == "ready" and .assets[0].media.durationSeconds > 0 and .assets[0].media.sampleRateHz == 44100 and (.assets[0] | has("url") | not)'
-          curl --fail --silent \
-            http://127.0.0.1:3100/v1/programs/program-ci/playback/preflight \
-            | jq --exit-status \
-              '.assets[0].playbackId == "ci-upcoming" and (.assets[0] | has("url") | not)'
-          curl --fail --silent http://127.0.0.1:3100/playback/state \
-            | jq --exit-status '.status == "idle"'
-          jq --null-input --arg checksum "$FILLER_SHA" \
-            '{commandId:"ci-prepare",mode:"ordered",assets:[{id:"ci-filler",sha256:$checksum,downloadUrl:"http://127.0.0.1:3200/filler.wav?signed=redacted"}]}' \
-            > /tmp/palazzo-filler.json
-          curl --fail --silent \
-            --header 'Idempotency-Key: ci-prepare' \
-            --header 'Content-Type: application/json' \
-            --request PUT \
-            --data-binary @/tmp/palazzo-filler.json \
-            http://127.0.0.1:3100/v1/programs/program-ci/fillers/ci-v1 \
-            | jq --exit-status '.ready == true and .assets[0].id == "ci-filler"'
-          curl --fail --silent \
-            --dump-header /tmp/palazzo-metrics-headers.txt \
-            http://127.0.0.1:3100/metrics \
-            > /tmp/palazzo-metrics.txt
-          grep --ignore-case 'content-type: text/plain; version=0.0.4' \
-            /tmp/palazzo-metrics-headers.txt
-          node test/verify-prometheus-exposition.js /tmp/palazzo-metrics.txt
-          if grep --extended-regexp 'program-ci' /tmp/palazzo-metrics.txt; then
-            echo 'metrics exposed private identifiers'
-             exit 1
-           fi
-          curl --fail --silent \
-            --header 'Idempotency-Key: ci-start' \
-            --header 'X-Command-Sequence: 1' \
-            --header 'X-Filler-Version: ci-v1' \
-            --request POST \
-            http://127.0.0.1:3100/v1/programs/program-ci/automation/start \
-            | jq --exit-status '.actualState == "ready" and .readiness == true and .filler.activeVersion == "ci-v1"'
-          docker exec palazzo-ci node -e 'fetch("http://127.0.0.1:8000/stream").then(async response=>{const reader=response.body.getReader();let total=0;while(total<16384){const chunk=await reader.read();if(chunk.done)break;total+=chunk.value.length}if(total<16384)throw new Error("Icecast filler stream starved")}).catch(error=>{console.error(error.message);process.exit(1)})'
-          curl --fail --silent \
-            --header 'Idempotency-Key: ci-stop' \
-            --header 'X-Command-Sequence: 2' \
-            --request POST \
-            http://127.0.0.1:3100/v1/programs/program-ci/automation/stop \
-            | jq --exit-status '.actualState == "stopped" and .dependencies.icecast == true and .filler.activeVersion == null'
-          docker exec palazzo-ci liquidsoap --version | grep 'Liquidsoap 2.4.5'
+        run: bash test/runtime/verify-station.sh
+
+  assess-intent:
+    if: github.event_name == 'pull_request_target' && !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+      issues: read
+    outputs:
+      assessment: ${{ steps.assess.outputs.assessment }}
+    steps:
+      # Never load the controller or its configuration from the PR.
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Check out the pinned trusted verification reader
+        uses: actions/checkout@v4
+        with:
+          repository: gaulatti/clouseau
+          ref: 2098d0cd7f617fe82fac53ed1c1ca757fa559aee
+          path: .clouseau-review
+          persist-credentials: false
+      - name: Wait for tests, exact coverage, and real radio runtime
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const path = require('node:path');
+            const root = path.resolve('.clouseau-review');
+            const config = require(path.join(root, 'src/config.cjs')).loadConfig('.github/clouseau.json');
+            const policy = require(path.join(root, 'src/policy.cjs')).createPolicy(config);
+            for (let attempt = 0; attempt < 120; attempt++) {
+              const {data: pr} = await github.rest.pulls.get({...context.repo, pull_number: context.payload.pull_request.number});
+              if (pr.state !== 'open' || pr.draft || pr.head.sha !== context.payload.pull_request.head.sha) {
+                throw new Error('PR closed, became draft, or changed while verification was pending');
+              }
+              const result = await policy.technicalRun(github, context.repo, pr);
+              if (result.failure) throw new Error(result.failure);
+              if (!result.pending) { core.info(`Verified PR CI: ${result.url}. AI assessment can now start.`); return; }
+              core.info('Waiting for independent unit/coverage and Liquidsoap/Icecast checks. No AI request has been made.');
+              await new Promise(resolve => setTimeout(resolve, 15000));
+            }
+            throw new Error('PR verification did not complete within 30 minutes');
+      - uses: gaulatti/clouseau@2098d0cd7f617fe82fac53ed1c1ca757fa559aee
+        id: assess
+        with:
+          operation: assess
+          wait-for-verification: 'false'
+          provider-key: ${{ secrets.DEEPSEEK_API_KEY }}
+          typesafe-key: ${{ secrets.TYPESAFE_API_KEY }}
+      - name: Retain acceptance record
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clouseau-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: work/clouseau-acceptance*.json
+          if-no-files-found: ignore
+
+  approve-and-merge:
+    name: ${{ github.event_name == 'pull_request_target' && !github.event.pull_request.draft && 'approve-and-merge' || 'metadata-only-approval' }}
+    needs: assess-intent
+    # Always resolve the job name; only trusted, ready PR events run its steps.
+    # A failed assessment must still fail the required native approval check.
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      actions: write
+    concurrency:
+      group: pr-approval-${{ github.event_name == 'pull_request_target' && github.event.pull_request.number || github.run_id }}
+      cancel-in-progress: false
+    steps:
+      - name: Require a completed assessment
+        if: >-
+          github.event_name == 'pull_request_target' && !github.event.pull_request.draft &&
+          needs.assess-intent.result != 'success'
+        run: exit 1
+      - uses: actions/checkout@v4
+        if: &approve-code github.event_name == 'pull_request_target' && !github.event.pull_request.draft
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Load this run's acceptance record
+        if: >-
+          github.event_name == 'pull_request_target' && !github.event.pull_request.draft &&
+          needs.assess-intent.result == 'success' &&
+          fromJSON(needs.assess-intent.outputs.assessment).record_digest != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: clouseau-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: work
+      - if: *approve-code
+        uses: gaulatti/clouseau@2098d0cd7f617fe82fac53ed1c1ca757fa559aee
+        with:
+          operation: gate
+          native-gate: 'true'
+          assessment: ${{ needs.assess-intent.outputs.assessment }}
+
+  apply-repair:
+    needs: [assess-intent, approve-and-merge]
+    if: >-
+      always() && github.event_name == 'pull_request_target' && !github.event.pull_request.draft &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      needs.assess-intent.result == 'success' && needs.approve-and-merge.result == 'failure' &&
+      fromJSON(needs.assess-intent.outputs.assessment).repair_digest != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
+      actions: read
+    concurrency:
+      group: pr-approval-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: clouseau-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: work
+      - uses: gaulatti/clouseau@2098d0cd7f617fe82fac53ed1c1ca757fa559aee
+        with:
+          operation: repair
+          assessment: ${{ needs.assess-intent.outputs.assessment }}
+          repair-token: ${{ secrets.DEPLOYMENT_TOKEN }}
+
+  finalize-merge:
+    needs: [assess-intent, approve-and-merge]
+    if: github.event_name == 'pull_request_target'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: gaulatti/clouseau@2098d0cd7f617fe82fac53ed1c1ca757fa559aee
+        with:
+          operation: finalize
+          assessment: ${{ needs.assess-intent.outputs.assessment }}
+
+  request-reassessment:
+    if: >-
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request && startsWith(github.event.comment.body, '/approve-intent ')) ||
+      (github.event_name == 'workflow_dispatch' && inputs.pull_request != '' && !inputs.check_author)
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: gaulatti/clouseau@2098d0cd7f617fe82fac53ed1c1ca757fa559aee
+        with:
+          operation: request-reassessment
+          pull-request: ${{ inputs.pull_request }}
+
+  check-author:
+    if: github.event_name == 'workflow_dispatch' && inputs.check_author
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions: {}
+    steps:
+      - name: Verify independent repair author without writing
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.DEPLOYMENT_TOKEN }}
+          script: |
+            const {data: user} = await github.rest.users.getAuthenticated();
+            const {data: repository} = await github.rest.repos.get(context.repo);
+            if (user.login === 'github-actions[bot]' || !repository.permissions?.push) {
+              throw new Error('Repair requires an independent author with Contents write access');
+            }
+            core.info(`Independent repair author ${user.login} can access ${context.repo.owner}/${context.repo.repo}. No write or deployment was made.`);

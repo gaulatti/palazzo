@@ -1,0 +1,42 @@
+{
+  "version": 2,
+  "base_branch": "main",
+  "workflow": "ci.yml",
+  "verification": {
+    "job": "verify",
+    "steps": [
+      "Require passing unit and real radio runtime checks",
+      "Enforce 100% line and branch coverage"
+    ]
+  },
+  "manual_reviewer": "gaulatti",
+  "repository_policy": ".github/clouseau.md",
+  "readme": "README.md",
+  "sensitive_paths": [
+    ".c8rc.json"
+  ],
+  "deployment": {
+    "workflow": "deploy.yml",
+    "paths": [
+      "src/",
+      "package.json",
+      "package-lock.json",
+      "nest-cli.json",
+      "tsconfig.json",
+      "tsconfig.build.json",
+      "Dockerfile",
+      ".dockerignore",
+      "docker-entrypoint.sh",
+      "compose.yml",
+      "deploy/",
+      ".github/workflows/deploy.yml"
+    ]
+  },
+  "acceptance": {
+    "examiner": "deepseek-flash",
+    "challenger": "deepseek-v4-pro",
+    "grader": "routed",
+    "grading_model": "deepseek-flash",
+    "repair_attempts": 2
+  }
+}
