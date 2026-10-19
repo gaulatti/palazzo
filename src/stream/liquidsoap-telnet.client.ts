@@ -65,7 +65,7 @@ export class LiquidsoapTelnetClient {
 
       this.current = { resolve, reject, timer };
       socket.write(`${command}\n`, 'utf8', (error) => {
-        if (!error) return;
+        if (!error || this.socket !== socket) return;
         this.rejectCurrent(error);
         socket.destroy();
       });
@@ -114,11 +114,17 @@ export class LiquidsoapTelnetClient {
       socket.connect(this.options.port, this.host, () => {
         socket.off('error', fail);
         socket.setKeepAlive(true, 5_000);
-        socket.on('data', (chunk: Buffer) => this.onData(chunk));
-        socket.on('error', (error) => this.onSocketFailure(error));
+        socket.on('data', (chunk: Buffer) => {
+          if (this.socket === socket) this.onData(chunk);
+        });
+        socket.on('error', (error) => this.onSocketFailure(socket, error));
         socket.on('close', () =>
-          this.onSocketFailure(new Error('Liquidsoap Telnet connection closed')),
+          this.onSocketFailure(
+            socket,
+            new Error('Liquidsoap Telnet connection closed'),
+          ),
         );
+        this.buffer = '';
         this.socket = socket;
         resolve(socket);
       });
@@ -138,9 +144,10 @@ export class LiquidsoapTelnetClient {
     current.resolve(response);
   }
 
-  private onSocketFailure(error: Error): void {
+  private onSocketFailure(socket: Socket, error: Error): void {
+    if (this.socket !== socket) return;
     this.rejectCurrent(error);
-    this.socket?.destroy();
+    socket.destroy();
     this.socket = null;
     this.buffer = '';
   }

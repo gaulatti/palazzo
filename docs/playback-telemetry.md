@@ -50,6 +50,12 @@ Liquidsoap child with capped exponential backoff. After reconnect, a fresh
 snapshot and the engine journal reconcile lifecycle state. A lower engine
 sequence is treated as a restart without fabricating a track-end event.
 
+Each Telnet connection owns its response buffer and transport callbacks. After
+a timeout creates a replacement, delayed data, close, error or write callbacks
+from the old socket cannot complete or reject the replacement's command. A
+successful recovery still counts one Telnet reconnect attempt; ignored stale
+callbacks do not trigger another reconnect or change the retry limits.
+
 Useful metrics:
 
 - `palazzo_build_info{service="palazzo",version="..."}`
