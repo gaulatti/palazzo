@@ -188,7 +188,7 @@ test('the actual wait step uses fresh PR verification, reports pending work and 
     const operation = invoke(github, c, {info: line => messages.push(line)}, require, (callback, ms) => { assert.equal(ms, 15000); callback(); });
     if (['ready', 'pending'].includes(scenario)) {
       await operation;
-      assert.ok(messages.some(line => line.includes('AI assessment can now start')));
+      assert.ok(messages.some(line => line.includes('Clouseau acceptance can now start')));
       assert.equal(polls, scenario === 'pending' ? 2 : 1);
     } else await assert.rejects(operation, /verification|changed|closed/i);
   }

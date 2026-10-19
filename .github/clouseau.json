@@ -38,5 +38,19 @@
     "grader": "routed",
     "grading_model": "deepseek-flash",
     "repair_attempts": 2
+  },
+  "local_review": {
+    "mode": "optional",
+    "reviewer_digest": "3dc3835d765338a42f6281c7365da9a7cb8ddcc5468f4c055b2c53c1b5cf1048",
+    "max_age_seconds": 3600,
+    "keys": [
+      {
+        "id": "8a6d6c24abe59c9fbafd31cc",
+        "issuer": "local-8a6d6c24abe59c9fbafd31cc",
+        "github_actor": "gaulatti",
+        "public_key": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAp/os7kXSd5tLhgcyy61yPazqky0HfDNHdJL1oXNVfqU=\n-----END PUBLIC KEY-----\n",
+        "revoked": false
+      }
+    ]
   }
 }

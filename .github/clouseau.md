@@ -51,3 +51,13 @@ Clouseau owns the shared scoring, investigation, repair bounds, evidence ledger,
 native approval and auto-merge. This repository owns its purpose, real tests and
 runtime evidence. CI/merge, deployment completion and live health are separate
 milestones; a successful merge alone is not a deployment or playback claim.
+
+A passing local Clouseau review may be reused only through a signed receipt from
+an enrolled trusted workstation and the matching native GitHub author. CI must
+independently verify current protected policy, exact head/base and engine content,
+expiry, evidence and deterministic scores. This route has no AI credentials and
+must not fall back to paid review when verification fails. All native tests,
+exact coverage, container checks and branch protections remain mandatory.
+Agent installation and account-authenticated local execution remain independent
+of CI enrollment and CI provider keys. A signature authenticates the workstation;
+it does not attest against compromise of that workstation or its operator.
