@@ -126,6 +126,17 @@ wiki write access with a dry run. It does not publish the draft.
 Documentation is its own delivery stage. Ticket closeout remains a separate
 stage; publishing wiki pages does not close issues or declare a ticket solved.
 
+If the installed reviewer prevents installing its verified replacement, the
+repository owner can dispatch **Palazzo CI** from the exact ready PR head with
+`install_reviewer=true` and `pull_request` set to that PR number. Before using
+provider credentials, a read-only guard requires the owner actor, an owner-authored
+same-repository PR targeting `main`, the exact workflow/head revision and an owner
+`/approve-intent FULL_HEAD_SHA` comment. The pinned replacement reviews the change
+against the purpose and configuration on protected `main`, after the independent
+PR tests, exact coverage and container checks pass. The separate gate retains all
+scoring, integrity and branch-protection requirements; no failed result is waived.
+Ordinary PR review continues to use the workflow and pinned reviewer on `main`.
+
 ## Documentation
 
 - [Architecture](wiki/Architecture) — System design, data flow, Liquidsoap engine
