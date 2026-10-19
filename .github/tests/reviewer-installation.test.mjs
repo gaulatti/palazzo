@@ -16,14 +16,14 @@ const assess = workflow.jobs['assess-intent'];
 const guard = assess.steps[0];
 
 function context(result = 'success') {
-  return {github: {event_name: 'workflow_dispatch', run_id: 7, event: {}},
-    inputs: {install_reviewer: true, pull_request: '23', check_author: false},
+  return {github: {event_name: 'push', ref: 'refs/heads/policy-install/pr-23', run_id: 7, event: {deleted: false}},
+    inputs: {},
     needs: {'assess-intent': {result, outputs: {assessment: JSON.stringify({record_digest: 'b'.repeat(64)})}}}};
 }
 
 async function runGuard(mutate = () => {}) {
-  const state = {context: {actor: 'gaulatti', repo: {owner: 'gaulatti', repo: 'palazzo'}, sha: revision},
-    env: {REQUESTED_PR: '23'}, reads: 0,
+  const state = {context: {actor: 'gaulatti', repo: {owner: 'gaulatti', repo: 'palazzo'}, sha: revision,
+      ref: 'refs/heads/policy-install/pr-23'}, reads: 0, outputs: {},
     pr: {state: 'open', draft: false, base: {ref: 'main'}, user: {login: 'gaulatti'},
       head: {sha: revision, repo: {full_name: 'gaulatti/palazzo'}}},
     comments: [{user: {login: 'gaulatti', type: 'User'}, body: `/approve-intent ${revision}`}]};
@@ -35,16 +35,18 @@ async function runGuard(mutate = () => {}) {
     state.reads++; assert.equal(method, listComments); assert.equal(issue_number, 23); return state.comments;
   }};
   await runInNewContext(`(async () => {${guard.with.script}\n})()`,
-    {github, context: state.context, process: {env: state.env}});
+    {github, context: state.context, core: {setOutput: (name, value) => {state.outputs[name] = value;}}});
   return state;
 }
 
 test('the actual installer guard accepts only an owner-confirmed, frozen same-repository PR', async () => {
-  assert.equal((await runGuard()).reads, 2);
+  const accepted = await runGuard();
+  assert.equal(accepted.reads, 2);
+  assert.equal(accepted.outputs.number, '23');
   for (const mutate of [
     s => {s.context.actor = 'contributor';}, s => {s.context.sha = 'invalid';},
-    s => {s.env.REQUESTED_PR = '';}, s => {s.env.REQUESTED_PR = '23;merge';},
-    s => {s.env.REQUESTED_PR = '9'.repeat(30);},
+    s => {s.context.ref = 'refs/heads/main';}, s => {s.context.ref = 'refs/heads/policy-install/pr-23;merge';},
+    s => {s.context.ref = 'refs/heads/policy-install/pr-' + '9'.repeat(30);},
     s => {s.pr.state = 'closed';}, s => {s.pr.draft = true;}, s => {s.pr.base.ref = 'other';},
     s => {s.pr.user.login = 'contributor';}, s => {s.pr.head.sha = 'c'.repeat(40);},
     s => {s.pr.head.repo.full_name = 'external/palazzo';}, s => {s.pr.head.repo = null;},
@@ -56,11 +58,14 @@ test('the actual installer guard accepts only an owner-confirmed, frozen same-re
   const provider = assess.steps.findIndex(step => step.with?.operation === 'assess');
   assert.ok(provider > 0);
   assert.ok(!JSON.stringify(assess.steps.slice(0, provider)).includes('secrets.'));
-  assert.equal(assess.steps[provider].with['pull-request'], '${{ inputs.pull_request }}');
+  assert.equal(assess.steps[provider].with['pull-request'], '${{ steps.install.outputs.number }}');
 });
 
 test('installation reuses independent verification, fails closed and cannot trigger repair or a duplicate reassessment', () => {
-  assert.equal(workflow.on.workflow_dispatch.inputs.install_reviewer.default, false);
+  // GitHub excludes workflow_dispatch job checks from required PR checks.
+  // Installation must run on the eligible push event at the exact PR head.
+  assert.ok(workflow.on.push.branches.includes('policy-install/**'));
+  assert.equal(workflow.on.workflow_dispatch.inputs.install_reviewer, undefined);
   const c = context();
   for (const name of ['unit', 'container', 'request-reassessment', 'apply-repair', 'check-author']) {
     assert.equal(allowed(workflow.jobs[name].if, c, {success: false}), false, name);
@@ -76,10 +81,13 @@ test('installation reuses independent verification, fails closed and cannot trig
     assert.equal(allowed(gate.steps.at(-1).if, context(result), {success: false}), false);
   }
   assert.equal(gate.steps.at(-1).with['native-gate'], 'true');
-  assert.equal(gate.steps.at(-1).with['pull-request'], '${{ inputs.pull_request }}');
+  assert.equal(gate.steps.at(-1).with['pull-request'], '${{ needs.assess-intent.outputs.number }}');
   assert.ok(!JSON.stringify(gate).includes('provider-key'));
-  c.inputs.check_author = true;
-  assert.equal(allowed(workflow.jobs['check-author'].if, c), false);
+  assert.equal(allowed(guard.if, c), true);
+  const manual = {...c, github: {...c.github, event_name: 'workflow_dispatch'},
+    inputs: {pull_request: '23', check_author: false}};
+  assert.equal(allowed(assess.if, manual), false);
+  assert.equal(evaluate(gate.name, manual).coerceString(), 'metadata-only-approval');
   c.github.event_name = 'pull_request';
   assert.equal(allowed(assess.if, c), false);
 });

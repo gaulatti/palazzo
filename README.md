@@ -119,6 +119,13 @@ the container, and provider calls wait for real verification to finish. A bot
 merge explicitly dispatches the existing deployment workflow for runtime changes;
 deployment completion and live stream health remain separate checks.
 
+Protected reviewer installation runs only from the owner-pushed
+`policy-install/pr-N` branch at the exact ready PR head, after its matching
+`/approve-intent` confirmation. It reuses the PR's independent technical checks
+and performs fresh AI assessment before the native approval gate. Manual
+dispatch is for verification or reassessment: GitHub excludes dispatched job
+checks from required PR checks, so it cannot install the reviewer.
+
 ## Documentation
 
 - [Architecture](wiki/Architecture) — System design, data flow, Liquidsoap engine

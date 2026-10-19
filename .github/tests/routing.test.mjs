@@ -13,9 +13,9 @@ const engine = fileURLToPath(new URL('../../.clouseau-ci/', import.meta.url));
 const config = require(`${engine}/src/config.cjs`).loadConfig(fileURLToPath(new URL('../clouseau.json', import.meta.url)));
 const head = 'a'.repeat(40);
 
-function context(event, {draft = false, pullRequest = '', author = false, fork = false, assessment = 'success', record = true, repair = false, gate = 'success'} = {}) {
+function context(event, {draft = false, pullRequest = '', author = false, fork = false, assessment = 'success', record = true, repair = false, gate = 'success', ref = 'refs/heads/main', deleted = false} = {}) {
   return {
-    github: {event_name: event, repository: 'gaulatti/palazzo', run_id: 1000, event: {pull_request: {number: 20, draft, head: {sha: head, repo: {full_name: fork ? 'external/contribution' : 'gaulatti/palazzo'}}}}},
+    github: {event_name: event, ref, repository: 'gaulatti/palazzo', run_id: 1000, event: {deleted, pull_request: {number: 20, draft, head: {sha: head, repo: {full_name: fork ? 'external/contribution' : 'gaulatti/palazzo'}}}}},
     inputs: {pull_request: pullRequest, check_author: author},
     needs: {unit: {result: 'success'}, container: {result: 'success'}, 'assess-intent': {result: assessment, outputs: {assessment: JSON.stringify({record_digest: record ? 'a'.repeat(64) : '', repair_digest: repair ? 'b'.repeat(64) : ''})}}, 'approve-and-merge': {result: gate}},
   };
@@ -26,6 +26,9 @@ for (const [label, c, verify, assess] of [
   ['fork PR', context('pull_request', {fork: true}), true, false],
   ['draft PR', context('pull_request', {draft: true}), true, false],
   ['main', context('push'), true, false],
+  ['owner installation push', context('push', {ref: 'refs/heads/policy-install/pr-24'}), false, true],
+  ['deleted installer branch', context('push', {ref: 'refs/heads/policy-install/pr-24', deleted: true}), false, false],
+  ['unrelated branch push', context('push', {ref: 'refs/heads/feature'}), false, false],
   ['PR metadata', context('pull_request_target'), false, true],
   ['fork metadata', context('pull_request_target', {fork: true}), false, true],
   ['draft metadata', context('pull_request_target', {draft: true}), false, false],
