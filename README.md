@@ -83,6 +83,13 @@ Telemetry operations and migration guidance:
 
 ## Pull request verification
 
+Local agent review is installed and updated from public Clouseau through the
+bastille startup bootstrap. It uses the developer's authenticated Codex or
+Claude account and `.clouseau-local.json`; it requires no CI provider keys.
+After committing the complete change, run the shared `clouseau` skill, repair
+blocking findings, and publish its passing signed receipt before opening a ready
+PR. See [local review](https://github.com/gaulatti/clouseau/blob/main/docs/local-review.md).
+
 Every PR runs unit tests with exact 100% line and branch coverage over all
 application sources, type-checking, the production dependency audit, workflow
 security tests, and real Liquidsoap/Icecast container checks. Run
@@ -90,7 +97,15 @@ security tests, and real Liquidsoap/Icecast container checks. Run
 Native c8 reports include unloaded bootstrap/module files; Clouseau independently
 checks the complete source inventory and exact counters.
 
-After those checks pass, the pinned Clouseau reviewer assesses purpose, need,
+After those checks pass, a PR carrying an authenticated local review stamp uses
+the pinned verifier without AI credentials or an AI rerun. The verifier checks
+the enrolled GitHub author, signature, exact source/base, engine and policy,
+expiry, literal evidence and calculated scores. Invalid stamps hold approval
+without invoking a paid reviewer. Only a protected owner change can enroll or
+revoke a workstation key. The enrolled workstation and its privileged processes
+are trusted; this is not hardware attestation.
+
+PRs without a stamp retain the separately installed CI reviewer. It assesses purpose, need,
 proportionality, technical findings and test integrity. Jev grades its qualified
 narrow factors; independent DeepSeek reviews handle the remaining questions.
 Passing reviews receive a bot approval and native auto-merge under main's branch
@@ -103,6 +118,13 @@ Verification and AI review run separately: metadata reassessment does not rebuil
 the container, and provider calls wait for real verification to finish. A bot
 merge explicitly dispatches the existing deployment workflow for runtime changes;
 deployment completion and live stream health remain separate checks.
+
+Protected reviewer installation runs only from the owner-pushed
+`policy-install/pr-N` branch at the exact ready PR head, after its matching
+`/approve-intent` confirmation. It reuses the PR's independent technical checks
+and performs fresh AI assessment before the native approval gate. Manual
+dispatch is for verification or reassessment: GitHub excludes dispatched job
+checks from required PR checks, so it cannot install the reviewer.
 
 ## Documentation
 
