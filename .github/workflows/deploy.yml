@@ -304,7 +304,7 @@ jobs:
           path: wiki
           persist-credentials: false
       - name: Generate and validate the complete wiki update
-        uses: gaulatti/clouseau@2b15405eff01cb9fc3ab744b26d1da1943a616e9
+        uses: gaulatti/clouseau@8e3ddea281344593e959742065a7ecce03c2e38b
         with:
           operation: plan-wiki
           provider-key: ${{ secrets.DEEPSEEK_API_KEY }}
@@ -343,7 +343,7 @@ jobs:
           name: wiki-plan-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
           path: wiki-plan
       - name: Publish all wiki pages atomically
-        uses: gaulatti/clouseau@2b15405eff01cb9fc3ab744b26d1da1943a616e9
+        uses: gaulatti/clouseau@8e3ddea281344593e959742065a7ecce03c2e38b
         with:
           operation: publish-wiki
           wiki-plan-path: wiki-plan/wiki-plan.json

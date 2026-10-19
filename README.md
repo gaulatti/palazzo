@@ -136,6 +136,9 @@ against the purpose and configuration on protected `main`, after the independent
 PR tests, exact coverage and container checks pass. The separate gate retains all
 scoring, integrity and branch-protection requirements; no failed result is waived.
 Ordinary PR review continues to use the workflow and pinned reviewer on `main`.
+Workflow integration tests also execute the pinned coverage action against the
+real native report produced by `npm run test:coverage`, including rejection of
+an uncovered application branch. Run application coverage before these tests.
 
 ## Documentation
 
