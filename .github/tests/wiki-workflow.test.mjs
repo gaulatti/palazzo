@@ -17,8 +17,8 @@ const {validateConfig} = require(join(root, '.clouseau-ci/src/wiki.cjs'));
 const {snapshot, prepareWiki, publishWiki} = require(join(root, '.clouseau-ci/src/wiki-git.cjs'));
 
 function boundary() {
-  const context = {repo: {owner: 'gaulatti', repo: 'palazzo'}, ref: 'refs/heads/main',
-    actor: 'gaulatti', eventName: 'workflow_run', sha: 'b'.repeat(40), runId: 900};
+  const context = Object.assign(Object.create({get repo() {return {owner: 'gaulatti', repo: 'palazzo'};}}), {ref: 'refs/heads/main',
+    actor: 'gaulatti', eventName: 'workflow_run', sha: 'b'.repeat(40), runId: 900});
   const run = {id: 42, repository: {full_name: 'gaulatti/palazzo'}, head_repository: {full_name: 'gaulatti/palazzo'},
     path: '.github/workflows/deploy.yml', head_branch: 'main', head_sha: 'a'.repeat(40),
     event: 'workflow_dispatch', status: 'completed', conclusion: 'success'};
@@ -34,6 +34,7 @@ function boundary() {
 test('the real resolver binds docs to the successful deployment rather than the documentation runner', async () => {
   const f = boundary();
   const selected = await resolveDeployment({...f, config, runId: '42'});
+  assert.deepEqual(selected.repo, f.context.repo, 'GitHub Context exposes repo through a prototype getter');
   assert.equal(selected.sha, f.run.head_sha); assert.equal(selected.runId, 42);
   assert.notEqual(selected.sha, f.context.sha); assert.notEqual(selected.runId, f.context.runId);
   for (const event of ['push', 'workflow_dispatch']) {

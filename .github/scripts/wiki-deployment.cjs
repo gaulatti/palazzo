@@ -22,7 +22,7 @@ async function resolveDeployment({github, context, config, runId}) {
   if (latest.workflow_runs[0]?.id !== Number(runId)) {
     throw new Error('A newer successful deployment exists; document that deployment instead');
   }
-  return {...context, sha: run.head_sha, runId: Number(runId)};
+  return {...context, repo: context.repo, sha: run.head_sha, runId: Number(runId)};
 }
 
 module.exports = {resolveDeployment};
