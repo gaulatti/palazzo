@@ -6,7 +6,8 @@
     "job": "verify",
     "steps": [
       "Require passing unit and real radio runtime checks",
-      "Enforce 100% line and branch coverage"
+      "Enforce 100% line and branch coverage",
+      "Require wiki-workflow.test.mjs execution"
     ]
   },
   "manual_reviewer": "gaulatti",

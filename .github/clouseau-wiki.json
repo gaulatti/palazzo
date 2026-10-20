@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "source_paths": [
+    "README.md",
+    "src/",
+    "docs/",
+    "Dockerfile",
+    "docker-entrypoint.sh",
+    "compose.yml",
+    "package.json",
+    "nest-cli.json",
+    "tsconfig.json",
+    "tsconfig.build.json",
+    ".env.example",
+    "deploy/",
+    ".github/workflows/",
+    ".github/clouseau-wiki.json",
+    "infra/README.md",
+    "infra/lib/",
+    "infra/bin/",
+    ".github/scripts/wiki-deployment.cjs"
+  ],
+  "deployment_workflow": "deploy.yml",
+  "deployment_job": "deploy",
+  "wiki_branch": "master"
+}
