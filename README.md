@@ -86,9 +86,11 @@ Telemetry operations and migration guidance:
 Local agent review is installed and updated from public Clouseau through the
 bastille startup bootstrap. It uses the developer's authenticated Codex or
 Claude account and `.clouseau-local.json`; it requires no CI provider keys.
-After committing the complete change, run the shared `clouseau` skill, repair
-blocking findings, and publish its passing signed receipt before opening a ready
-PR. See [local review](https://github.com/gaulatti/clouseau/blob/main/docs/local-review.md).
+Before creating any PR, agents must run the shared `clouseau` skill, resolve its
+findings and rerun after repairs against the final committed change. Publish the
+passing signed receipt in the initial ready PR body. `AGENTS.md` owns this rule;
+`CLAUDE.md` points Claude Code to it. Never push directly to `main`.
+See [local review](https://github.com/gaulatti/clouseau/blob/main/docs/local-review.md).
 
 Every PR runs unit tests with exact 100% line and branch coverage over all
 application sources, type-checking, the production dependency audit, workflow
