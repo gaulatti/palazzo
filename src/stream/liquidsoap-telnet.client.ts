@@ -109,12 +109,23 @@ export class LiquidsoapTelnetClient {
     return new Promise((resolve, reject) => {
       const socket = new Socket();
       const fail = (error: Error) => {
+        clearTimeout(timer);
         socket.destroy();
         reject(error);
       };
+      const timer = setTimeout(
+        () =>
+          fail(
+            new Error(
+              `Liquidsoap connection timed out after ${this.commandTimeoutMs}ms`,
+            ),
+          ),
+        this.commandTimeoutMs,
+      );
 
       socket.once('error', fail);
       socket.connect(this.options.port, this.host, () => {
+        clearTimeout(timer);
         socket.off('error', fail);
         socket.setKeepAlive(true, 5_000);
         socket.on('data', (chunk: Buffer) => {

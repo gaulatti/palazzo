@@ -56,6 +56,13 @@ from the old socket cannot complete or reject the replacement's command. A
 successful recovery still counts one Telnet reconnect attempt; ignored stale
 callbacks do not trigger another reconnect or change the retry limits.
 
+Each TCP connection attempt has the same `commandTimeoutMs` deadline as a
+command response (2 seconds by default). A stalled handshake closes its socket
+and consumes one of the existing bounded reconnect attempts. Exhaustion rejects
+the command and releases the serialized queue so a subsequent command can
+recover. Successful connections clear the handshake timer; established sockets
+retain their existing response timeout and reconnect metric.
+
 Telnet response text is decoded incrementally as UTF-8 before line framing, so
 artist names and other metadata survive a character split across TCP chunks.
 Closing or replacing a connection discards its partial character along with its
