@@ -130,6 +130,24 @@ checks from required PR checks, so it cannot install the reviewer.
 
 ## Documentation
 
+After the `Deploy` workflow succeeds on main, `Maintain deployed wiki` uses
+Clouseau to plan every affected page, generate it and independently fact-check
+its source citations. It publishes the validated pages together in one non-force
+wiki commit. The wiki receipt records the actual deployed source and deployment
+run; documentation does not close tickets or claim live service health.
+
+Generation has read-only GitHub access and the model key. Publication has wiki
+write access and no model or deployment key. Both stages verify the successful
+main deployment again and reject a superseded release; publication also rejects
+concurrent human wiki edits. Source is read as text from an explicit public
+allowlist. Failed deployments cannot start documentation generation.
+
+For catch-up, the repository owner can dispatch `wiki.yml` with `deployment_run`
+set to the latest successful `deploy.yml` run. This generates and publishes docs
+for that verified deployed revision without starting a deployment. Repeating an
+already documented source is idempotent and makes no model call.
+
+
 - [Architecture](wiki/Architecture) — System design, data flow, Liquidsoap engine
 - [API Reference](wiki/API-Reference) — All endpoints with request/response schemas
 - [Configuration](wiki/Configuration) — Environment variables and settings
