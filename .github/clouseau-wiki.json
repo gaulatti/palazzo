@@ -17,7 +17,8 @@
     ".github/clouseau-wiki.json",
     "infra/README.md",
     "infra/lib/",
-    "infra/bin/"
+    "infra/bin/",
+    ".github/scripts/wiki-deployment.cjs"
   ],
   "deployment_workflow": "deploy.yml",
   "deployment_job": "deploy",

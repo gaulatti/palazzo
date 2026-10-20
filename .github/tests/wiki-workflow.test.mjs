@@ -134,6 +134,7 @@ function fixture(t) {
   f.github = {rest: {actions: {getWorkflowRun: async () => ({data: {head_sha: f.context.sha, head_branch: 'main', path: '.github/workflows/deploy.yml'}}), listJobsForWorkflowRun: method}},
     paginate: async (endpoint, args) => {assert.equal(args.run_id, f.context.runId); return (await endpoint()).data;}};
   const source = snapshot({...f, repository: 'gaulatti/palazzo', revision: context.sha, runId: context.runId}).source;
+  assert.equal(source['.github/scripts/wiki-deployment.cjs'], readFileSync(join(root, '.github/scripts/wiki-deployment.cjs'), 'utf8'), 'factual review receives the exact deployed deployment guard');
   const sourceId = '.github/workflows/deploy.yml:L1';
   f.complete = async ({messages}) => {
     f.requests += 1;
