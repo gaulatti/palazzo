@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import {cpSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
-import {execFileSync} from 'node:child_process';
+import {chmodSync, cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
+import {execFileSync, spawnSync} from 'node:child_process';
 import {createRequire} from 'node:module';
 import {tmpdir} from 'node:os';
 import {dirname, join} from 'node:path';
@@ -182,4 +182,29 @@ test('the real pinned engine blocks model requests before unsuccessful deploymen
   const human = f.git(f.remote, ['rev-parse', 'master']);
   await assert.rejects(publishWiki({...f, bundle: repeated}), /Wiki changed/);
   assert.equal(f.git(f.remote, ['rev-parse', 'master']), human, 'publication cannot overwrite a concurrent human edit');
+});
+
+
+test('the native receipt witnesses actual workflow test execution and cannot pass on failure or missing output', t => {
+  const ci = parse(readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8'));
+  const step = ci.jobs.unit.steps.find(s => s.id === 'workflow-tests');
+  const witness = ci.jobs.verify.steps.find(s => s.name === 'Require wiki-workflow.test.mjs execution');
+  assert.equal(ci.jobs.unit.outputs.wiki_tests_passed, '${{ steps.workflow-tests.outputs.wiki_tests_passed }}');
+  assert.equal(witness.env.WIKI_TESTS_PASSED, '${{ needs.unit.outputs.wiki_tests_passed }}');
+  const temp = mkdtempSync(join(tmpdir(), 'wiki-test-witness-'));
+  t.after(() => rmSync(temp, {recursive: true, force: true}));
+  const npm = join(temp, 'npm');
+  writeFileSync(npm, '#!/usr/bin/env bash\nif [ "$1" = test ]; then exit "$NPM_TEST_EXIT"; fi\n'); chmodSync(npm, 0o755);
+  for (const code of [17, 0]) {
+    const output = join(temp, `output-${code}`);
+    const executed = spawnSync('bash', ['-e', '-o', 'pipefail', '-c', step.run], {cwd: root,
+      env: {...process.env, PATH: `${temp}:${process.env.PATH}`, NPM_TEST_EXIT: String(code), GITHUB_OUTPUT: output}, encoding: 'utf8'});
+    assert.equal(executed.status, code);
+    assert.equal(existsSync(output), code === 0);
+    if (code === 0) assert.equal(readFileSync(output, 'utf8'), 'wiki_tests_passed=true\n');
+  }
+  for (const value of ['', 'false', 'skipped', 'true']) {
+    const checked = spawnSync('bash', ['-e', '-c', witness.run], {env: {...process.env, WIKI_TESTS_PASSED: value}});
+    assert.equal(checked.status === 0, value === 'true');
+  }
 });
