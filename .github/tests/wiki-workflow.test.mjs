@@ -93,7 +93,7 @@ test('generation and publication isolate credentials and use only their own plan
     assert.equal(deployed.with.ref, '${{ steps.deployment.outputs.sha }}');
     for (const checkout of checkouts) assert.equal(checkout.with['persist-credentials'], name === 'publish' && checkout.with.path === 'wiki');
     const engine = checkouts.find(s => s.with.repository === 'gaulatti/clouseau');
-    assert.equal(engine.with.ref, '${{ needs.resolve-clouseau.outputs.sha }}');
+    assert.equal(engine.with.ref, "${{ needs.resolve-clouseau.outputs.sha || '0000000000000000000000000000000000000000' }}");
   }
   const upload = workflow.jobs.plan.steps.find(s => s.uses?.startsWith('actions/upload-artifact@'));
   const download = workflow.jobs.publish.steps.find(s => s.uses?.startsWith('actions/download-artifact@'));

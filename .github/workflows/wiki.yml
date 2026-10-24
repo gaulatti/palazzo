@@ -67,7 +67,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: gaulatti/clouseau
-          ref: ${{ needs.resolve-clouseau.outputs.sha }}
+          ref: ${{ needs.resolve-clouseau.outputs.sha || '0000000000000000000000000000000000000000' }}
           path: .clouseau-ci
           persist-credentials: false
       - name: Verify and record the frozen documentation engine
@@ -145,7 +145,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: gaulatti/clouseau
-          ref: ${{ needs.resolve-clouseau.outputs.sha }}
+          ref: ${{ needs.resolve-clouseau.outputs.sha || '0000000000000000000000000000000000000000' }}
           path: .clouseau-ci
           persist-credentials: false
       - name: Verify and record the frozen documentation engine
