@@ -26,4 +26,3 @@ test('resolution failure cannot turn required PR approval into a skipped passing
     assert.equal(allowed(gate.steps.at(-1).if, context, {success: false}), false);
   }
 });
-
