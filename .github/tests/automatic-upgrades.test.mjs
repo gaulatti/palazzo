@@ -26,3 +26,15 @@ test('resolution failure cannot turn required PR approval into a skipped passing
     assert.equal(allowed(gate.steps.at(-1).if, context, {success: false}), false);
   }
 });
+
+test('shared tests install dependencies from this run frozen engine before executing', () => {
+  const steps = workflow.jobs.unit.steps;
+  const checkout = steps.findIndex(step => step.with?.repository === 'gaulatti/clouseau');
+  const setup = steps.findIndex(step => step.name === 'Set up Python for frozen shared tests');
+  const install = steps.findIndex(step => step.name === 'Install frozen shared test dependencies');
+  const test = steps.findIndex(step => step.name === 'Test approval policy');
+  assert.equal(steps[setup].uses, 'actions/setup-python@v5');
+  assert.equal(steps[setup].with['python-version'], '3.13');
+  assert.equal(steps[install].run, 'python3 -m pip install --disable-pip-version-check -r .clouseau-ci/requirements-test.txt');
+  assert.ok(checkout < setup && setup < install && install < test);
+});

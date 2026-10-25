@@ -84,6 +84,12 @@ jobs:
         run: npm run typecheck
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=high
+      - name: Set up Python for frozen shared tests
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install frozen shared test dependencies
+        run: python3 -m pip install --disable-pip-version-check -r .clouseau-ci/requirements-test.txt
       - name: Test approval policy
         uses: ./.clouseau-ci
         with:
