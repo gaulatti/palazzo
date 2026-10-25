@@ -414,7 +414,7 @@ end-to-end contract.
 
 ## Clouseau engine selection
 
-CI freezes protected public Clouseau main once per run. Local receipts must
+Source CI freezes protected public Clouseau main once per run. Local receipts must
 match that exact engine SHA and digest; an upgrade mismatch blocks without a
 paid retry. Refresh the local public installation, review again and start fresh
 CI. See `docs/automatic-ci-upgrades.md`. Local-only use needs no CI credentials.

@@ -44,6 +44,7 @@ absence leaves the optional ownership gate inactive. Tests, review, exact covera
 and branch protection remain mandatory; unreadable or invalid existing ownership
 evidence does not disable the gate.
 
-The wiki workflow freezes a separate revision for its own run. Its planner and
-publisher share that selection, without claiming identity with source CI.
-Deployment commands and triggers are unchanged.
+This installation covers source CI. The separate wiki workflow retains its
+existing reviewed fixed pin until its own installation PR; source CI does not
+claim that workflow shares its run identity. The full updater delivery includes
+that separate wiki upgrade. Deployment commands and triggers are unchanged.

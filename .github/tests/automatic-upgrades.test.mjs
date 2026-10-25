@@ -27,8 +27,3 @@ test('resolution failure cannot turn required PR approval into a skipped passing
   }
 });
 
-test('the separate wiki run freezes its own engine without changing deployment selection', () => {
-  const wiki = parse(readFileSync(new URL('../workflows/wiki.yml', import.meta.url), 'utf8'));
-  assertFrozenWorkflow(wiki, evaluate);
-  assert.ok(!JSON.stringify(wiki).includes('createWorkflowDispatch'));
-});
