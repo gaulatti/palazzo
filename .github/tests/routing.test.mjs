@@ -51,9 +51,9 @@ for (const [label, c, verify, assess] of [
 }
 
 test('unit and container verification remain parallel and their combined check fails closed', () => {
-  assert.equal(workflow.jobs.unit.needs, undefined);
+  assert.equal(workflow.jobs.unit.needs, 'resolve-clouseau');
   assert.equal(workflow.jobs.container.needs, undefined);
-  assert.deepEqual(workflow.jobs.verify.needs, ['unit', 'container']);
+  assert.deepEqual(workflow.jobs.verify.needs, ['unit', 'container', 'resolve-clouseau']);
   const step = workflow.jobs.verify.steps[0];
   assert.equal(step.name, 'Require passing unit and real radio runtime checks');
   assert.match(step.run, /test "\$UNIT_RESULT" = success && test "\$RUNTIME_RESULT" = success/);
@@ -158,7 +158,7 @@ test('real pinned policy makes no model call for pending, failed, stale or incom
       listJobsForWorkflowRun: async () => ({data: [{name: 'verify', conclusion: 'success', steps: config.verification.steps.filter(name => scenario !== 'missing step' || name !== 'Enforce 100% line and branch coverage').map(name => ({name, conclusion: 'success'}))}]}),
     }}, paginate: async (method, args) => (await method(args)).data};
     const c = {repo: {owner: 'gaulatti', repo: 'palazzo'}, payload: {pull_request: {number: 20}}};
-    const result = await require(`${engine}/src/policy.cjs`).createPolicy(config).assess({github, context: c, fetchImpl: async () => assert.fail('no model request before genuine verification')});
+    const result = await require(`${engine}/src/policy.cjs`).createPolicy(config, {engine: require(`${engine}/src/central-version.cjs`).environmentEngine()}).assess({github, context: c, fetchImpl: async () => assert.fail('no model request before genuine verification')});
     assert.equal(result.decision, ['pending', 'stale'].includes(scenario) ? 'pending_technical' : 'blocked_technical');
   }
 });

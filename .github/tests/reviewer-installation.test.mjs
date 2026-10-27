@@ -108,7 +108,7 @@ test('the actual installation wait checks exact-PR verification and rejects stal
     const invoke = runInNewContext(`(async () => {${step.with.script}\n})()`, {github, context,
       process: {env: {REQUESTED_PR: '23'}}, core: {info: value => messages.push(value)},
       require: name => name === 'node:path' ? require(name) : name.endsWith('/src/config.cjs') ?
-        {loadConfig: () => config} : require(`${engine}/src/policy.cjs`)});
+        {loadConfig: () => config} : name.endsWith('/src/central-version.cjs') ? require(`${engine}/src/central-version.cjs`) : require(`${engine}/src/policy.cjs`)});
     if (scenario === 'ready') {await invoke; assert.match(messages[0], /Clouseau acceptance can now start/);}
     else await assert.rejects(invoke, /changed|verification concluded/);
   }

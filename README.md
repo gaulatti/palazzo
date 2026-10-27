@@ -173,3 +173,6 @@ The Fastify override pins 5.12.5 while keeping NestJS on version 11; remove or
 update it only after the adapter resolves a patched version and the HTTP/runtime
 gates pass. The unused Dockerode SDK is removed: Palazzo manages its Liquidsoap
 child process directly. These dependency corrections preserve metric contracts.
+
+See [automatic Clouseau CI upgrades](docs/automatic-ci-upgrades.md) for the trusted
+central source, frozen engine identity, receipt compatibility and diagnostics.
