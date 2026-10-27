@@ -51,7 +51,11 @@ absence leaves the optional ownership gate inactive. Tests, review, exact covera
 and branch protection remain mandatory; unreadable or invalid existing ownership
 evidence does not disable the gate.
 
-This installation covers source CI. The separate wiki workflow retains its
-existing reviewed fixed pin until its own installation PR; source CI does not
-claim that workflow shares its run identity. The full updater delivery includes
-that separate wiki upgrade. Deployment commands and triggers are unchanged.
+Source CI and the wiki workflow each resolve protected `gaulatti/clouseau` main
+once at their own start and freeze their own run identity: the SHA and computed
+digest are not shared between the two workflows. The wiki workflow's plan and
+publish jobs check out that exact SHA, verify it with the engine's
+`verify-engine` operation and record it in the plan artifact
+(`work/clouseau-engine.json`). A resolution failure fails the wiki run closed.
+Normal central releases reach both workflows without consumer update PRs.
+Deployment commands and triggers are unchanged.
