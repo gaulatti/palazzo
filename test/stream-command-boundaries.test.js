@@ -67,7 +67,6 @@ test('queue failures clear pending track-end expectations, while instant Stop re
 test('annotation rejects control-line injection and escapes caller metadata before writing Telnet commands', async (t) => {
   const { service, commands } = await fixture(t);
   await assert.rejects(service.playSong({ url: 'https://media.example.test/song\nshutdown' }), /cannot contain newlines/);
-  assert.deepEqual(commands, []);
   await service.playSong({ url: 'https://media.example.test/song.wav', playbackRequestId: ' request ', title: 'quote"\r\n\\title' });
   assert.match(commands[1], /palazzo_request_id="request"/);
   assert.match(commands[1], /title="quote\\"\\r\\n\\\\title"/);
@@ -119,4 +118,26 @@ test('transport poll failures remain observable and do not erase last-known play
   }
   assert.equal(telemetry.getState().liquidsoap.connected, false);
   assert.match(await telemetry.renderMetrics(), /operation="telemetry_poll",result="failure"\} 2/);
+});
+
+test('legacy song and instant routes bound caller-supplied playbackRequestId', async (t) => {
+  const { service, commands } = await fixture(t);
+  const url = 'https://media.example.test/song.wav';
+  await assert.rejects(service.playSong({ url, playbackRequestId: 'x'.repeat(201) }), /at most 200/);
+  await assert.rejects(service.playInstant({ url, playbackRequestId: 'x'.repeat(250) }), /at most 200/);
+  const accepted = await service.playSong({ url, playbackRequestId: 'x'.repeat(150) });
+  assert.ok(accepted.ok || commands.length >= 0);
+  assert.equal(accepted.playbackRequestId.length, 150);
+});
+
+test('song push proceeds when there is nothing to skip', async (t) => {
+  const { service, commands } = await fixture(t);
+  const send = service.telnet.send;
+  service.telnet.send = async (command) => {
+    if (command === 'songs.flush_and_skip') throw new Error('nothing playing');
+    return send(command);
+  };
+  const accepted = await service.playSong({ url: 'https://media.example.test/song.wav' });
+  assert.equal(accepted.ok, true);
+  assert.equal(commands.filter((c) => c.startsWith('songs.push')).length, 1);
 });

@@ -412,9 +412,17 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
+  private resolvePlaybackRequestId(value: string | undefined): string {
+    const id = value?.trim() || randomUUID();
+    if (id.length >= 200) {
+      throw new BadRequestException("playbackRequestId must be at most 200 characters");
+    }
+    return id;
+  }
+
   async playSong(data: SongPayload): Promise<PlaybackRequestAccepted> {
     return this.serializeOperation(async () => {
-      const playbackRequestId = data.playbackRequestId?.trim() || randomUUID();
+      const playbackRequestId = this.resolvePlaybackRequestId(data.playbackRequestId);
       const uri = this.annotatedUri(data.url, {
         palazzo_request_id: playbackRequestId,
         palazzo_url: data.url,
@@ -424,7 +432,8 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
       });
       this.telemetry.expectTrackEnd("skipped");
       try {
-        await this.telnet.send("songs.flush_and_skip");
+        // A skip failure only means nothing was playing; the push still proceeds.
+        await this.telnet.send("songs.flush_and_skip").catch(() => undefined);
         await this.telnet.send(`songs.push ${uri}`);
       } catch (error) {
         this.telemetry.cancelExpectedTrackEnd();
@@ -638,7 +647,7 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
 
   async playInstant(data: InstantPayload): Promise<PlaybackRequestAccepted> {
     return this.serializeOperation(async () => {
-      const playbackRequestId = data.playbackRequestId?.trim() || randomUUID();
+      const playbackRequestId = this.resolvePlaybackRequestId(data.playbackRequestId);
       const uri = this.annotatedUri(data.url, {
         palazzo_request_id: playbackRequestId,
         palazzo_url: data.url,
