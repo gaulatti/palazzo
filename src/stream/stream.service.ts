@@ -1000,7 +1000,12 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
   }
 
   private annotatedUri(url: string, metadata: Record<string, string>): string {
-    if (/\r|\n/.test(url)) throw new Error("Audio URL cannot contain newlines");
+    if (typeof url !== "string" || !url.trim()) {
+      throw new BadRequestException("url must be a non-empty string");
+    }
+    if (/\r|\n/.test(url)) {
+      throw new BadRequestException("Audio URL cannot contain newlines");
+    }
     const annotations = Object.entries(metadata)
       .map(([key, value]) => `${key}="${this.annotationValue(value)}"`)
       .join(",");

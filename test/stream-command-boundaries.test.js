@@ -68,6 +68,12 @@ test('annotation rejects control-line injection and escapes caller metadata befo
   const { service, commands } = await fixture(t);
   await assert.rejects(service.playSong({ url: 'https://media.example.test/song\nshutdown' }), /cannot contain newlines/);
   assert.deepEqual(commands, []);
+  for (const url of ['', '   ', 42, {}]) {
+    await assert.rejects(service.playSong({ url }), (error) => error.getStatus() === 400 && /url must be a non-empty string/.test(error.message));
+    await assert.rejects(service.playInstant({ url }), (error) => error.getStatus() === 400 && /url must be a non-empty string/.test(error.message));
+  }
+  await assert.rejects(service.playInstant({ url: 'https://media.example.test/a\r\nshutdown' }), (error) => error.getStatus() === 400 && /cannot contain newlines/.test(error.message));
+  assert.deepEqual(commands, []);
   await service.playSong({ url: 'https://media.example.test/song.wav', playbackRequestId: ' request ', title: 'quote"\r\n\\title' });
   assert.match(commands[1], /palazzo_request_id="request"/);
   assert.match(commands[1], /title="quote\\"\\r\\n\\\\title"/);

@@ -45,6 +45,10 @@ All endpoints at a glance:
 | `PUT`  | `/mixer`                                   | Apply song, instant, and main volume/mute controls        |
 | `GET`  | `/proxy-audio?url=`                        | CORS proxy for audio URLs                                 |
 
+`POST /song` and `POST /instant` reject a missing, blank, non-string or
+newline-containing `url` with `400 Bad Request` before any Liquidsoap command is
+sent.
+
 `POST /song` and `POST /instant` accept an optional caller-supplied
 `playbackRequestId`, generating one when omitted. Song metadata and that ID
 travel with the Liquidsoap request and reappear in lifecycle,
