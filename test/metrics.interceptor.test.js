@@ -15,8 +15,8 @@ test('HTTP interceptor records successes and real exception outcomes in the boun
   const telemetry = new PlaybackTelemetryService({ get: () => undefined });
   const interceptor = new MetricsInterceptor(telemetry);
   for (const [request, statusCode, error] of [
-    [{ method: 'GET', routeOptions: { url: '/playback/state' } }, 200, undefined],
-    [{ method: 'POST', routeOptions: { url: '/song' } }, 201, undefined],
+    [{ method: 'GET', routeOptions: { url: '/v1/programs/:programId/playback/state' } }, 200, undefined],
+    [{ method: 'POST', routeOptions: { url: '/v1/programs/:programId/playback/song' } }, 201, undefined],
     [{ method: 'POST' }, 200, { getStatus: () => 409 }],
     [{ method: 'WEIRD', routeOptions: {} }, 200, new Error('private detail')],
     [{ method: 'GET' }, 200, null],

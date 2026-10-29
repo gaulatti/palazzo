@@ -12,12 +12,12 @@ duration.
 - `sequence` increases monotonically. Palazzo reserves a durable billion-value
   range before a boot emits telemetry, so a restarted process begins above the
   previous boot's possible range.
-- `playbackRequestId` may be supplied to `POST /song` or `POST /instant`.
-  Palazzo generates and returns one when omitted, and attaches it to
-  Liquidsoap request metadata in either case.
+- Program-scoped song and instant commands carry authoritative playback IDs,
+  which Palazzo attaches to Liquidsoap request metadata.
 - An SSE ID is `<bootId>:<sequence>`.
 
-Consumers should fetch `GET /playback/state`, open `GET /playback/events`, and
+Consumers should fetch `GET /v1/programs/:programId/playback/state`, open
+`GET /v1/programs/:programId/playback/events`, and
 persist the latest SSE ID. Every connection begins with a versioned `snapshot`
 event. Reconnect with `Last-Event-ID`; Palazzo replays missed events when the ID
 is still in the 512-event window and otherwise sends the current snapshot. A
@@ -132,6 +132,5 @@ Node 22.22.0 image by immutable digest. Before changing either digest:
 5. Interrupt the command connection while a track plays and verify Palazzo
    marks telemetry stale without emitting a false `track.ended` event.
 
-Existing callers remain compatible: the original control routes and `ok`
-field are unchanged. Callers may ignore the added `playbackRequestId` and the
-new `playback` member on `GET /status` until they adopt telemetry.
+The unscoped root playback routes were retired and return a normal 404; the
+program-scoped routes are the only playback control and telemetry surface.

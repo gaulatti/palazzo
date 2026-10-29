@@ -70,7 +70,7 @@ fades, and `duckGain` to the song mix. Manual instants remain on the separate
 
 All routes are confined to the private control network and exact configured program.
 
-| Method | Route                    | Purpose                                                                                                                      |
+| Method | Route (under `/v1/programs/:programId`) | Purpose                                                                                                                      |
 | ------ | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
 | POST   | `/playback/song`         | Atomic song plus optional intro                                                                                              |
 | POST   | `/playback/song/stop`    | Stop the song queue                                                                                                          |
@@ -131,5 +131,6 @@ preflight and transition contracts add `palazzo_media_preflight_total` and
 See [Media preflight runbook](media-preflight-runbook.md) for quarantine,
 fallback, and consumer recovery procedures.
 
-Legacy root routes remain available during Alcantara migration, but new callers
-should use this program-scoped contract.
+The legacy unscoped root playback routes were removed after Alcantara migrated;
+they return the framework's normal 404 with no redirect or fallback. This
+program-scoped contract is the sole playback control plane.

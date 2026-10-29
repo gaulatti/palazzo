@@ -38,7 +38,7 @@ for (const allowed of [undefined, ' https://desk.example.test, ,https://other.ex
     address.hostname = '127.0.0.1';
     const origin = address.origin;
     for (const corsOrigin of [undefined, 'null', 'http://localhost:5173', 'https://127.0.0.1', ...(allowed ? ['https://desk.example.test', 'https://other.example.test'] : [])]) {
-      const response = await fetch(origin + '/playback/state', {
+      const response = await fetch(origin + '/v1/programs/bootstrap-fixture/playback/state', {
         headers: corsOrigin === undefined ? {} : { Origin: corsOrigin },
       });
       assert.equal(response.status, 200);
@@ -46,10 +46,16 @@ for (const allowed of [undefined, ' https://desk.example.test, ,https://other.ex
       if (corsOrigin !== undefined) assert.equal(response.headers.get('access-control-allow-origin'), corsOrigin);
     }
     for (const corsOrigin of ['https://untrusted.example.test', 'http://localhost.evil.test']) {
-      const response = await fetch(origin + '/playback/state', { headers: { Origin: corsOrigin } });
+      const response = await fetch(origin + '/v1/programs/bootstrap-fixture/playback/state', { headers: { Origin: corsOrigin } });
       assert.equal(response.status, 500);
       assert.equal(response.headers.get('access-control-allow-origin'), null);
       await response.text();
+    }
+    for (const [method, path] of [['GET', '/status'], ['POST', '/song'], ['POST', '/song/stop'], ['POST', '/instant'], ['POST', '/instant/stop'], ['GET', '/mixer'], ['PUT', '/mixer'], ['GET', '/playback/state'], ['GET', '/playback/events']]) {
+      const removed = await fetch(origin + path, { method, redirect: 'manual' });
+      assert.equal(removed.status, 404, `${method} ${path}`);
+      assert.equal(removed.headers.get('location'), null);
+      assert.equal((await removed.json()).message, `Cannot ${method} ${path}`);
     }
     const preflight = await fetch(origin + '/v1/programs/bootstrap-fixture/automation/start', {
       method: 'OPTIONS', headers: { Origin: 'http://localhost:5173', 'Access-Control-Request-Method': 'POST', 'Access-Control-Request-Headers': 'Idempotency-Key,X-Command-Sequence' },

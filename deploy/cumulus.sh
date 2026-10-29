@@ -51,7 +51,7 @@ docker run -d --name palazzo-candidate \
 
 candidate_ready=false
 for _ in $(seq 1 45); do
-  if docker exec palazzo-candidate node -e 'fetch("http://127.0.0.1:3100/playback/state").then(async response=>{const state=await response.json();if(!response.ok||state.liquidsoap?.running!==true||state.liquidsoap?.connected!==true||state.icecast?.connected!==true)throw new Error("transport not ready")}).catch(error=>{console.error(error.message);process.exit(1)})'; then
+  if docker exec palazzo-candidate node -e 'fetch("http://127.0.0.1:3100/v1/programs/"+encodeURIComponent(process.env.PROGRAM_ID)+"/playback/state").then(async response=>{const state=await response.json();if(!response.ok||state.liquidsoap?.running!==true||state.liquidsoap?.connected!==true||state.icecast?.connected!==true)throw new Error("transport not ready")}).catch(error=>{console.error(error.message);process.exit(1)})'; then
     candidate_ready=true
     break
   fi
@@ -99,7 +99,7 @@ unset icecast_source_password
 
 deployed_ready=false
 for _ in $(seq 1 45); do
-  if docker exec palazzo node -e 'fetch("http://127.0.0.1:3100/playback/state").then(async response=>{const state=await response.json();if(!response.ok||state.liquidsoap?.running!==true||state.liquidsoap?.connected!==true||state.icecast?.connected!==true)throw new Error("transport not ready")}).catch(error=>{console.error(error.message);process.exit(1)})'; then
+  if docker exec palazzo node -e 'fetch("http://127.0.0.1:3100/v1/programs/"+encodeURIComponent(process.env.PROGRAM_ID)+"/playback/state").then(async response=>{const state=await response.json();if(!response.ok||state.liquidsoap?.running!==true||state.liquidsoap?.connected!==true||state.icecast?.connected!==true)throw new Error("transport not ready")}).catch(error=>{console.error(error.message);process.exit(1)})'; then
     deployed_ready=true
     break
   fi

@@ -2,29 +2,6 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { StreamController } = require('../dist/stream/stream.controller.js');
 
-test('a song command starts automation before entering the playback queue', async () => {
-  const calls = [];
-  let played = 0;
-  const controller = new StreamController(
-    {
-      playSong: async () => {
-        played += 1;
-        return { ok: true, playbackRequestId: 'request' };
-      },
-    },
-    {
-      startFromPlaybackCommand: () => {
-        calls.push('start');
-      },
-    },
-    {},
-  );
-
-  await controller.playSong({ url: 'https://example.test/song.mp3' });
-  assert.equal(played, 1);
-  assert.deepEqual(calls, ['start']);
-});
-
 test('lifecycle endpoints enforce the configured program before issuing a command', async () => {
   const calls = [];
   const controller = new StreamController(

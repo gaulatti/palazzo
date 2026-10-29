@@ -26,7 +26,7 @@ docker inspect "$station_container" \
   | jq --exit-status \
     '.[0].HostConfig.LogConfig.Type == "local" and .[0].HostConfig.LogConfig.Config == {"max-file":"3","max-size":"10m"}'
 for attempt in $(seq 1 30); do
-  if curl --fail --silent "$station_api"/playback/state > "${station_work}/state.json" \
+  if curl --fail --silent "$station_api"/v1/programs/program-ci/playback/state > "${station_work}/state.json" \
     && jq --exit-status \
       '.schemaVersion == 1 and .liquidsoap.running == true and .liquidsoap.connected == true and .icecast.connected == true' \
       "${station_work}/state.json" > /dev/null; then
@@ -74,8 +74,13 @@ curl --fail --silent \
   "$station_api"/v1/programs/program-ci/playback/preflight \
   | jq --exit-status \
     '.assets[0].playbackId == "ci-upcoming" and (.assets[0] | has("url") | not)'
-curl --fail --silent "$station_api"/playback/state \
+curl --fail --silent "$station_api"/v1/programs/program-ci/playback/state \
   | jq --exit-status '.status == "idle"'
+for removed in 'GET status' 'POST song' 'POST song/stop' 'POST instant' 'POST instant/stop' 'GET mixer' 'PUT mixer' 'GET playback/state' 'GET playback/events'; do
+  set -- $removed
+  removed_status=$(curl --silent --output /dev/null --write-out '%{http_code} %{redirect_url}' --request "$1" "$station_api/$2")
+  test "$removed_status" = '404 ' || { echo "legacy route $1 /$2 returned $removed_status"; exit 1; }
+done
 jq --null-input --arg checksum "$FILLER_SHA" \
   '{commandId:"ci-prepare",mode:"ordered",assets:[{id:"ci-filler",sha256:$checksum,downloadUrl:"http://127.0.0.1:3200/filler.wav?signed=redacted"}]}' \
   > "${station_work}/filler.json"

@@ -156,14 +156,6 @@ const NORMALIZED_METHODS = new Set([
 ]);
 const NORMALIZED_ROUTES = new Set([
   '/v1/programs/:programId/output/audio',
-  '/status',
-  '/song',
-  '/song/stop',
-  '/instant',
-  '/instant/stop',
-  '/mixer',
-  '/playback/state',
-  '/playback/events',
   '/metrics',
   '/proxy-audio',
   '/v1/programs/:programId/automation',
