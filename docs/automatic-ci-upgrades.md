@@ -44,6 +44,9 @@ The small bootstrap needs a reviewed update only if its selection protocol
 changes. Review, hosted verification, receipt reuse or AI review, approval,
 merge and deployment are separate results.
 
+Palazzo selects `"merge_mode": "automatic"` in `.github/clouseau.json` and keeps
+`.github/CODEOWNERS` (`* @gaulatti`) on the protected base, so ownership is required,
+not optional: missing or invalid ownership cannot arm automatic merge.
 When CODEOWNERS exists on the protected base, automatic merge is reserved for
 authors who own every affected path. Other contributions need code-owner
 involvement and manual merge; write permission alone is insufficient. Confirmed
