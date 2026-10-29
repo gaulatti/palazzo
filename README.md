@@ -21,36 +21,49 @@ Automation clients should use the private program-scoped surface in
 song-plus-intro playout, program-scoped instant/mixer/state/event routes,
 durable idempotency, and explicit intro lifecycle reporting.
 
-Push a song: `POST /song` with `{"url": "https://...mp3"}`
+Push a song: `POST /v1/programs/:programId/playback/song` with the
+program-scoped body documented in [Program-scoped playout](docs/program-playout.md).
 
 All endpoints at a glance:
 
-| Method | Path                                       | Description                                               |
-| ------ | ------------------------------------------ | --------------------------------------------------------- |
-| `GET`  | `/status`                                  | Stream health and metadata                                |
-| `GET`  | `/playback/state`                          | Authoritative current playback snapshot                   |
-| `GET`  | `/playback/events`                         | Replay-safe Server-Sent Events                            |
-| `GET`  | `/metrics`                                 | Private Prometheus telemetry                              |
-| `GET`  | `/v1/programs/:programId/automation`       | Private automation lifecycle state                        |
-| `POST` | `/v1/programs/:programId/automation/start` | Start the program automation without restarting transport |
-| `POST` | `/v1/programs/:programId/automation/stop`  | Clear program material while preserving the Icecast mount |
-| `PUT`  | `/v1/programs/:programId/fillers/:version` | Prepare immutable local radio filler from private Alcantara input |
-| `GET`  | `/v1/programs/:programId/fillers/:version` | Read filler readiness without exposing signed source data |
-| `POST` | `/song`                                    | Push a song, skips current                                |
-| `POST` | `/song/stop`                               | Skip current song                                         |
-| `POST` | `/instant`                                 | Push a jingle/SFX                                         |
-| `POST` | `/instant/stop`                            | Stop all instants                                         |
-| `GET`  | `/v1/programs/:programId/output/audio` | Return the configured Icecast audio on the private API |
-| `GET`  | `/mixer`                                   | Read the applied song, instant, and main mixer state      |
-| `PUT`  | `/mixer`                                   | Apply song, instant, and main volume/mute controls        |
-| `GET`  | `/proxy-audio?url=`                        | CORS proxy for audio URLs                                 |
+| Method | Path                                                    | Description                                               |
+| ------ | ------------------------------------------------------- | --------------------------------------------------------- |
+| `GET`  | `/metrics`                                              | Private Prometheus telemetry                              |
+| `GET`  | `/v1/programs/:programId/automation`                    | Private automation lifecycle state                        |
+| `POST` | `/v1/programs/:programId/automation/start`              | Start the program automation without restarting transport |
+| `POST` | `/v1/programs/:programId/automation/stop`               | Clear program material while preserving the Icecast mount |
+| `PUT`  | `/v1/programs/:programId/fillers/:version`              | Prepare immutable local radio filler from private Alcantara input |
+| `GET`  | `/v1/programs/:programId/fillers/:version`              | Read filler readiness without exposing signed source data |
+| `POST` | `/v1/programs/:programId/playback/song`                 | Atomic song plus optional intro                           |
+| `POST` | `/v1/programs/:programId/playback/song/stop`            | Stop the song queue                                       |
+| `PUT`  | `/v1/programs/:programId/playback/preflight`            | Probe a bounded list of upcoming assets                   |
+| `GET`  | `/v1/programs/:programId/playback/preflight`            | Read current ready/quarantined/expired states             |
+| `POST` | `/v1/programs/:programId/playback/instant`              | Play a manual instant                                     |
+| `POST` | `/v1/programs/:programId/playback/instant/stop`         | Stop all instants                                         |
+| `GET`  | `/v1/programs/:programId/playback/state`                | Authoritative current playback snapshot                   |
+| `GET`  | `/v1/programs/:programId/playback/events`               | Replay-safe Server-Sent Events                            |
+| `GET`  | `/v1/programs/:programId/mixer`                         | Read the applied song, instant, and main mixer state      |
+| `PUT`  | `/v1/programs/:programId/mixer`                         | Apply song, instant, and main volume/mute controls        |
+| `GET`  | `/v1/programs/:programId/output/audio`                  | Return the configured Icecast audio on the private API    |
+| `GET`  | `/proxy-audio?url=`                                     | CORS proxy for audio URLs                                 |
 
-`POST /song` and `POST /instant` reject a missing, blank, non-string or
+The unscoped root playback routes (`/status`, `/song`, `/song/stop`,
+`/instant`, `/instant/stop`, `/mixer`, `/playback/state` and
+`/playback/events`) were retired after Alcantara migrated to the
+program-scoped contract. They return the framework's normal `404 Not Found`;
+there are no redirects or compatibility forwards. Replacements: `/status` has
+no equivalent (use the program playback state and automation routes);
+every other route maps to the same path under `/v1/programs/:programId`
+(`/song` -> `/playback/song`, `/instant` -> `/playback/instant`,
+`/playback/*` and `/mixer` unchanged under the program prefix).
+
+`POST .../playback/song` and `POST .../playback/instant` reject a missing, blank, non-string or
 newline-containing `url` with `400 Bad Request` before any Liquidsoap command is
 sent.
 
-`POST /song` and `POST /instant` accept an optional caller-supplied
-`playbackRequestId`, generating one when omitted. Song metadata and that ID
+`POST .../playback/instant` requires the caller-supplied authoritative
+`playbackId`, and song commands carry their playback IDs in the program-scoped
+body. Song metadata and that ID
 travel with the Liquidsoap request and reappear in lifecycle,
 position, and state telemetry. Level samples are emitted at no more than 10 Hz,
 position at 1 Hz, and heartbeats approximately every 10 seconds.

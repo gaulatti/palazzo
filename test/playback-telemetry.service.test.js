@@ -238,12 +238,12 @@ test('bounds the replay journal under sustained level updates', async () => {
 
 test('normalizes HTTP metric labels to a bounded route set', async () => {
   const telemetry = service();
-  telemetry.observeHttp('get', '/playback/state', 200, 12);
+  telemetry.observeHttp('get', '/v1/programs/:programId/playback/state', 200, 12);
   telemetry.observeHttp('get', '/devices/track-123', 404, 5);
   telemetry.observeHttp('private-method', '/private/track-123', 999, 5);
   const metrics = await telemetry.renderMetrics();
 
-  assert.match(metrics, /route="\/playback\/state",status="2xx"/);
+  assert.match(metrics, /route="\/v1\/programs\/:programId\/playback\/state",status="2xx"/);
   assert.match(metrics, /route="unmatched",status="4xx"/);
   assert.match(metrics, /method="OTHER",route="unmatched",status="other"/);
   assert.doesNotMatch(metrics, /track-123|private-method/);

@@ -17,8 +17,6 @@ import {
 import { map, Observable } from "rxjs";
 import {
   StreamService,
-  type SongPayload,
-  type InstantPayload,
   type MixerPayload,
   type ProgramSongPayload,
   type ProgramInstantPayload,
@@ -38,15 +36,9 @@ import {
  * All endpoints (except `/proxy-audio`) delegate to {@link StreamService}
  * which communicates with the Liquidsoap engine over its Telnet interface.
  *
- * Routes:
- * - `GET  /status`         — stream health and metadata.
- * - `POST /song`           — push a track into the song queue.
- * - `POST /song/stop`      — stop active and queued songs.
- * - `POST /instant`        — push a short audio clip (jingle / SFX).
- * - `POST /instant/stop`   — skip all currently playing instant clips.
- * - `GET  /mixer`          — read applied volume / mute state.
- * - `PUT  /mixer`          — adjust volume / mute state.
- * - `GET  /proxy-audio`    — fetch and relay audio from an external URL.
+ * Playback control is exposed only under `/v1/programs/:programId`. The
+ * unscoped root playback routes were retired and return Nest's normal 404.
+ * The private `GET /metrics` scrape and `GET /proxy-audio` relay stay at the root.
  */
 @Controller()
 export class StreamController {
@@ -213,81 +205,6 @@ export class StreamController {
     @Headers("last-event-id") lastEventId?: string,
   ): Promise<Observable<MessageEvent>> {
     this.lifecycle.assertProgram(programId);
-    return this.streamService.telemetry.subscribe(lastEventId).pipe(
-      map((event) => ({
-        id: event.id,
-        type: event.type,
-        data: event,
-      })),
-    );
-  }
-
-  /** Returns the current stream mount point, name, uptime, and running state. */
-  @Get("status")
-  getStatus() {
-    return this.streamService.getStatus();
-  }
-
-  /**
-   * Replaces Liquidsoap's active and queued songs with the requested song.
-   */
-  @Post("song")
-  async playSong(@Body() data: SongPayload) {
-    if (!data.url) throw new BadRequestException("url is required");
-    this.lifecycle.startFromPlaybackCommand();
-    return this.streamService.playSong(data);
-  }
-
-  /** Stops the active song and clears every queued song. */
-  @Post("song/stop")
-  async stopSong() {
-    await this.streamService.stopSong();
-    return { ok: true };
-  }
-
-  /** Pushes an instant audio URL (short sound effect or jingle) into the `instants` queue. */
-  @Post("instant")
-  async playInstant(@Body() data: InstantPayload) {
-    this.lifecycle.requireReady();
-    if (!data.url) throw new BadRequestException("url is required");
-    return this.streamService.playInstant(data);
-  }
-
-  /** Stops all currently playing instant clips by skipping the `instants` queue. */
-  @Post("instant/stop")
-  async stopAllInstants() {
-    await this.streamService.stopAllInstants();
-    return { ok: true };
-  }
-
-  /** Returns the mixer state currently applied to Liquidsoap. */
-  @Get("mixer")
-  getMixer() {
-    return this.streamService.getMixer();
-  }
-
-  /** Updates mixer settings (volumes, mute state). */
-  @Put("mixer")
-  async updateMixer(@Body() data: MixerPayload) {
-    this.lifecycle.requireReady();
-    return this.streamService.updateMixer(data);
-  }
-
-  /** Returns the latest authoritative Liquidsoap playback snapshot. */
-  @Get("playback/state")
-  getPlaybackState() {
-    return this.streamService.telemetry.getState();
-  }
-
-  /**
-   * Streams replay-safe playback events. Reconnecting clients can provide the
-   * standard Last-Event-ID header to receive missed events from the bounded
-   * in-memory journal.
-   */
-  @Sse("playback/events")
-  playbackEvents(
-    @Headers("last-event-id") lastEventId?: string,
-  ): Observable<MessageEvent> {
     return this.streamService.telemetry.subscribe(lastEventId).pipe(
       map((event) => ({
         id: event.id,
