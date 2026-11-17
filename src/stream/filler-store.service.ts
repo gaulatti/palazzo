@@ -33,7 +33,8 @@ interface AssetRequest {
 
 export interface FillerPreparationRequest {
   commandId: string;
-  mode?: 'ordered' | 'shuffle';
+  /** `ordered` or `shuffle`; any other string is prepared as `ordered`. */
+  mode?: 'ordered' | 'shuffle' | (string & {});
   shuffleSeed?: string;
   assets: AssetRequest[];
 }
@@ -84,6 +85,7 @@ export class FillerStoreService {
   private preparationState: FillerPublicState | null = null;
   private operationTail: Promise<void> = Promise.resolve();
   private outcomes = { success: 0, failure: 0, conflict: 0 };
+  private unknownModes = 0;
   private preparedVersionCount = 0;
 
   constructor(config: ConfigService) {
@@ -210,6 +212,9 @@ export class FillerStoreService {
       `palazzo_filler_preparations_total{outcome="success"} ${this.outcomes.success}`,
       `palazzo_filler_preparations_total{outcome="failure"} ${this.outcomes.failure}`,
       `palazzo_filler_preparations_total{outcome="conflict"} ${this.outcomes.conflict}`,
+      '# HELP palazzo_filler_unknown_modes_total Filler preparations whose order mode Palazzo does not know, prepared in order instead.',
+      '# TYPE palazzo_filler_unknown_modes_total counter',
+      `palazzo_filler_unknown_modes_total ${this.unknownModes}`,
       '',
     ].join('\n');
   }
@@ -333,9 +338,15 @@ export class FillerStoreService {
     if (!request || typeof request !== 'object' || request.commandId !== key)
       throw new BadRequestException('commandId must equal Idempotency-Key');
     this.validateIdentifier(request.commandId, 'invalid-command');
-    const mode = request.mode ?? 'ordered';
-    if (mode !== 'ordered' && mode !== 'shuffle')
+    // An order mode Palazzo does not know is not a reason to leave the program
+    // without a filler (gaulatti/ariston#217): ordering is not safety, so it is
+    // prepared in order and counted. A mode that is not a string is malformed.
+    const requested: unknown = request.mode ?? 'ordered';
+    if (typeof requested !== 'string')
       throw new BadRequestException('mode must be ordered or shuffle');
+    let mode: 'ordered' | 'shuffle' = 'ordered';
+    if (requested === 'shuffle') mode = 'shuffle';
+    else if (requested !== 'ordered') this.unknownModes += 1;
     const shuffleSeed = request.shuffleSeed?.trim() ?? '';
     if (mode === 'shuffle' && (!shuffleSeed || shuffleSeed.length > 200))
       throw new BadRequestException(

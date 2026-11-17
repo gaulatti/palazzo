@@ -81,3 +81,14 @@ test('makes shuffle deterministic, deduplicates delivery, and preserves known-go
     assert.doesNotMatch(context.store.renderMetrics(), /shuffle-v1|stable-seed|sourceSha256/);
   } finally { await context.close(); }
 });
+
+test('prepares a filler with an unknown order mode in the order it was sent', async () => {
+  const context = await fixture();
+  try {
+    const assets = [await context.asset('one.wav', 'one'), await context.asset('two.ogg', 'two')];
+    const ready = await context.store.prepare('weighted-v1', { commandId: 'weighted-one', mode: 'weighted', shuffleSeed: 'ignored', assets }, 'weighted-one');
+    assert.equal(ready.ready, true);
+    assert.deepEqual(ready.assets.map((item) => item.id), ['one', 'two']);
+    assert.match(context.store.renderMetrics(), /^palazzo_filler_unknown_modes_total 1$/m);
+  } finally { await context.close(); }
+});

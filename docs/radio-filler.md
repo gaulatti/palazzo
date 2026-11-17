@@ -18,7 +18,12 @@ broadcast lifecycle API.
 
 `PUT` also requires `Idempotency-Key`; the JSON `commandId` must match it.
 `assets` contains one to 100 `{id, sha256, downloadUrl}` objects. `mode` is
-`ordered` or `shuffle`; shuffle also requires a bounded `shuffleSeed`.
+`ordered` or `shuffle`; shuffle also requires a bounded `shuffleSeed`. A
+`mode` string Palazzo does not know is prepared as `ordered` (and its identity
+uses `ordered`) instead of refusing the filler, and is counted in
+`palazzo_filler_unknown_modes_total` (gaulatti/ariston#217): ordering is not
+safety, and a refused filler blocks automation start. A `mode` that is not a
+string is still a 400.
 Refreshing an expiring signed URL is idempotent because version identity is
 based on command, mode, seed, asset IDs, and checksums—not URL query data.
 
@@ -67,7 +72,8 @@ and never removes the active version.
 ## Operations
 
 `GET /metrics` adds bounded gauges for active/preparing state and a preparation
-counter labeled only by `success`, `failure`, or `conflict`. Version, program,
+counter labeled only by `success`, `failure`, or `conflict`, plus the unlabeled
+`palazzo_filler_unknown_modes_total`, exposed from 0. Version, program, mode,
 asset, URL, seed, and failure text never become labels. Lifecycle state exposes
 only the active version and whether a validated binding exists. Preparation
 failure reasons are limited to checksum, download, size, decode, validation, or

@@ -5,6 +5,7 @@ const { createHash } = require('node:crypto');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const { FillerStoreService } = require('../dist/stream/filler-store.service');
+const { parseExposition } = require('./prometheus-exposition');
 
 async function fixture(t) {
   const root = await fs.mkdtemp(join(tmpdir(), 'palazzo-filler-boundary-'));
@@ -30,7 +31,7 @@ test('filler request validation rejects malformed deliveries before any download
   const { store } = await fixture(t);
   t.mock.method(global, 'fetch', () => assert.fail('invalid delivery cannot fetch media'));
   const invalid = [undefined, 'text', {}, { ...request, commandId: undefined }, { ...request, commandId: 'different' },
-    { ...request, commandId: '-invalid' }, { ...request, mode: 'loop' },
+    { ...request, commandId: '-invalid' }, { ...request, mode: 7 },
     ...[undefined, '', 'x'.repeat(201)].map((shuffleSeed) => ({ ...request, mode: 'shuffle', shuffleSeed })),
     ...[undefined, [], Array(101).fill(asset)].map((assets) => ({ ...request, assets })),
     ...[null, { ...asset, id: 'bad/id' }, { ...asset, sha256: undefined }, { ...asset, sha256: 'bad' },
@@ -219,4 +220,21 @@ test('cleanup retains the active session beyond the retention limit and ignores 
   assert.equal((await store.getPublicState('v4')).ready, false);
   await store.deactivate();
   assert.equal(store.getActiveVersion(), null);
+});
+
+// gaulatti/ariston#217: an order mode Palazzo does not know is prepared in
+// order and counted, instead of refusing the filler with a 400.
+test('an unknown filler mode is prepared in order and counted, never refused', async (t) => {
+  const { store } = await fixture(t);
+  const unknownModes = () =>
+    parseExposition(store.renderMetrics()).find((sample) => sample.name === 'palazzo_filler_unknown_modes_total').value;
+  assert.equal(unknownModes(), 0);
+  // The preparation goes on to download, which is where this one stops.
+  t.mock.method(global, 'fetch', async () => new Response(null, { status: 404 }));
+  await assert.rejects(store.prepare('v1', { ...request, mode: 'weighted' }, 'prepare'), (error) => error.getResponse().reason === 'download-failed');
+  assert.equal(unknownModes(), 1);
+  // Known modes are not counted.
+  await assert.rejects(store.prepare('v2', { ...request, commandId: 'other', mode: 'ordered' }, 'other'), (error) => error.getResponse().reason === 'download-failed');
+  assert.equal(unknownModes(), 1);
+  assert.doesNotMatch(store.renderMetrics(), /weighted/);
 });
