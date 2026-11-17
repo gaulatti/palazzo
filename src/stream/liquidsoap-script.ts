@@ -308,6 +308,13 @@ next_deck = ref("")
 next_playback_id = ref("")
 next_overlap = ref(0.)
 next_generation = ref(0)
+# A deck still playing (the tail of an overlapped song) cannot take the next song yet: the resolved
+# request waits here until that deck's song ends.
+next_pending = ref([])
+deck_a_playing = ref(false)
+deck_b_playing = ref(false)
+# Armed 0.1 s before an overlap starts, so the limiter is already engaged on its first frame.
+overlap_limiter_armed = ref(false)
 
 # Per deck: loudness gain from liq_amplify (1.0 when absent), the song volume, and fades from
 # liq_fade_in / liq_fade_out (none when absent).
@@ -350,6 +357,14 @@ def set_deck_open(name, value) =
   if name == "b" then deck_b_open := value else deck_a_open := value end
 end
 
+def deck_playing(name) =
+  if name == "b" then deck_b_playing() else deck_a_playing() end
+end
+
+def set_deck_playing(name, value) =
+  if name == "b" then deck_b_playing := value else deck_a_playing := value end
+end
+
 # Drops the announced song, if any, and reports why. Returns whether one was dropped.
 def drop_next(reason) =
   if next_state() == "none" then
@@ -361,8 +376,12 @@ def drop_next(reason) =
         q = deck_queue(next_deck())
         list.iter(fun (r) -> q.remove(r), q.queue())
       end
-      set_deck_open(next_deck(), false)
+      list.iter(fun (r) -> request.destroy(r), next_pending())
+      next_pending := []
+      # Never close a deck that is still playing: that would pause its song mid-way.
+      if not deck_playing(next_deck()) then set_deck_open(next_deck(), false) end
       next_state := "none"
+      overlap_limiter_armed := false
       remember_next_withdrawn(reason)
       true
     end
@@ -375,6 +394,7 @@ def watch_deck(name, deck) =
     fun (meta) ->
       begin
         active_deck := name
+        set_deck_playing(name, true)
         if next_state() == "started" and next_deck() == name then
           next_state := "none"
         end
@@ -388,6 +408,14 @@ def watch_deck(name, deck) =
         remember_event("track_started", meta)
       end
   )
+  # Arms the overlap limiter just before an overlap.
+  deck.on_position(
+    position={next_overlap() + 0.1}, remaining=true, allow_partial=true, synchronous=true,
+    fun (_, _) ->
+      if next_state() == "queued" and next_deck() != name and active_deck() == name and next_overlap() > 0. then
+        overlap_limiter_armed := true
+      end
+  )
   # Opens the announced song's gate at remaining = overlap on the deck that is playing.
   deck.on_position(
     position={next_overlap()}, remaining=true, allow_partial=true, synchronous=true,
@@ -395,6 +423,8 @@ def watch_deck(name, deck) =
       if next_state() == "queued" and next_deck() != name and active_deck() == name then
         begin
           set_deck_open(next_deck(), true)
+          # Marked on air here, in the frame the gate opens, so the overlap limiter is engaged from its start.
+          set_deck_playing(next_deck(), true)
           next_state := "started"
         end
       end
@@ -403,6 +433,17 @@ def watch_deck(name, deck) =
     position={0.}, remaining=true, allow_partial=true, synchronous=false,
     fun (_, meta) ->
       begin
+        set_deck_playing(name, false)
+        overlap_limiter_armed := false
+        # The announced song was waiting for this deck to finish its song: queue it now, gated.
+        if next_state() == "waiting_deck" and next_deck() == name then
+          begin
+            set_deck_open(name, false)
+            list.iter(fun (r) -> deck_queue(name).push(r), next_pending())
+            next_pending := []
+            next_state := "queued"
+          end
+        end
         # The announced song is still resolving when the playing song ends: it is not ready in time.
         if next_state() == "resolving" and active_deck() == name then
           ignore(drop_next("not_ready"))
@@ -418,7 +459,14 @@ watch_deck("a", deck_a)
 watch_deck("b", deck_b)
 
 songs_mixed = add(normalize=false, [deck_a, deck_b])
-songs_rms = rms(id="songs_rms", duration=0.1, songs_mixed)
+# While both decks are on air (an overlap), a limiter holds the sum under -1 dBTP. With one deck it is
+# fully dry (wet 0 leaves the samples untouched), so a song plays exactly as before.
+songs_limited = compress(
+  threshold=-3., ratio=20., attack=1., release=200., knee=0., lookahead=0.,
+  wet={if overlap_limiter_armed() or (deck_a_playing() and deck_b_playing()) then 1. else 0. end},
+  songs_mixed
+)
+songs_rms = rms(id="songs_rms", duration=0.1, songs_limited)
 get_song_rms = songs_rms.rms
 songs = peak(id="songs_peak", duration=0.1, songs_rms)
 get_song_peak = songs.peak
@@ -446,7 +494,7 @@ server.register(
           overlap = float_of_string(default=0., list.nth(parts, 2))
           uri = string.concat(separator=" ", list.tl(list.tl(list.tl(parts))))
           target = if active_deck() == "b" then "a" else "b" end
-          set_deck_open(target, false)
+          if not deck_playing(target) then set_deck_open(target, false) end
           q = deck_queue(target)
           list.iter(fun (r) -> q.remove(r), q.queue())
           next_generation := next_generation() + 1
@@ -461,9 +509,17 @@ server.register(
               ok = request.resolve(timeout=resolve_limit, r)
               if next_generation() == generation and next_state() == "resolving" then
                 if ok then
-                  begin
-                    q.push(r)
-                    next_state := "queued"
+                  if deck_playing(target) then
+                    begin
+                      next_pending := [r]
+                      next_state := "waiting_deck"
+                    end
+                  else
+                    begin
+                      set_deck_open(target, false)
+                      q.push(r)
+                      next_state := "queued"
+                    end
                   end
                 else
                   begin

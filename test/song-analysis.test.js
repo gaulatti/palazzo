@@ -270,7 +270,6 @@ deck_a = song_deck(songs_queue, deck_a_open)
 deck_b = song_deck(next_queue, deck_b_open)
 `) &&
       script.includes(`songs_mixed = add(normalize=false, [deck_a, deck_b])
-songs_rms = rms(id="songs_rms", duration=0.1, songs_mixed)
 `),
   );
   // Intros, instants, filler and mixer are as before.

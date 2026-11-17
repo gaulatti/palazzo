@@ -244,6 +244,8 @@ export class PlaybackTelemetryService {
     not_ready: 0,
   };
   private nextProgramId: string | null = null;
+  /** Liquidsoap sequence of the last applied track start. */
+  private trackStartedSequence = 0;
   /** Cue-in per playback request, so position stays file-relative. */
   private readonly songCueIns = new Map<string, number>();
   private pendingTrackEnd: {
@@ -350,6 +352,7 @@ export class PlaybackTelemetryService {
     // alive. Rebase the deduplication cursor and reconcile from its new journal.
     if (snapshot.liquidsoap_sequence < this.liquidsoapSequence) {
       this.liquidsoapSequence = 0;
+      this.trackStartedSequence = 0;
     }
 
     for (const event of events) {
@@ -366,7 +369,8 @@ export class PlaybackTelemetryService {
         finiteOr(snapshot.elapsed, 0) +
         (this.songCueIns.get(snapshot.playback_request_id) ?? 0);
       this.remainingSeconds = finiteOrNull(snapshot.remaining);
-    } else {
+    } else if (snapshot.liquidsoap_sequence >= this.trackStartedSequence) {
+      // A snapshot sampled before a start that arrived in the same poll must not erase it.
       this.track = null;
       this.positionSeconds = 0;
       this.remainingSeconds = null;
@@ -830,6 +834,7 @@ export class PlaybackTelemetryService {
       );
     } else if (event.event_type === 'track_started') {
       this.lifecycleStarted += 1;
+      this.trackStartedSequence = event.sequence;
       this.track = {
         playbackRequestId: event.playback_request_id,
         title: event.title || null,

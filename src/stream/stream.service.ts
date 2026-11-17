@@ -1130,6 +1130,15 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
           reason: "not_ready",
         });
       }
+      const overlap = this.songOverlaps.get(current.playbackRequestId) ?? 0;
+      const annotations = this.songAnalysisAnnotations(song.playbackId, data.song);
+      if (overlap > 0) {
+        // Entering under an overlap, the song rises over at least MIN_OVERLAP_FADE_IN_SECONDS so the
+        // overlap limiter can hold the sum of both songs under the true-peak ceiling (measured).
+        annotations.liq_fade_in = decimal(
+          Math.max(Number(annotations.liq_fade_in ?? 0), MIN_OVERLAP_FADE_IN_SECONDS),
+        );
+      }
       const uri = this.annotatedUri(song.url, {
         palazzo_request_id: song.playbackId,
         palazzo_playback_id: song.playbackId,
@@ -1138,14 +1147,13 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
         title: data.song.title ?? "",
         artist: data.song.artist ?? "",
         cover_url: data.song.coverUrl ?? "",
-        ...this.songAnalysisAnnotations(song.playbackId, data.song),
+        ...annotations,
       });
       const remaining = current.remainingSeconds;
       const limit = Math.min(
         this.nextResolveMaxSeconds,
         remaining !== null && remaining > 0 ? remaining : this.nextResolveMaxSeconds,
       );
-      const overlap = this.songOverlaps.get(current.playbackRequestId) ?? 0;
       this.decksUsed = true;
       const answer = await this.telnet.send(
         `palazzo.prepare_next ${song.playbackId} ${decimal(limit)} ${decimal(overlap)} ${uri}`,
@@ -1447,6 +1455,9 @@ export function loudnessGain(
   );
   return 10 ** (gainDb / 20);
 }
+
+/** Shortest rise of a song that enters under an overlap (gaulatti/palazzo#40, measured). */
+const MIN_OVERLAP_FADE_IN_SECONDS = 0.25;
 
 /** A plain decimal string (never exponent notation), to six places. */
 function decimal(value: number): string {

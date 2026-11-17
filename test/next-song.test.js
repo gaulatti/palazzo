@@ -168,7 +168,13 @@ test("the current song's overlap and the configured cap shape the announcement",
   });
   const prepare = commands.find((c) => c.startsWith("palazzo.prepare_next"));
   assert.ok(prepare.startsWith("palazzo.prepare_next song-b 90 2 annotate:"));
+  // B's own 1 s fade-in is longer than the minimum rise under an overlap, so it is kept.
   assert.match(prepare, /liq_cue_in="1",liq_cue_out="200",liq_fade_in="1",liq_fade_out="0"/);
+  // A second announcement without a fade-in (or without any segue) rises over 0.25 s under the overlap.
+  await announce({ playbackId: "song-c", segue: { cueInSeconds: 0, cueOutSeconds: 100, fadeInSeconds: 0, fadeOutSeconds: 0, overlapSeconds: 0 } }, "next-c");
+  assert.match(commands.at(-1), /liq_fade_in="0\.25"/);
+  await announce({ playbackId: "song-d" }, "next-d");
+  assert.match(commands.at(-1), /liq_fade_in="0\.25"/);
 });
 
 test("a song without a title or artist and with a cover is annotated like a song command", async () => {
@@ -183,6 +189,33 @@ test("without a remaining time the announcement uses the cap", async () => {
   onAir({ remaining: 0 });
   await announce();
   assert.ok(commands[0].startsWith("palazzo.prepare_next song-b 600 0 "));
+});
+
+test("a start in the same poll as an older idle snapshot is still on air for an announcement", async () => {
+  const { telemetry, announce } = await harness();
+  const started = {
+    sequence: 5,
+    event_type: "track_started",
+    playback_request_id: "song-a",
+    playback_id: "song-a",
+    parent_playback_id: "",
+    program_id: "program-one",
+    title: "A",
+    artist: "",
+    cover_url: "",
+    url: "https://example.test/a.mp3",
+    occurred_at: 1_700_000_100,
+  };
+  // The snapshot was sampled before the start (sequence 4 < 5) and still says nothing plays.
+  telemetry.apply(snapshot({ playing: false, liquidsoap_sequence: 4 }), [started]);
+  assert.equal(telemetry.currentSong().playbackRequestId, "song-a");
+  assert.equal((await announce()).state, "queued");
+  // A later idle snapshot that has seen the start does end it.
+  telemetry.apply(snapshot({ playing: false, liquidsoap_sequence: 6 }), []);
+  assert.equal(telemetry.currentSong(), null);
+  // After a Liquidsoap restart the sequences start again from zero.
+  telemetry.apply(snapshot({ playing: false, liquidsoap_sequence: 0 }), []);
+  assert.equal(telemetry.currentSong(), null);
 });
 
 test("nothing on air is a 409, and nothing is sent", async () => {
@@ -398,6 +431,12 @@ test("the script keeps deck a as the songs queue and gates the announced song on
   assert.match(script, /deck_a_open = ref\(true\)\ndeck_b_open = ref\(false\)/);
   assert.match(script, /position=\{next_overlap\(\)\}, remaining=true/);
   assert.match(script, /request\.resolve\(timeout=resolve_limit, r\)/);
+  // A deck still finishing an overlapped song is never closed; the next song waits for it.
+  assert.match(script, /if not deck_playing\(target\) then set_deck_open\(target, false\) end/);
+  assert.match(script, /next_state\(\) == "waiting_deck" and next_deck\(\) == name/);
+  // The overlap limiter is dry unless both decks are on air.
+  assert.match(script, /wet=\{if overlap_limiter_armed\(\) or \(deck_a_playing\(\) and deck_b_playing\(\)\) then 1\. else 0\. end\}/);
+  assert.match(script, /songs_rms = rms\(id="songs_rms", duration=0\.1, songs_limited\)/);
   for (const command of ["prepare_next", "withdraw_next", "reset_decks"]) {
     assert.match(script, new RegExp(`"${command}",`));
   }
