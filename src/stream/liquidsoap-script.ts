@@ -316,6 +316,9 @@ next_pending = ref([])
 next_rid = ref(-1)
 deck_a_playing = ref(false)
 deck_b_playing = ref(false)
+# Request id of the song each deck has on air, for the end reasons of a command (gaulatti/palazzo#41).
+deck_a_request = ref("")
+deck_b_request = ref("")
 # Armed 0.1 s before an overlap starts, so the limiter is already engaged on its first frame.
 overlap_limiter_armed = ref(false)
 
@@ -368,6 +371,37 @@ def set_deck_playing(name, value) =
   if name == "b" then deck_b_playing := value else deck_a_playing := value end
 end
 
+def deck_request(name) =
+  if name == "b" then deck_b_request() else deck_a_request() end
+end
+
+def set_deck_request(name, value) =
+  if name == "b" then deck_b_request := value else deck_a_request := value end
+end
+
+# Journals why the song on a deck is about to end: replacement or operator, before a command cuts it, or
+# cancel when that command failed (gaulatti/palazzo#41). Palazzo binds the reason to that playback.
+def remember_track_skipped(request_id, reason) =
+  begin
+    event_sequence := event_sequence() + 1
+    body = json.stringify(compact=true, {
+      sequence=event_sequence(),
+      event_type="track_skipped",
+      playback_request_id=request_id,
+      playback_id=request_id,
+      parent_playback_id="",
+      program_id="",
+      title="",
+      artist="",
+      cover_url="",
+      url="",
+      reason=reason,
+      occurred_at=time()
+    })
+    events := [body, ...list.prefix(127, events())]
+  end
+end
+
 # Drops the announced song, if any, and reports why. Returns whether one was dropped.
 def drop_next(reason) =
   # Once its gate has opened the announced song is on air: it is neither replaced nor withdrawn, and a
@@ -402,6 +436,7 @@ def watch_deck(name, deck) =
       begin
         active_deck := name
         set_deck_playing(name, true)
+        set_deck_request(name, metadata_value("palazzo_request_id", meta))
         if next_state() == "started" and next_deck() == name then
           next_state := "none"
         end
@@ -457,6 +492,9 @@ def watch_deck(name, deck) =
           ignore(drop_next("not_ready"))
         end
         remember_event("track_ended", meta)
+        if metadata_value("palazzo_request_id", meta) == deck_request(name) then
+          set_deck_request(name, "")
+        end
         if metadata_value("palazzo_request_id", meta) == current_request_id() then
           current_playing := false
         end
@@ -582,6 +620,24 @@ server.register(
       deck_a_open := true
       active_deck := "a"
       next_overlap := 0.
+      "ok"
+    end
+)
+
+# palazzo.mark_ending <reason>: before a song command or a stop cuts what is on air, journals the reason
+# for each deck's song at that instant (gaulatti/palazzo#41); "cancel" after a failed command.
+server.register(
+  namespace="palazzo",
+  usage="mark_ending <replacement|operator|cancel>",
+  description="Journal why the songs on air are about to end",
+  "mark_ending",
+  fun (reason) ->
+    begin
+      list.iter(
+        fun (name) ->
+          if deck_request(name) != "" then remember_track_skipped(deck_request(name), reason) end,
+        ["a", "b"]
+      )
       "ok"
     end
 )

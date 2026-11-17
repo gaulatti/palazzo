@@ -53,15 +53,19 @@ test('mixer validates each value and applies mute/unmute without allowing caller
   assert.equal((await service.updateMixer({})).mainVolume, 0);
 });
 
-test('queue failures clear pending track-end expectations, while instant Stop remains idempotent', async (t) => {
+test('queue failures journal a cancelled end reason, while instant Stop remains idempotent', async (t) => {
   const { service, telemetry } = await fixture(t);
-  service.telnet.send = async () => { throw new Error('engine fixture'); };
+  const sent = [];
+  service.telnet.send = async (command) => { sent.push(command); throw new Error('engine fixture'); };
   for (const operation of [() => service.playSong({ url: 'https://media.example.test/song.wav' }), () => service.stopSong(), () => service.clearProgramMaterial()]) {
+    sent.length = 0;
     await assert.rejects(operation(), /engine fixture/);
-    assert.equal(telemetry.pendingTrackEnd, null);
+    // palazzo#41: a failed command cancels the end reasons it journalled.
+    assert.equal(sent.at(-1), 'palazzo.mark_ending cancel');
+    assert.equal(telemetry.endReasons.size, 0);
   }
   await service.stopAllInstants();
-  assert.equal(telemetry.pendingTrackEnd, null);
+  assert.equal(telemetry.endReasons.size, 0);
 });
 
 test('annotation rejects control-line injection and escapes caller metadata before writing Telnet commands', async (t) => {
@@ -75,8 +79,8 @@ test('annotation rejects control-line injection and escapes caller metadata befo
   await assert.rejects(service.playInstant({ url: 'https://media.example.test/a\r\nshutdown' }), (error) => error.getStatus() === 400 && /cannot contain newlines/.test(error.message));
   assert.deepEqual(commands, []);
   await service.playSong({ url: 'https://media.example.test/song.wav', playbackRequestId: ' request ', title: 'quote"\r\n\\title' });
-  assert.match(commands[1], /palazzo_request_id="request"/);
-  assert.match(commands[1], /title="quote\\"\\r\\n\\\\title"/);
+  assert.match(commands[2], /palazzo_request_id="request"/);
+  assert.match(commands[2], /title="quote\\"\\r\\n\\\\title"/);
   const instant = await service.playInstant({ url: 'https://media.example.test/instant.wav', playbackRequestId: ' explicit ', volume: 0 });
   assert.equal(instant.playbackRequestId, 'explicit');
   assert.match(commands.at(-1), /liq_amplify="0"/);
@@ -103,7 +107,7 @@ test('engine failure and cleanup failures cannot be reported as accepted playout
     throw new Error('private engine detail');
   };
   await assert.rejects(service.playProgramSong('station', 'failure', { song }), (error) => error.getStatus() === 400 && /engine rejected/.test(error.message) && !error.message.includes('private engine detail'));
-  assert.equal(telemetry.pendingTrackEnd, null);
+  assert.equal(telemetry.endReasons.size, 0);
   assert.match(await telemetry.renderMetrics(), /result="rejected",reason="engine_failure"\} 1/);
 });
 

@@ -332,16 +332,17 @@ test("song commands and stops send exactly today's commands until a next song wa
   await announce();
   commands.length = 0;
   await command("after");
-  assert.deepEqual(commands.slice(0, 2), ["palazzo.reset_decks", "intros.flush_and_skip"]);
+  // Each command first journals why the songs on air end (palazzo#41).
+  assert.deepEqual(commands.slice(0, 3), ["palazzo.mark_ending replacement", "palazzo.reset_decks", "intros.flush_and_skip"]);
   commands.length = 0;
   await service.stopSong();
-  assert.deepEqual(commands, ["palazzo.reset_decks", "songs.flush_and_skip"]);
+  assert.deepEqual(commands, ["palazzo.mark_ending operator", "palazzo.reset_decks", "songs.flush_and_skip"]);
   commands.length = 0;
   await service.playSong({ url: "https://example.test/a.mp3" });
-  assert.deepEqual(commands.slice(0, 2), ["palazzo.reset_decks", "songs.flush_and_skip"]);
+  assert.deepEqual(commands.slice(0, 3), ["palazzo.mark_ending replacement", "palazzo.reset_decks", "songs.flush_and_skip"]);
   commands.length = 0;
   await service.clearProgramMaterial();
-  assert.equal(commands[0], "palazzo.reset_decks");
+  assert.deepEqual(commands.slice(0, 2), ["palazzo.mark_ending operator", "palazzo.reset_decks"]);
 });
 
 test("a withdrawn announcement becomes playout.next_withdrawn with its reason, counted", async () => {

@@ -32,6 +32,29 @@ Authoritative program events are `playout.queued`, `preflight.ready`,
 and transition timestamps come from Liquidsoap lifecycle evidence. Command
 acceptance alone never fabricates an audible start.
 
+## Why a track ended
+
+Every song's end carries the reason it actually ended, bound to that playback
+(gaulatti/palazzo#41). `playout.skipped {reason: "replacement"}` means a song
+command cut it; `playout.stopped {reason: "operator"}` means a stop or a program
+clear cut it; `playout.stopped {reason: "natural_end"}` means it ended by itself.
+The event shapes are unchanged.
+
+Before a song command, a stop or a clear cuts what is on air, Palazzo sends
+`palazzo.mark_ending replacement|operator`. Liquidsoap then journals a
+`track_skipped` event with that reason for the song each deck has on air at
+that instant, so a song that started within the last telemetry poll is covered
+too. A command that fails afterwards sends `palazzo.mark_ending cancel`, which
+withdraws the reasons for the songs still on air. Palazzo holds one reason per
+playback request id until that playback's `track_ended` reads it; a song with no
+reason ended by itself. At most 64 reasons are held for ends not yet read, the
+oldest dropped first.
+
+This replaces a single 30-second slot that any end could consume. With it, a
+natural end after a command to an idle station read `replacement` or
+`operator`, and the second of two quick cuts, or one deck of an overlap, read
+`natural_end`.
+
 ## Cue points and position
 
 For a song played with a cue-in and cue-out (see

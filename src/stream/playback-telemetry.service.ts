@@ -23,7 +23,8 @@ export interface LiquidsoapLifecycleEvent {
     | 'intro_ended'
     | 'song_request_timeout'
     | 'song_request_failed'
-    | 'next_withdrawn';
+    | 'next_withdrawn'
+    | 'track_skipped';
   playback_request_id: string;
   playback_id: string;
   parent_playback_id: string;
@@ -32,7 +33,10 @@ export interface LiquidsoapLifecycleEvent {
   artist: string;
   cover_url: string;
   url: string;
-  /** Only on next_withdrawn: replaced, withdrawn, flushed or not_ready. */
+  /**
+   * On next_withdrawn: replaced, withdrawn, flushed or not_ready. On track_skipped: replacement, operator,
+   * or cancel after a failed command.
+   */
   reason?: string;
   occurred_at: number;
 }
@@ -248,10 +252,12 @@ export class PlaybackTelemetryService {
   private trackStartedSequence = 0;
   /** Cue-in per playback request, so position stays file-relative. */
   private readonly songCueIns = new Map<string, number>();
-  private pendingTrackEnd: {
-    disposition: 'skipped' | 'stopped';
-    expiresAt: number;
-  } | null = null;
+  /**
+   * Why each song on air is about to end, by playback request id, from Liquidsoap's track_skipped journal
+   * (gaulatti/palazzo#41). Consumed at that playback's track_ended; a song with no entry ended by itself.
+   * Bounded to END_REASON_LIMIT entries, oldest first.
+   */
+  private readonly endReasons = new Map<string, 'replacement' | 'operator'>();
   private lastEndedTrack: { playbackId: string; occurredAt: number } | null =
     null;
   private readonly httpMetrics = new Map<
@@ -580,17 +586,6 @@ export class PlaybackTelemetryService {
     this.emit(`playout.${event}`, data, occurredAt);
   }
 
-  expectTrackEnd(disposition: 'skipped' | 'stopped'): void {
-    this.pendingTrackEnd = {
-      disposition,
-      expiresAt: Date.now() + 30_000,
-    };
-  }
-
-  cancelExpectedTrackEnd(): void {
-    this.pendingTrackEnd = null;
-  }
-
   shutdown(): void {
     this.live.complete();
   }
@@ -755,6 +750,19 @@ export class PlaybackTelemetryService {
     return `${await this.baselineRegistry.metrics()}\n${applicationMetrics}`;
   }
 
+  private recordEndReason(playbackRequestId: string, reason?: string): void {
+    if (reason === 'cancel') {
+      this.endReasons.delete(playbackRequestId);
+      return;
+    }
+    if (reason !== 'replacement' && reason !== 'operator') return;
+    this.endReasons.delete(playbackRequestId);
+    this.endReasons.set(playbackRequestId, reason);
+    if (this.endReasons.size > END_REASON_LIMIT) {
+      this.endReasons.delete(this.endReasons.keys().next().value as string);
+    }
+  }
+
   private applyLifecycle(event: LiquidsoapLifecycleEvent): void {
     if (event.event_type === 'next_withdrawn') {
       const reason = NEXT_WITHDRAWN_REASONS.find((r) => r === event.reason);
@@ -769,6 +777,10 @@ export class PlaybackTelemetryService {
         },
         new Date(event.occurred_at * 1_000).toISOString(),
       );
+      return;
+    }
+    if (event.event_type === 'track_skipped') {
+      this.recordEndReason(event.playback_request_id, event.reason);
       return;
     }
     const data = {
@@ -880,16 +892,13 @@ export class PlaybackTelemetryService {
         this.track = null;
       }
       this.emit('track.ended', data, occurredAt);
-      const disposition =
-        this.pendingTrackEnd && this.pendingTrackEnd.expiresAt >= Date.now()
-          ? this.pendingTrackEnd.disposition
-          : null;
-      this.pendingTrackEnd = null;
+      const disposition = this.endReasons.get(event.playback_request_id);
+      this.endReasons.delete(event.playback_request_id);
       this.lastEndedTrack = {
         playbackId: event.playback_id || event.playback_request_id,
         occurredAt: event.occurred_at * 1_000,
       };
-      if (disposition === 'skipped') {
+      if (disposition === 'replacement') {
         this.countPlayoutTransition('skipped');
         this.emit(
           'playout.skipped',
@@ -910,7 +919,7 @@ export class PlaybackTelemetryService {
             playbackRequestId: event.playback_request_id,
             playbackId: event.playback_id || event.playback_request_id,
             programId: event.program_id,
-            reason: disposition === 'stopped' ? 'operator' : 'natural_end',
+            reason: disposition ?? 'natural_end',
             liquidsoapSequence: event.sequence,
           },
           occurredAt,
@@ -1102,6 +1111,8 @@ function sanitizeValue(value: unknown): unknown {
 }
 
 const SONG_CUE_IN_ENTRIES = 64;
+/** End reasons held for songs whose end has not been read yet (gaulatti/palazzo#41). */
+const END_REASON_LIMIT = 64;
 
 export type NextRequestResult =
   | 'queued'

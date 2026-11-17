@@ -188,8 +188,10 @@ at a time; a new announcement replaces the previous one.
   answers `withdrawn:false`. A song command or a stop ends it like any song.
 - A song command or a stop flushes the announced song (`flushed`): it never
   plays unless it is the one chosen. Before the first announcement these
-  commands send exactly the telnet commands they always did; after it they
-  first send `palazzo.reset_decks`.
+  commands send the telnet commands they always did, after
+  `palazzo.mark_ending` (see [why a track ended](playback-telemetry.md#why-a-track-ended));
+  after it they also send `palazzo.reset_decks` before cutting. The songs both
+  decks have on air at that moment are reported with the command's reason.
 - Events: `playout.next_queued {programId, playbackId}` and
   `playout.next_withdrawn {programId, playbackId, reason}` with reason
   `replaced`, `withdrawn`, `flushed` or `not_ready`. Without overlap the order is

@@ -21,6 +21,10 @@ test("generates a private authoritative telemetry script", () => {
   assert.match(script, /deck\.on_track\(/);
   assert.match(script, /deck\.on_position\(\n    position=\{0\.\}, remaining=true/);
   assert.match(script, /watch_deck\("a", deck_a\)\nwatch_deck\("b", deck_b\)/);
+  // palazzo#41: each deck's song on air, and a command journals why it ends before cutting it.
+  assert.match(script, /set_deck_request\(name, metadata_value\("palazzo_request_id", meta\)\)/);
+  assert.match(script, /usage="mark_ending <replacement\|operator\|cancel>"/);
+  assert.match(script, /event_type="track_skipped"/);
   assert.match(script, /palazzo_request_id/);
   assert.match(script, /cover_url/);
   assert.match(

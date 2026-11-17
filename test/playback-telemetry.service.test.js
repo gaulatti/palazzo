@@ -312,7 +312,8 @@ test('emits authoritative transition timestamps without media URLs', async () =>
   const telemetry = service();
   telemetry.setLiquidsoapRunning(true);
   telemetry.apply(snapshot(), [lifecycle(1, 'track_started')]);
-  telemetry.expectTrackEnd('skipped');
+  // palazzo#41: Liquidsoap journalled track_skipped for this playback.
+  telemetry.recordEndReason('request-1', 'replacement');
   telemetry.apply(snapshot({ liquidsoap_sequence: 2, playing: false }), [
     lifecycle(1, 'track_started'),
     lifecycle(2, 'track_ended'),
@@ -410,7 +411,8 @@ test('persists a sequence reservation so a restarted process exposes a detectabl
 test('distinguishes operator stops from natural ends using engine timestamps', () => {
   const telemetry = service();
   telemetry.apply(snapshot(), [lifecycle(1, 'track_started')]);
-  telemetry.expectTrackEnd('stopped');
+  // palazzo#41: Liquidsoap journalled track_skipped for this playback.
+  telemetry.recordEndReason('request-1', 'operator');
   telemetry.apply(snapshot({ liquidsoap_sequence: 2, playing: false }), [
     lifecycle(1, 'track_started'),
     lifecycle(2, 'track_ended'),
@@ -471,8 +473,9 @@ test('lifecycle handles missing optional metadata, unrelated endings and nonadja
   const telemetry = service();
   const event = (sequence, type, occurred_at) => ({ ...lifecycle(sequence, type), playback_id: '', title: '', artist: '', cover_url: '', occurred_at });
   telemetry.apply(snapshot({ liquidsoap_sequence: 1 }), [event(1, 'track_started', 100)]);
-  telemetry.expectTrackEnd('stopped');
-  telemetry.cancelExpectedTrackEnd();
+  // palazzo#41: a reason journalled then cancelled by a failed command.
+  telemetry.recordEndReason('request-1', 'operator');
+  telemetry.recordEndReason('request-1', 'cancel');
   telemetry.apply(snapshot({ liquidsoap_sequence: 2 }), [{ ...event(2, 'track_ended', 110), playback_request_id: 'other' }]);
   assert.equal(telemetry.replay.findLast((e) => e.type === 'playout.stopped').data.reason, 'natural_end');
   telemetry.apply(snapshot({ liquidsoap_sequence: 3 }), [event(3, 'track_started', 90)]);
@@ -497,7 +500,8 @@ test('replay evicts non-level events and sanitizes nested objects and arrays wit
 test('legacy engine IDs remain correlated through skips and the next transition', () => {
   const telemetry = service();
   telemetry.apply(snapshot(), [{ ...lifecycle(1, 'track_started'), playback_id: '' }]);
-  telemetry.expectTrackEnd('skipped');
+  // palazzo#41: Liquidsoap journalled track_skipped for this playback.
+  telemetry.recordEndReason('request-1', 'replacement');
   telemetry.apply(snapshot({ liquidsoap_sequence: 2, playing: false }), [{ ...lifecycle(2, 'track_ended'), playback_id: '' }]);
   telemetry.apply(snapshot({ liquidsoap_sequence: 3 }), [{ ...lifecycle(3, 'track_started'), playback_id: '' }]);
   assert.equal(telemetry.replay.findLast((e) => e.type === 'playout.skipped').data.playbackId, 'request-1');

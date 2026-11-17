@@ -486,13 +486,13 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
         artist: data.artist ?? "",
         cover_url: data.coverUrl ?? "",
       });
-      this.telemetry.expectTrackEnd("skipped");
       try {
+        await this.markEnding("replacement");
         await this.resetDecksIfUsed();
         await this.telnet.send("songs.flush_and_skip");
         await this.telnet.send(`songs.push ${uri}`);
       } catch (error) {
-        this.telemetry.cancelExpectedTrackEnd();
+        await this.cancelEnding();
         throw error;
       }
       this.logger.log({
@@ -640,8 +640,8 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
         if (oldest) this.playoutCommands.delete(oldest);
       }
       await this.persistPlayoutJournal();
-      this.telemetry.expectTrackEnd("skipped");
       try {
+        await this.markEnding("replacement");
         await this.resetDecksIfUsed();
         await this.telnet.send("intros.flush_and_skip");
         await this.telnet.send(
@@ -667,7 +667,7 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
         await this.telnet.send("songs.flush_and_skip");
         await this.telnet.send(`songs.push ${songUri}`);
       } catch {
-        this.telemetry.cancelExpectedTrackEnd();
+        await this.cancelEnding();
         await this.telnet.send("intros.flush_and_skip").catch(() => undefined);
         await this.telnet.send("palazzo.arm_intro ").catch(() => undefined);
         this.playoutCommands.delete(digest);
@@ -693,12 +693,12 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
 
   async stopSong(): Promise<void> {
     await this.serializeOperation(async () => {
-      this.telemetry.expectTrackEnd("stopped");
       try {
+        await this.markEnding("operator");
         await this.resetDecksIfUsed();
         await this.telnet.send("songs.flush_and_skip");
       } catch (error) {
-        this.telemetry.cancelExpectedTrackEnd();
+        await this.cancelEnding();
         throw error;
       }
     });
@@ -732,7 +732,8 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
 
   async clearProgramMaterial(): Promise<void> {
     await this.serializeOperation(async () => {
-      this.telemetry.expectTrackEnd("stopped");
+      // A clear must still clear when the reason cannot be journalled.
+      await this.markEnding("operator").catch(() => undefined);
       await this.resetDecksIfUsed().catch(() => undefined);
       const results = await Promise.allSettled([
         this.telnet.send("songs.flush_and_skip"),
@@ -744,7 +745,7 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
           result.status === "rejected",
       );
       if (failure) {
-        this.telemetry.cancelExpectedTrackEnd();
+        await this.cancelEnding();
         throw failure.reason;
       }
     });
@@ -1131,12 +1132,18 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
         });
       }
       const overlap = this.songOverlaps.get(current.playbackRequestId) ?? 0;
-      const annotations = this.songAnalysisAnnotations(song.playbackId, data.song);
+      const annotations = this.songAnalysisAnnotations(
+        song.playbackId,
+        data.song,
+      );
       if (overlap > 0) {
         // Entering under an overlap, the song rises over at least MIN_OVERLAP_FADE_IN_SECONDS so the
         // overlap limiter can hold the sum of both songs under the true-peak ceiling (measured).
         annotations.liq_fade_in = decimal(
-          Math.max(Number(annotations.liq_fade_in ?? 0), MIN_OVERLAP_FADE_IN_SECONDS),
+          Math.max(
+            Number(annotations.liq_fade_in ?? 0),
+            MIN_OVERLAP_FADE_IN_SECONDS,
+          ),
         );
       }
       const uri = this.annotatedUri(song.url, {
@@ -1152,7 +1159,9 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
       const remaining = current.remainingSeconds;
       const limit = Math.min(
         this.nextResolveMaxSeconds,
-        remaining !== null && remaining > 0 ? remaining : this.nextResolveMaxSeconds,
+        remaining !== null && remaining > 0
+          ? remaining
+          : this.nextResolveMaxSeconds,
       );
       this.decksUsed = true;
       const answer = await this.telnet.send(
@@ -1188,6 +1197,20 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
+  /**
+   * Before a song command or a stop cuts what is on air: Liquidsoap journals the reason for each deck's song
+   * at that instant (gaulatti/palazzo#41), so the reason is bound to that playback, including one that
+   * started within the last telemetry poll.
+   */
+  private async markEnding(reason: "replacement" | "operator"): Promise<void> {
+    await this.telnet.send(`palazzo.mark_ending ${reason}`);
+  }
+
+  /** After a failed song command or stop: the songs still on air will end for their own reasons. */
+  private async cancelEnding(): Promise<void> {
+    await this.telnet.send("palazzo.mark_ending cancel").catch(() => undefined);
+  }
+
   /** Before a song command or a stop, once announcements were used: back to the single song deck. */
   private async resetDecksIfUsed(): Promise<void> {
     if (this.decksUsed) await this.telnet.send("palazzo.reset_decks");
@@ -1219,10 +1242,7 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
         annotations.liq_cue_out = decimal(segue.cueOutSeconds);
         annotations.liq_fade_in = decimal(segue.fadeInSeconds);
         annotations.liq_fade_out = decimal(segue.fadeOutSeconds);
-        this.telemetry.rememberSongCueIn(
-          playbackRequestId,
-          segue.cueInSeconds,
-        );
+        this.telemetry.rememberSongCueIn(playbackRequestId, segue.cueInSeconds);
         this.rememberOverlap(playbackRequestId, segue.overlapSeconds);
       } else {
         this.telemetry.observeSongAnalysisDropped("segue");
