@@ -183,6 +183,8 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
   private readonly preflightCacheEntries: number;
   private readonly preflightTtlMs: number;
   private readonly preflightTimeoutMs: number;
+  /** Liquidsoap's limit to resolve one song request (palazzo#42). */
+  private readonly songRequestTimeoutMs: number;
   private readonly targetLufs: number;
   private readonly truePeakCeilingDbtp: number;
   private playoutJournalLoaded = false;
@@ -268,6 +270,13 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
       100,
       30_000,
     );
+    // Liquidsoap's own default is 29 s, so the default changes nothing.
+    this.songRequestTimeoutMs = boundedInteger(
+      this.config.get<string>("SONG_REQUEST_TIMEOUT_MS"),
+      29_000,
+      5_000,
+      120_000,
+    );
     this.targetLufs = playoutLevelSetting(
       "PLAYOUT_TARGET_LUFS",
       this.config.get<string>("PLAYOUT_TARGET_LUFS"),
@@ -307,6 +316,7 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
       bitrate,
       rtmpUrl,
       fillerPlaylistPath: this.fillerStore.activePlaylistPath,
+      songRequestTimeoutMs: this.songRequestTimeoutMs,
     });
     const directory = "/tmp/palazzo";
     const scriptPath = join(directory, "stream.liq");

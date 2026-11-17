@@ -66,6 +66,46 @@ The dedicated intro source applies the asset's authored `gain`, per-item
 fades, and `duckGain` to the song mix. Manual instants remain on the separate
 `instants` bus and are never ducked by this operation.
 
+## Song request time limit
+
+Liquidsoap downloads the whole song file before it plays it, and gives each
+song request a fixed time to resolve. `SONG_REQUEST_TIMEOUT_MS` sets that
+limit explicitly in the generated script
+(`songs_queue = palazzo_song_queue(id="songs", timeout=29.)`). It defaults to
+`29000`, which is Liquidsoap 2.4.5's own `settings.request.timeout`, so the
+default changes nothing. Integer values are clamped to 5,000–120,000 ms; a
+non-integer value uses the default.
+
+A song plays only if **file size ÷ throughput to the media store < the limit**.
+A 3:30 song at 320 kb/s is 8,403,112 bytes, so at the default 29 s it needs at
+least about 2.3 Mbit/s of effective throughput, and at 60 s about 1.12 Mbit/s.
+On a slower link the download is cut off at the limit, the song never plays and
+the filler covers, as before. The ffprobe preflight reads only about 64 KB, so
+it passes on such a link and does not catch this case. Raising the limit also
+lengthens the dead air before the filler on a link that is truly down.
+
+The limit applies to songs only. The `intros` and `instants` queues keep
+Liquidsoap's default of 29 s: they carry short clips, and an intro that fails
+already falls back to the song alone with `intro.failed`.
+
+The song queue is a copy of Liquidsoap 2.4.5's `request.queue`, with the same
+methods and the same `songs.*` server commands, whose `next()` resolves each
+request itself where `request.dynamic` would. When a song request cannot be
+resolved, Liquidsoap journals it once and Palazzo publishes
+`playout.request_failed` for that playback, with `playbackRequestId`,
+`playbackId`, `programId` (`null` on the legacy route) and `reason`, and
+counts it in `palazzo_song_request_failures_total{reason}`:
+
+- `timeout`: the resolution took the limit (within 0.5 s; the HTTP download
+  stops at the limit).
+- `other`: it failed sooner, for example an HTTP error or an invalid URI.
+
+The event uses Liquidsoap's own timestamp and appears on the SSE stream in
+sequence with the playback's other events, within one telemetry poll (100 ms
+by default). A song rejected by its probe never reaches Liquidsoap, so it is
+reported once, by `preflight.failed`. A file that downloads in time but cannot
+be decoded is still dropped by Liquidsoap without this event.
+
 ## Song segue and loudness
 
 `POST /playback/song` accepts two optional analysis groups inside `song`, next
@@ -135,7 +175,8 @@ All routes are confined to the private control network and exact configured prog
 | GET    | `/mixer`                 | Applied mixer state                                                                                                          |
 | PUT    | `/mixer`                 | Update mixer state                                                                                                           |
 
-The event stream adds `intro.started`, `intro.ended`, and `intro.failed`.
+The event stream adds `intro.started`, `intro.ended`, `intro.failed`, and
+`playout.request_failed` (see Song request time limit).
 Each event carries the intro playback ID, parent song playback ID, program ID,
 request correlation. State exposes the active or most recent failed intro.
 SSE data removes all URL- and credential-shaped fields; callers obtain signed

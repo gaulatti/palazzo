@@ -8,6 +8,8 @@ export interface LiquidsoapScriptOptions {
   bitrate: number;
   fillerPlaylistPath: string;
   rtmpUrl?: string;
+  /** How long Liquidsoap may take to resolve (download) one song request. */
+  songRequestTimeoutMs: number;
 }
 
 function liqString(value: string): string {
@@ -16,6 +18,12 @@ function liqString(value: string): string {
     .replace(/"/g, '\\"')
     .replace(/\r/g, "\\r")
     .replace(/\n/g, "\\n");
+}
+
+/** A Liquidsoap float literal for a duration in milliseconds, in seconds. */
+function liqSeconds(milliseconds: number): string {
+  const seconds = milliseconds / 1_000;
+  return Number.isInteger(seconds) ? `${seconds}.` : String(seconds);
 }
 
 export function buildLiquidsoapScript(
@@ -77,7 +85,214 @@ def remember_event(event_type, meta) =
   end
 end
 
-songs_queue = request.queue(id="songs")
+# Song request queue (palazzo#42). A faithful copy of Liquidsoap 2.4.5's
+# request.queue (src/libs/request.liq, non-native branch) whose next()
+# resolves each popped request itself, with the explicit time limit, so a
+# request that cannot be resolved is journalled once instead of being
+# dropped silently. The resolution happens where request.dynamic would do it,
+# in its feed task; the request it returns is already ready.
+def palazzo_song_queue(~id, ~timeout) =
+  # The limit is always given, so it is a plain float here.
+  timeout = (timeout : float)
+  initial_queue = ref([])
+  queue = ref([])
+  fetch = ref(fun () -> ())
+  started = ref(false)
+
+  def rec next() =
+    if
+      queue() != []
+    then
+      let [r, ...q] = queue()
+      queue := q
+      resolving_since = time()
+      if
+        request.resolve(r, timeout=timeout)
+      then
+        (r : request)
+      else
+        # Read the annotations before destroying the request. Reaching the
+        # limit (within the protocol's early stop) is a timeout.
+        meta = request.metadata(r)
+        if
+          time() - resolving_since >= timeout - 0.5
+        then
+          remember_event("song_request_timeout", meta)
+        else
+          remember_event("song_request_failed", meta)
+        end
+        request.destroy(r)
+        next()
+      end
+    else
+      null
+    end
+  end
+
+  def push(r) =
+    if
+      started()
+    then
+      log.info(
+        label=id,
+        "Pushing #{r} on the queue."
+      )
+      queue := [...queue(), r]
+      fn = fetch()
+      fn()
+    else
+      log.info(
+        label=id,
+        "Pushing #{r} on the initial queue."
+      )
+      initial_queue := [...initial_queue(), r]
+    end
+  end
+
+  def push_uri(uri) =
+    r = request.create(uri)
+    push(r)
+  end
+
+  s =
+    request.dynamic(
+      id=id,
+      timeout=timeout,
+      available={not list.is_empty(queue())},
+      next
+    )
+
+  def add(r) =
+    log.severe(
+      label=s.id(),
+      "Please use #{s.id()}.push instead of #{s.id()}.add()"
+    )
+
+    s.add(r)
+  end
+
+  def set_queue(q) =
+    if started() then queue := q else initial_queue := q end
+    s.set_queue([])
+  end
+
+  def get_queue() =
+    [...s.queue(), ...initial_queue(), ...queue()]
+  end
+
+  def remove_request_id(rid) =
+    if
+      started()
+    then
+      queue := list.filter(fun (r) -> request.id(r) != rid, queue())
+      inner_q = s.queue()
+      filtered = list.filter(fun (r) -> request.id(r) != rid, inner_q)
+      if
+        list.length(filtered) < list.length(inner_q)
+      then
+        s.set_queue(filtered)
+      end
+    else
+      initial_queue :=
+        list.filter(fun (r) -> request.id(r) != rid, initial_queue())
+    end
+  end
+
+  def remove(r) =
+    remove_request_id(request.id(r))
+  end
+
+  s =
+    s.{
+      add=add,
+      push=push.{uri=push_uri},
+      length={list.length(queue()) + list.length(s.queue())},
+      set_queue=set_queue,
+      queue=get_queue,
+      remove_request_id=remove_request_id,
+      remove=remove
+    }
+
+  s.on_wake_up(
+    synchronous=true,
+    fun () ->
+      begin
+        started := true
+        s.set_queue(initial_queue())
+        initial_queue := []
+      end
+  )
+
+  fetch := s.fetch
+
+  def push_command(uri) =
+    r = request.create(uri)
+    push(r)
+    "#{request.id(r)}"
+  end
+
+  s.register_command(
+    description="Flush the queue and skip the current track",
+    "flush_and_skip",
+    fun (_) ->
+      try
+        s.set_queue([])
+        s.skip()
+        "Done."
+      catch err do
+        "Error while flushing and skipping source: #{err}"
+      end
+  )
+
+  s.register_command(
+    description="Push a new request in the queue.",
+    usage="push <uri>",
+    "push",
+    push_command
+  )
+
+  def show_queue(_) =
+    queue = s.queue()
+    string.concat(
+      separator=" ",
+      list.map(fun (r) -> string(request.id(r)), queue)
+    )
+  end
+
+  s.register_command(
+    description="Display current queue content.",
+    usage="queue",
+    "queue",
+    show_queue
+  )
+
+  def skip(_) =
+    s.skip()
+    "Done."
+  end
+
+  s.register_command(
+    description="Skip current song.",
+    usage="skip",
+    "skip",
+    skip
+  )
+
+  s.register_command(
+    description="Remove a request from the queue.",
+    usage="remove <rid>",
+    "remove",
+    fun (rid) ->
+      begin
+        remove_request_id(int_of_string(rid))
+        "Done."
+      end
+  )
+
+  s
+end
+
+songs_queue = palazzo_song_queue(id="songs", timeout=${liqSeconds(options.songRequestTimeoutMs)})
 # Per-song loudness gain from the liq_amplify annotation; 1.0 when absent.
 songs_normalized = amplify(override="liq_amplify", 1., songs_queue)
 song_volume = interactive.float("palazzo_song_volume", 1.)

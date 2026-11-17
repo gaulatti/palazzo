@@ -93,6 +93,12 @@ Useful metrics:
 - `palazzo_liquidsoap_restarts_total`
 - `palazzo_track_lifecycle_total{event="started|ended"}`
 - `palazzo_media_preflight_total{result,reason}`
+- `palazzo_song_request_failures_total{reason="timeout|other"}`: song
+  requests Liquidsoap could not resolve. `timeout` means the resolution took
+  `SONG_REQUEST_TIMEOUT_MS` (see docs/program-playout.md); `other` is any
+  earlier resolution failure. Both series are always exposed, starting at 0.
+  Each increment matches one `playout.request_failed` event, taken from the
+  Liquidsoap journal and deduplicated by its engine sequence.
 - `palazzo_playout_transitions_total{event}`
 - `palazzo_song_analysis_dropped_total{group="segue|loudness",result="invalid"}`:
   invalid analysis groups dropped from song commands. Both series are always

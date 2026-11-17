@@ -100,6 +100,7 @@ function assertBoundedLabels(samples) {
       "key_reuse",
       "missing",
       "none",
+      "other",
       "outside_lookahead",
       "song_unavailable",
       "timeout",

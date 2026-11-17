@@ -16,7 +16,13 @@ import {
 
 export interface LiquidsoapLifecycleEvent {
   sequence: number;
-  event_type: 'track_started' | 'track_ended' | 'intro_started' | 'intro_ended';
+  event_type:
+    | 'track_started'
+    | 'track_ended'
+    | 'intro_started'
+    | 'intro_ended'
+    | 'song_request_timeout'
+    | 'song_request_failed';
   playback_request_id: string;
   playback_id: string;
   parent_playback_id: string;
@@ -75,6 +81,7 @@ export type PlaybackEventType =
   | 'playout.stopped'
   | 'playout.skipped'
   | 'playout.fallback'
+  | 'playout.request_failed'
   | 'playback.position'
   | 'audio.levels'
   | 'heartbeat';
@@ -215,6 +222,9 @@ export class PlaybackTelemetryService {
   private readonly playoutTransitions = new Map<string, number>();
   private readonly songAnalysisDropped: Record<'loudness' | 'segue', number> =
     { loudness: 0, segue: 0 };
+  /** Song requests Liquidsoap could not resolve (palazzo#42). */
+  private readonly songRequestFailures: Record<'timeout' | 'other', number> =
+    { timeout: 0, other: 0 };
   /** Cue-in per playback request, so position stays file-relative. */
   private readonly songCueIns = new Map<string, number>();
   private pendingTrackEnd: {
@@ -679,6 +689,7 @@ export class PlaybackTelemetryService {
       `palazzo_liquidsoap_restarts_total ${this.processRestarts}`,
       ...this.dependencyMetricLines(),
       ...this.playoutMetricLines(),
+      ...this.songRequestFailureLines(),
       '# HELP palazzo_level_samples_coalesced_total Level samples coalesced before SSE emission.',
       '# TYPE palazzo_level_samples_coalesced_total counter',
       `palazzo_level_samples_coalesced_total ${this.levelSamplesCoalesced}`,
@@ -741,6 +752,25 @@ export class PlaybackTelemetryService {
         occurredAt,
       );
       if (this.intro?.playbackId === event.playback_id) this.intro = null;
+    } else if (
+      event.event_type === 'song_request_timeout' ||
+      event.event_type === 'song_request_failed'
+    ) {
+      // Liquidsoap could not resolve this song request, so it never started.
+      const reason =
+        event.event_type === 'song_request_timeout' ? 'timeout' : 'other';
+      this.songRequestFailures[reason] += 1;
+      this.emit(
+        'playout.request_failed',
+        {
+          playbackRequestId: event.playback_request_id,
+          playbackId: event.playback_id || event.playback_request_id,
+          programId: event.program_id || null,
+          reason,
+          liquidsoapSequence: event.sequence,
+        },
+        occurredAt,
+      );
     } else if (event.event_type === 'track_started') {
       this.lifecycleStarted += 1;
       this.track = {
@@ -902,6 +932,15 @@ export class PlaybackTelemetryService {
       );
     }
     return lines;
+  }
+
+  private songRequestFailureLines(): string[] {
+    return [
+      '# HELP palazzo_song_request_failures_total Song requests Liquidsoap could not resolve, by bounded reason.',
+      '# TYPE palazzo_song_request_failures_total counter',
+      `palazzo_song_request_failures_total{reason="timeout"} ${this.songRequestFailures.timeout}`,
+      `palazzo_song_request_failures_total{reason="other"} ${this.songRequestFailures.other}`,
+    ];
   }
 
   private playoutMetricLines(): string[] {

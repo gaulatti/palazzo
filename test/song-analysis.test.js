@@ -254,9 +254,10 @@ test("the script applies song gain and fades on the song chain only", () => {
     genre: "Various",
     bitrate: 128,
     fillerPlaylistPath: "/run/palazzo/active-filler.m3u",
+    songRequestTimeoutMs: 29000,
   });
   assert.ok(
-    script.includes(`songs_queue = request.queue(id="songs")
+    script.includes(`songs_queue = palazzo_song_queue(id="songs", timeout=29.)
 # Per-song loudness gain from the liq_amplify annotation; 1.0 when absent.
 songs_normalized = amplify(override="liq_amplify", 1., songs_queue)
 song_volume = interactive.float("palazzo_song_volume", 1.)
