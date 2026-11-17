@@ -150,13 +150,60 @@ The gain is `10^((target − integratedLufs)/20)`, capped so that
 An unset or blank value uses the default. Any other value outside its range
 fails startup.
 
-`overlapSeconds` is validated and otherwise ignored: consecutive songs still
-hand off exactly as before. Crossfading is a separate follow-up.
+`overlapSeconds` is honoured only for an announced next song (below): it is how
+long before its cue-out the current song lets the next one in. A song command
+alone still hands off exactly as before.
 
 A command without either group pushes exactly the same `songs.push` request as
 before, and the added operators are no-ops without their annotations:
 `liq_amplify` defaults to `1.`, and both fades default to a duration of `0.`.
 Intros, instants, filler and mixer volumes are unchanged.
+
+## Announced next song (gapless handoff and overlap)
+
+`PUT /v1/programs/{programId}/playback/next` announces the song that follows the
+one on air (gaulatti/palazzo#40). It takes the song command's `song` object
+(no `intro`) and an `Idempotency-Key`. Palazzo probes it, then resolves it in the
+background while the current song plays, and starts it itself: on the frame the
+current song reaches its cue-out, or `overlapSeconds` (the current song's) before
+it, with both audible in that window. There is no gap to cover with the filler.
+
+| status | body | meaning |
+|---|---|---|
+| 200 | `{ok, playbackRequestId, state:"queued"}` (`duplicate:true` on a repeat) | probed and preparing; the outcome is the event below or the song's own `track.started` |
+| 409 | `{ok:false, reason:"no_current_song"}` | nothing on air; use the song command |
+| 422 | `{ok:false, reason:"not_ready"}` | the probe failed; nothing queued |
+| 400 | `{ok:false, reason:"invalid"}` | invalid body or key |
+
+`DELETE …/playback/next` withdraws it (`{ok, withdrawn}`). One song is announced
+at a time; a new announcement replaces the previous one.
+
+- Resolution is limited to the current song's remaining time, capped by
+  `PLAYOUT_NEXT_RESOLVE_MAX_SECONDS` (default 600), not by
+  `SONG_REQUEST_TIMEOUT_MS`. If the song is not resolved when the current one
+  ends, it is withdrawn (`not_ready`) before that song's `track.ended`, and the
+  caller sends it as a song command, exactly today's handoff.
+- A song command or a stop flushes the announced song (`flushed`): it never
+  plays unless it is the one chosen. Before the first announcement these
+  commands send exactly the telnet commands they always did; after it they
+  first send `palazzo.reset_decks`.
+- Events: `playout.next_queued {programId, playbackId}` and
+  `playout.next_withdrawn {programId, playbackId, reason}` with reason
+  `replaced`, `withdrawn`, `flushed` or `not_ready`. Without overlap the order is
+  `track.ended` (current) then `track.started` (next); with overlap it is
+  `track.started` (next) at cue-out minus the overlap, then `track.ended`
+  (current) at its cue-out. Every song has exactly one of each.
+- Headroom: while both songs are on air a limiter holds the sum under the
+  true-peak ceiling, and a song entering under an overlap rises over at least
+  0.25 s. With one song the limiter is dry (bit-identical output).
+- Mechanism: two song decks. Deck `a` is the existing `songs` queue; the
+  announced song waits resolved on the idle deck behind a closed gate and starts
+  when the gate opens. A deck still finishing an overlapped song is never
+  paused: the next song waits for it.
+
+Measured on the real image (local and 20 Mbit/s remote 8.4 MB files): handoff
+silence at or below 20 ms against 280–480 ms with song commands alone; overlap
+2.0 s within ±0.1 s; two full-scale songs overlapped at −1.8 dBTP.
 
 ## Program surface
 

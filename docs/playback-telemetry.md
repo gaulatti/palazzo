@@ -93,6 +93,10 @@ Useful metrics:
 - `palazzo_liquidsoap_restarts_total`
 - `palazzo_track_lifecycle_total{event="started|ended"}`
 - `palazzo_media_preflight_total{result,reason}`
+- `palazzo_next_requests_total{result="queued|duplicate|not_ready|invalid|no_current_song"}`:
+  next-song announcements by outcome; all series exposed from 0.
+- `palazzo_next_withdrawn_total{reason="replaced|withdrawn|flushed|not_ready"}`:
+  announced songs dropped before they started; one per `playout.next_withdrawn`.
 - `palazzo_song_request_failures_total{reason="timeout|other"}`: song
   requests Liquidsoap could not resolve. `timeout` means the resolution took
   `SONG_REQUEST_TIMEOUT_MS` (see docs/program-playout.md); `other` is any
