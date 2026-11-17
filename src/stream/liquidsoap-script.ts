@@ -78,9 +78,14 @@ def remember_event(event_type, meta) =
 end
 
 songs_queue = request.queue(id="songs")
+# Per-song loudness gain from the liq_amplify annotation; 1.0 when absent.
+songs_normalized = amplify(override="liq_amplify", 1., songs_queue)
 song_volume = interactive.float("palazzo_song_volume", 1.)
-songs_controlled = amplify(override=null, song_volume, songs_queue)
-songs_rms = rms(id="songs_rms", duration=0.1, songs_controlled)
+songs_controlled = amplify(override=null, song_volume, songs_normalized)
+# Per-song fades from liq_fade_in / liq_fade_out; no fade when absent.
+songs_faded = fade.in(duration=0., track_sensitive=true, songs_controlled)
+songs_faded = fade.out(duration=0., track_sensitive=true, songs_faded)
+songs_rms = rms(id="songs_rms", duration=0.1, songs_faded)
 get_song_rms = songs_rms.rms
 songs = peak(id="songs_peak", duration=0.1, songs_rms)
 get_song_peak = songs.peak

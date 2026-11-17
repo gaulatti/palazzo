@@ -213,6 +213,10 @@ export class PlaybackTelemetryService {
   private readonly introLifecycleResults = new Map<string, number>();
   private readonly preflightResults = new Map<string, number>();
   private readonly playoutTransitions = new Map<string, number>();
+  private readonly songAnalysisDropped: Record<'loudness' | 'segue', number> =
+    { loudness: 0, segue: 0 };
+  /** Cue-in per playback request, so position stays file-relative. */
+  private readonly songCueIns = new Map<string, number>();
   private pendingTrackEnd: {
     disposition: 'skipped' | 'stopped';
     expiresAt: number;
@@ -327,7 +331,11 @@ export class PlaybackTelemetryService {
 
     if (snapshot.playing) {
       this.track = trackFromSnapshot(snapshot);
-      this.positionSeconds = finiteOr(snapshot.elapsed, 0);
+      // Liquidsoap's elapsed time on a cut song starts at 0 at the cue-in;
+      // report the position relative to the file instead.
+      this.positionSeconds =
+        finiteOr(snapshot.elapsed, 0) +
+        (this.songCueIns.get(snapshot.playback_request_id) ?? 0);
       this.remainingSeconds = finiteOrNull(snapshot.remaining);
     } else {
       this.track = null;
@@ -431,6 +439,21 @@ export class PlaybackTelemetryService {
       key,
       (this.pairedCommandResults.get(key) ?? 0) + 1,
     );
+  }
+
+  /** Counts an invalid song analysis group dropped from a song command. */
+  observeSongAnalysisDropped(group: 'segue' | 'loudness'): void {
+    this.songAnalysisDropped[group] += 1;
+  }
+
+  /** Records the cue-in applied to a song, bounded to recent requests. */
+  rememberSongCueIn(playbackRequestId: string, cueInSeconds: number): void {
+    this.songCueIns.delete(playbackRequestId);
+    this.songCueIns.set(playbackRequestId, cueInSeconds);
+    if (this.songCueIns.size > SONG_CUE_IN_ENTRIES) {
+      const oldest = this.songCueIns.keys().next().value as string;
+      this.songCueIns.delete(oldest);
+    }
   }
 
   observeIntroLifecycle(
@@ -891,7 +914,14 @@ export class PlaybackTelemetryService {
       '# TYPE palazzo_media_preflight_total counter',
       '# HELP palazzo_playout_transitions_total Authoritative playout transitions by bounded event.',
       '# TYPE palazzo_playout_transitions_total counter',
+      '# HELP palazzo_song_analysis_dropped_total Invalid song analysis groups dropped from song commands, by bounded group and result.',
+      '# TYPE palazzo_song_analysis_dropped_total counter',
     ];
+    for (const [group, count] of Object.entries(this.songAnalysisDropped)) {
+      lines.push(
+        `palazzo_song_analysis_dropped_total{group="${group}",result="invalid"} ${count}`,
+      );
+    }
     for (const [key, count] of [...this.pairedCommandResults].sort(([a], [b]) =>
       a.localeCompare(b),
     )) {
@@ -959,6 +989,8 @@ function sanitizeValue(value: unknown): unknown {
       .map(([key, entry]) => [key, sanitizeValue(entry)]),
   );
 }
+
+const SONG_CUE_IN_ENTRIES = 64;
 
 function trackFromSnapshot(
   snapshot: LiquidsoapSnapshot,

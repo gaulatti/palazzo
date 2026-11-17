@@ -32,6 +32,20 @@ Authoritative program events are `playout.queued`, `preflight.ready`,
 and transition timestamps come from Liquidsoap lifecycle evidence. Command
 acceptance alone never fabricates an audible start.
 
+## Cue points and position
+
+For a song played with a cue-in and cue-out (see
+[program playout](program-playout.md#song-segue-and-loudness)), Liquidsoap
+plays only the cut audio. `track.started` is emitted when that audio starts, at
+the cue-in, and `track.ended` when it ends, at the cue-out. Each play still
+produces exactly one start and one end, so consumers that count plays from
+`track.ended` (Alcantara's as-run log) count the same plays as before.
+
+`positionSeconds` is relative to the file, not to the cut. Liquidsoap's
+elapsed time starts at 0 at the cue-in, so Palazzo adds the song's cue-in
+(0 when the song had none). Palazzo remembers the cue-in for its 64 most recent
+song requests. `remainingSeconds` is the time left before the cue-out.
+
 ## Cadence and bounded state
 
 Liquidsoap keeps its most recent 128 lifecycle events. Palazzo keeps its most
@@ -80,6 +94,9 @@ Useful metrics:
 - `palazzo_track_lifecycle_total{event="started|ended"}`
 - `palazzo_media_preflight_total{result,reason}`
 - `palazzo_playout_transitions_total{event}`
+- `palazzo_song_analysis_dropped_total{group="segue|loudness",result="invalid"}`:
+  invalid analysis groups dropped from song commands. Both series are always
+  exposed, starting at 0.
 - `palazzo_sse_subscribers`
 - `palazzo_sse_event_buffer_events` and replay-drop counters
 - normalized-route HTTP request and duration counters

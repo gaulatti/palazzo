@@ -66,6 +66,58 @@ The dedicated intro source applies the asset's authored `gain`, per-item
 fades, and `duckGain` to the song mix. Manual instants remain on the separate
 `instants` bus and are never ducked by this operation.
 
+## Song segue and loudness
+
+`POST /playback/song` accepts two optional analysis groups inside `song`, next
+to `url`, `playbackId`, `title`, `artist` and `coverUrl`, as Alcantara sends
+them, plus an optional `song.duration` in seconds:
+
+```ts
+segue?: { cueInSeconds; cueOutSeconds; fadeInSeconds; fadeOutSeconds; overlapSeconds }
+loudness?: { integratedLufs; truePeakDbtp }
+```
+
+Palazzo validates each group itself and never trusts the sender:
+
+- **segue**: every value finite; `0 ≤ cueInSeconds < cueOutSeconds`;
+  `cueOutSeconds ≤ duration` when `song.duration` is present (a present
+  duration that is not a finite number also invalidates the group); fades
+  `≥ 0`; `0 ≤ overlapSeconds ≤ cueOutSeconds − cueInSeconds`.
+- **loudness**: both values finite; `−70 ≤ integratedLufs ≤ 0`;
+  `truePeakDbtp ≤ +6`.
+
+An invalid group is dropped and counted in
+`palazzo_song_analysis_dropped_total{group="segue|loudness",result="invalid"}`.
+The song still plays without that group. A bad optional group never rejects
+the command. Intro objects never carry these fields and are not read for them.
+
+A valid group becomes Liquidsoap request annotations on the song only:
+
+| Group    | Annotation                                             | Applied by                                                        |
+| -------- | ------------------------------------------------------ | ----------------------------------------------------------------- |
+| segue    | `liq_cue_in`, `liq_cue_out` (seconds)                  | Liquidsoap 2.4.5 request resolution cuts the file                 |
+| segue    | `liq_fade_in`, `liq_fade_out` (seconds)                | `fade.in` / `fade.out` on the song chain (default duration 0)     |
+| loudness | `liq_amplify` (linear gain)                            | `amplify(override="liq_amplify", 1., …)` before `song_volume`     |
+
+The gain is `10^((target − integratedLufs)/20)`, capped so that
+`truePeakDbtp + 20·log10(gain) ≤ ceiling`. Palazzo owns both values:
+
+- `PLAYOUT_TARGET_LUFS`: integrated loudness target, default `−16`, allowed
+  `−70` to `0`.
+- `PLAYOUT_TRUE_PEAK_CEILING_DBTP`: true-peak ceiling, default `−1`, allowed
+  `−20` to `0`.
+
+An unset or blank value uses the default. Any other value outside its range
+fails startup.
+
+`overlapSeconds` is validated and otherwise ignored: consecutive songs still
+hand off exactly as before. Crossfading is a separate follow-up.
+
+A command without either group pushes exactly the same `songs.push` request as
+before, and the added operators are no-ops without their annotations:
+`liq_amplify` defaults to `1.`, and both fades default to a duration of `0.`.
+Intros, instants, filler and mixer volumes are unchanged.
+
 ## Program surface
 
 All routes are confined to the private control network and exact configured program.

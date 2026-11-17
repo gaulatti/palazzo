@@ -94,11 +94,32 @@ interface StoredPreflightAsset extends PreflightAssetState {
   urlDigest: string;
 }
 
+/** Analysis-derived segue points, in seconds, as Alcantara sends them. */
+export interface SongSegue {
+  cueInSeconds: number;
+  cueOutSeconds: number;
+  fadeInSeconds: number;
+  fadeOutSeconds: number;
+  /** Validated and otherwise ignored: overlap is not applied yet. */
+  overlapSeconds: number;
+}
+
+/** Analysis-derived loudness measurements, as Alcantara sends them. */
+export interface SongLoudness {
+  integratedLufs: number;
+  truePeakDbtp: number;
+}
+
+export type SongAnalysisGroup = "segue" | "loudness";
+
 export interface ProgramSongPayload {
   song: ProgramAsset & {
     title?: string;
     artist?: string;
     coverUrl?: string;
+    segue?: SongSegue;
+    loudness?: SongLoudness;
+    duration?: number;
   };
   intro?: ProgramAsset & {
     gain?: number;
@@ -162,6 +183,8 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
   private readonly preflightCacheEntries: number;
   private readonly preflightTtlMs: number;
   private readonly preflightTimeoutMs: number;
+  private readonly targetLufs: number;
+  private readonly truePeakCeilingDbtp: number;
   private playoutJournalLoaded = false;
   private now = (): number => Date.now();
   private assetProbe = async (
@@ -244,6 +267,20 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
       10_000,
       100,
       30_000,
+    );
+    this.targetLufs = playoutLevelSetting(
+      "PLAYOUT_TARGET_LUFS",
+      this.config.get<string>("PLAYOUT_TARGET_LUFS"),
+      -16,
+      -70,
+      0,
+    );
+    this.truePeakCeilingDbtp = playoutLevelSetting(
+      "PLAYOUT_TRUE_PEAK_CEILING_DBTP",
+      this.config.get<string>("PLAYOUT_TRUE_PEAK_CEILING_DBTP"),
+      -1,
+      -20,
+      0,
     );
   }
 
@@ -555,6 +592,7 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
         title: data.song.title ?? "",
         artist: data.song.artist ?? "",
         cover_url: data.song.coverUrl ?? "",
+        ...this.songAnalysisAnnotations(song.playbackId, data.song),
       });
       const playableIntro = intro?.url ? intro : undefined;
       const record: PlayoutCommandRecord = {
@@ -999,6 +1037,44 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
+  /**
+   * Liquidsoap annotations for a song's valid analysis groups. An invalid
+   * group is dropped and counted; the song is never refused because of it.
+   * Without either group this returns nothing, so the request is unchanged.
+   */
+  private songAnalysisAnnotations(
+    playbackRequestId: string,
+    song: ProgramSongPayload["song"],
+  ): Record<string, string> {
+    const annotations: Record<string, string> = {};
+    if (song.segue !== undefined) {
+      const segue = validSongSegue(song.segue, song.duration);
+      if (segue) {
+        annotations.liq_cue_in = decimal(segue.cueInSeconds);
+        annotations.liq_cue_out = decimal(segue.cueOutSeconds);
+        annotations.liq_fade_in = decimal(segue.fadeInSeconds);
+        annotations.liq_fade_out = decimal(segue.fadeOutSeconds);
+        this.telemetry.rememberSongCueIn(
+          playbackRequestId,
+          segue.cueInSeconds,
+        );
+      } else {
+        this.telemetry.observeSongAnalysisDropped("segue");
+      }
+    }
+    if (song.loudness !== undefined) {
+      const loudness = validSongLoudness(song.loudness);
+      if (loudness) {
+        annotations.liq_amplify = decimal(
+          loudnessGain(loudness, this.targetLufs, this.truePeakCeilingDbtp),
+        );
+      } else {
+        this.telemetry.observeSongAnalysisDropped("loudness");
+      }
+    }
+    return annotations;
+  }
+
   private annotatedUri(url: string, metadata: Record<string, string>): string {
     if (typeof url !== "string" || !url.trim()) {
       throw new BadRequestException("url must be a non-empty string");
@@ -1105,6 +1181,118 @@ function canonicalValue(value: unknown): unknown {
     );
   }
   return value;
+}
+
+/** Reads a playout level setting, failing startup on an invalid value. */
+function playoutLevelSetting(
+  name: string,
+  configured: string | undefined,
+  fallback: number,
+  minimum: number,
+  maximum: number,
+): number {
+  if (configured === undefined || configured.trim() === "") return fallback;
+  const parsed = Number(configured);
+  if (!Number.isFinite(parsed) || parsed < minimum || parsed > maximum) {
+    throw new Error(
+      `${name} must be a number between ${minimum} and ${maximum}`,
+    );
+  }
+  return parsed;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function finiteFields<K extends string>(
+  value: unknown,
+  keys: readonly K[],
+): Record<K, number> | null {
+  if (!isRecord(value)) return null;
+  const fields = {} as Record<K, number>;
+  for (const key of keys) {
+    const entry = value[key];
+    if (typeof entry !== "number" || !Number.isFinite(entry)) return null;
+    fields[key] = entry;
+  }
+  return fields;
+}
+
+/**
+ * The segue group when it is within bounds: all finite, 0 <= cueIn < cueOut,
+ * cueOut <= duration when a duration is given, fades >= 0, and
+ * 0 <= overlap <= cueOut - cueIn. Otherwise null.
+ */
+export function validSongSegue(
+  value: unknown,
+  duration?: unknown,
+): SongSegue | null {
+  const segue = finiteFields(value, [
+    "cueInSeconds",
+    "cueOutSeconds",
+    "fadeInSeconds",
+    "fadeOutSeconds",
+    "overlapSeconds",
+  ] as const);
+  if (!segue) return null;
+  if (segue.cueInSeconds < 0 || segue.cueInSeconds >= segue.cueOutSeconds) {
+    return null;
+  }
+  if (
+    duration !== undefined &&
+    (typeof duration !== "number" ||
+      !Number.isFinite(duration) ||
+      segue.cueOutSeconds > duration)
+  ) {
+    return null;
+  }
+  if (segue.fadeInSeconds < 0 || segue.fadeOutSeconds < 0) return null;
+  if (
+    segue.overlapSeconds < 0 ||
+    segue.overlapSeconds > segue.cueOutSeconds - segue.cueInSeconds
+  ) {
+    return null;
+  }
+  return segue;
+}
+
+/**
+ * The loudness group when it is within bounds: both finite,
+ * -70 <= integratedLufs <= 0 and truePeakDbtp <= +6. Otherwise null.
+ */
+export function validSongLoudness(value: unknown): SongLoudness | null {
+  const loudness = finiteFields(value, [
+    "integratedLufs",
+    "truePeakDbtp",
+  ] as const);
+  if (!loudness) return null;
+  if (loudness.integratedLufs < -70 || loudness.integratedLufs > 0) {
+    return null;
+  }
+  if (loudness.truePeakDbtp > 6) return null;
+  return loudness;
+}
+
+/**
+ * Linear gain that brings the song to the target loudness, capped so that
+ * its true peak plus the gain stays at or below the ceiling.
+ */
+export function loudnessGain(
+  loudness: SongLoudness,
+  targetLufs: number,
+  ceilingDbtp: number,
+): number {
+  const gainDb = Math.min(
+    targetLufs - loudness.integratedLufs,
+    ceilingDbtp - loudness.truePeakDbtp,
+  );
+  return 10 ** (gainDb / 20);
+}
+
+/** A plain decimal string (never exponent notation), to six places. */
+function decimal(value: number): string {
+  return String(Number(value.toFixed(6)));
 }
 
 function boundedInteger(

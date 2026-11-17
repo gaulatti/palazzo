@@ -44,6 +44,7 @@ function parseExposition(payload) {
 function assertBoundedLabels(samples) {
   const fixed = {
     dependency: new Set(["liquidsoap"]),
+    group: new Set(["loudness", "segue"]),
     event: new Set([
       "ended",
       "fallback",
@@ -79,6 +80,7 @@ function assertBoundedLabels(samples) {
       "ended",
       "failed",
       "failure",
+      "invalid",
       "parse_failure",
       "ready",
       "rejected",
