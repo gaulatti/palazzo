@@ -444,8 +444,9 @@ def watch_deck(name, deck) =
             next_state := "queued"
           end
         end
-        # The announced song is still resolving when the playing song ends: it is not ready in time.
-        if next_state() == "resolving" and active_deck() == name then
+        # The announced song is still resolving (or still waiting for a deck) when the playing song
+        # ends: it is not ready in time, and the caller falls back to a song command.
+        if (next_state() == "resolving" or next_state() == "waiting_deck") and active_deck() == name then
           ignore(drop_next("not_ready"))
         end
         remember_event("track_ended", meta)
@@ -558,8 +559,15 @@ server.register(
     begin
       ignore(drop_next("flushed"))
       list.iter(fun (r) -> next_queue.remove(r), next_queue.queue())
-      if active_deck() == "b" then next_queue.skip() end
-      deck_b_open := false
+      # Stop a song on deck b (the active song, or an announced one whose gate just opened). Its gate
+      # stays open so the skip is pulled and the song ends now; closing it would freeze the song mid-way
+      # and leave the deck marked as playing. Deck b's own end hook then clears its flag.
+      if active_deck() == "b" or deck_b_playing() then
+        next_queue.skip()
+      else
+        deck_b_open := false
+      end
+      overlap_limiter_armed := false
       deck_a_open := true
       active_deck := "a"
       next_overlap := 0.

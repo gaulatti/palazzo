@@ -434,6 +434,10 @@ test("the script keeps deck a as the songs queue and gates the announced song on
   // A deck still finishing an overlapped song is never closed; the next song waits for it.
   assert.match(script, /if not deck_playing\(target\) then set_deck_open\(target, false\) end/);
   assert.match(script, /next_state\(\) == "waiting_deck" and next_deck\(\) == name/);
+  // A song still waiting when the playing song ends is withdrawn not_ready, never left waiting.
+  assert.match(script, /if \(next_state\(\) == "resolving" or next_state\(\) == "waiting_deck"\) and active_deck\(\) == name then/);
+  // Resetting the decks skips a song on deck b with its gate left open, so it ends at once instead of freezing.
+  assert.match(script, /if active_deck\(\) == "b" or deck_b_playing\(\) then\n        next_queue\.skip\(\)\n      else\n        deck_b_open := false\n      end/);
   // The overlap limiter is dry unless both decks are on air.
   assert.match(script, /wet=\{if overlap_limiter_armed\(\) or \(deck_a_playing\(\) and deck_b_playing\(\)\) then 1\. else 0\. end\}/);
   assert.match(script, /songs_rms = rms\(id="songs_rms", duration=0\.1, songs_limited\)/);
