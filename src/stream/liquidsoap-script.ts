@@ -367,7 +367,9 @@ end
 
 # Drops the announced song, if any, and reports why. Returns whether one was dropped.
 def drop_next(reason) =
-  if next_state() == "none" then
+  # Once its gate has opened the announced song is on air: it is neither replaced nor withdrawn, and a
+  # stop or song command ends it like any playing song.
+  if next_state() == "none" or next_state() == "started" then
     false
   else
     begin
@@ -487,6 +489,9 @@ server.register(
       parts = string.split(separator=" ", arg)
       if list.length(parts) < 4 then
         "invalid"
+      elsif next_state() == "started" then
+        # The previous announcement has already started under the current song: too late to replace it.
+        "too_late"
       else
         begin
           ignore(drop_next("replaced"))

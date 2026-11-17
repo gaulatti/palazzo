@@ -243,6 +243,15 @@ test("Liquidsoap refusing the preparation is a 422", async () => {
   await rejects(announce(), 422, "not_ready");
 });
 
+test("a replacement after the announced song has started is too late: 422, nothing recorded as queued", async () => {
+  const { onAir, announce, counts } = await harness({}, { "palazzo.prepare_next": "too_late" });
+  onAir();
+  await rejects(announce(), 422, "not_ready");
+  const c = await counts();
+  assert.equal(c["request:not_ready"], 1);
+  assert.equal(c["request:queued"], 0);
+});
+
 for (const [name, call] of [
   ["an empty idempotency key", (h) => h.announce({}, "")],
   ["no idempotency key", (h) => h.service.announceNext("program-one", undefined, { song: { programId: "program-one", playbackId: "song-b", url: "https://example.test/b.mp3" } })],
@@ -434,6 +443,9 @@ test("the script keeps deck a as the songs queue and gates the announced song on
   // A deck still finishing an overlapped song is never closed; the next song waits for it.
   assert.match(script, /if not deck_playing\(target\) then set_deck_open\(target, false\) end/);
   assert.match(script, /next_state\(\) == "waiting_deck" and next_deck\(\) == name/);
+  // An announced song whose gate opened is on air: never withdrawn, and a late replacement is refused.
+  assert.match(script, /if next_state\(\) == "none" or next_state\(\) == "started" then\n    false/);
+  assert.match(script, /elsif next_state\(\) == "started" then\n        # The previous announcement has already started under the current song: too late to replace it\.\n        "too_late"/);
   // A song still waiting when the playing song ends is withdrawn not_ready, never left waiting.
   assert.match(script, /if \(next_state\(\) == "resolving" or next_state\(\) == "waiting_deck"\) and active_deck\(\) == name then/);
   // Resetting the decks skips a song on deck b with its gate left open, so it ends at once instead of freezing.

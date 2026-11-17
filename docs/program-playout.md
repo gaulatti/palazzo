@@ -183,6 +183,9 @@ at a time; a new announcement replaces the previous one.
   `SONG_REQUEST_TIMEOUT_MS`. If the song is not resolved when the current one
   ends, it is withdrawn (`not_ready`) before that song's `track.ended`, and the
   caller sends it as a song command, exactly today's handoff.
+- Once the announced song has started (under an overlap, or at the cue-out) it
+  is on air: a new announcement is refused with 422 `not_ready`, and `DELETE`
+  answers `withdrawn:false`. A song command or a stop ends it like any song.
 - A song command or a stop flushes the announced song (`flushed`): it never
   plays unless it is the one chosen. Before the first announcement these
   commands send exactly the telnet commands they always did; after it they
