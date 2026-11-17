@@ -7,6 +7,15 @@ inside the configured lookahead. Confirm each required song is `ready` and its
 `expiresAt` is later than its expected air time. The endpoint never writes to
 Liquidsoap queues and cannot interrupt the active item.
 
+Each asset's `kind` is `song`, `intro` or `instant`. An asset of a kind Palazzo
+does not know (gaulatti/ariston#217) is not probed and does not refuse the
+batch: the rest is checked, and the response gains
+`skipped: [{ index, playbackId, reason: "unknown_kind" }]` (present only when
+something was skipped), counted in
+`palazzo_media_preflight_skipped_total{reason="unknown_kind"}`. A skipped asset
+is still validated for program binding and URL safety, and a missing or
+non-string `kind` still refuses the batch.
+
 Palazzo retains at most `PREFLIGHT_CACHE_ENTRIES` readiness records. Repeating
 the same playback ID and URL before expiry reuses the probe. A changed URL or
 expired state is probed again. Media bytes are not cached.

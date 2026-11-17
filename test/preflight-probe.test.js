@@ -7,6 +7,7 @@ const { StreamService } = require('../dist/stream/stream.service');
 const { PlaybackTelemetryService } = require('../dist/stream/playback-telemetry.service');
 const { commandShim } = require('./command-shim');
 const { mediaProbeResult } = require('./media-probe-fixture');
+const { parseExposition } = require('./prometheus-exposition');
 
 async function fixture(t, config = {}) {
   const root = await fs.mkdtemp(join(tmpdir(), 'palazzo-probe-'));
@@ -81,7 +82,7 @@ test('preflight validates scope, input bounds, URLs, kinds and schedule before p
   const { service, asset } = await fixture(t, { PREFLIGHT_BATCH_SIZE: 'bad', PREFLIGHT_CACHE_ENTRIES: '1' });
   service.assetProbe = () => assert.fail('invalid inputs cannot probe media');
   for (const data of [undefined, {}, { assets: [] }, { assets: Array(21).fill(asset()) }]) await assert.rejects(service.preflightProgramAssets('station', data), /assets/);
-  for (const patch of [{ programId: undefined }, { programId: ' ' }, { playbackId: 'x'.repeat(201) }, { url: 'x'.repeat(4097) }, { programId: 'other' }, { url: 'relative' }, { url: 'ftp://media.example.test/x' }, { kind: 'music-video' }, { scheduledAt: 12 }, { scheduledAt: ' ' }, { scheduledAt: 'invalid' }]) {
+  for (const patch of [{ programId: undefined }, { programId: ' ' }, { playbackId: 'x'.repeat(201) }, { url: 'x'.repeat(4097) }, { programId: 'other' }, { url: 'relative' }, { url: 'ftp://media.example.test/x' }, { kind: undefined }, { kind: 7 }, { kind: ' ' }, { scheduledAt: 12 }, { scheduledAt: ' ' }, { scheduledAt: 'invalid' }]) {
     await assert.rejects(service.preflightProgramAssets('station', { assets: [{ ...asset(), ...patch }] }), /invalid|another program|absolute URL|not allowed/);
   }
   await assert.rejects(service.preflightProgramAssets('station', { assets: [undefined] }), /required/);
@@ -98,4 +99,47 @@ test('preflight validates scope, input bounds, URLs, kinds and schedule before p
   service.now = () => now;
   await service.preflightProgramAssets('station', { assets: [asset('another')] });
   assert.equal(service.getProgramPreflight('station').assets.length, 1);
+});
+
+// gaulatti/ariston#217: an asset of a kind Palazzo does not know is skipped,
+// counted and reported; the rest of the batch is still checked.
+test('preflight skips an asset of an unknown kind, reports it and checks the rest', async (t) => {
+  const { service, telemetry, asset } = await fixture(t);
+  const probed = [];
+  service.assetProbe = async (url) => { probed.push(url); return mediaProbeResult(); };
+  const skippedCount = async () =>
+    parseExposition(await telemetry.renderMetrics()).find(
+      (sample) => sample.name === 'palazzo_media_preflight_skipped_total' && sample.labels.reason === 'unknown_kind',
+    ).value;
+  assert.equal(await skippedCount(), 0);
+
+  const result = await service.preflightProgramAssets('station', {
+    assets: [asset('song-1'), { ...asset('jingle-1'), kind: 'jingle' }, asset('song-2')],
+  });
+  assert.deepEqual(result.assets.map((item) => [item.playbackId, item.readiness]), [['song-1', 'ready'], ['song-2', 'ready']]);
+  assert.deepEqual(result.skipped, [{ index: 1, playbackId: 'jingle-1', reason: 'unknown_kind' }]);
+  assert.equal(probed.some((url) => String(url).includes('jingle-1')), false);
+  assert.equal(await skippedCount(), 1);
+  assert.doesNotMatch(await telemetry.renderMetrics(), /jingle/);
+
+  // A batch of only unknown kinds is answered, with nothing checked.
+  const none = await service.preflightProgramAssets('station', { assets: [{ ...asset('jingle-2'), kind: 'jingle' }] });
+  assert.deepEqual(none.assets, []);
+  assert.equal(none.skipped.length, 1);
+  assert.equal(await skippedCount(), 2);
+
+  // Known batches keep their exact shape, without a skipped list.
+  const plain = await service.preflightProgramAssets('station', { assets: [asset('song-3')] });
+  assert.equal('skipped' in plain, false);
+});
+
+test('a skipped asset is still held to program binding and URL safety', async (t) => {
+  const { service, asset } = await fixture(t);
+  service.assetProbe = () => assert.fail('invalid inputs cannot probe media');
+  for (const patch of [{ programId: 'other' }, { url: 'ftp://media.example.test/x' }]) {
+    await assert.rejects(
+      service.preflightProgramAssets('station', { assets: [{ ...asset(), kind: 'jingle', ...patch }] }),
+      /another program|not allowed|absolute URL/,
+    );
+  }
 });

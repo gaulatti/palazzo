@@ -116,6 +116,8 @@ Useful metrics:
 - `palazzo_liquidsoap_restarts_total`
 - `palazzo_track_lifecycle_total{event="started|ended"}`
 - `palazzo_media_preflight_total{result,reason}`
+- `palazzo_media_preflight_skipped_total{reason="unknown_kind"}`: preflight
+  assets of a kind Palazzo does not know, skipped without probing; exposed from 0.
 - `palazzo_next_requests_total{result="queued|duplicate|not_ready|invalid|no_current_song"}`:
   next-song announcements by outcome; all series exposed from 0.
 - `palazzo_next_withdrawn_total{reason="replaced|withdrawn|flushed|not_ready"}`:

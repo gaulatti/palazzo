@@ -91,6 +91,13 @@ export interface PreflightAssetState {
   media?: MediaProbeResult;
 }
 
+/** An asset the preflight did not check, and why. */
+export interface PreflightSkippedAsset {
+  index: number;
+  playbackId: string;
+  reason: "unknown_kind";
+}
+
 interface StoredPreflightAsset extends PreflightAssetState {
   url: string;
   urlDigest: string;
@@ -400,6 +407,7 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
       cacheWarmBytes: 0;
     };
     assets: PreflightAssetState[];
+    skipped?: PreflightSkippedAsset[];
   }> {
     if (!request || !Array.isArray(request.assets)) {
       throw new BadRequestException("assets must be an array");
@@ -410,9 +418,28 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
         `assets must contain between 1 and ${maximum} items`,
       );
     }
-    const assets = request.assets.map((asset, index) =>
-      this.validatePreflightAsset(programId, asset, `assets[${index}]`),
-    );
+    // An asset of a kind Palazzo does not know is skipped and reported, not a
+    // reason to refuse the whole preflight (gaulatti/ariston#217). It is still
+    // validated for program binding and URL safety, and it is never probed.
+    const assets: ProgramPreflightAsset[] = [];
+    const skipped: PreflightSkippedAsset[] = [];
+    request.assets.forEach((asset, index) => {
+      const checked = this.validatePreflightAsset(
+        programId,
+        asset,
+        `assets[${index}]`,
+      );
+      if (checked) {
+        assets.push(checked);
+        return;
+      }
+      this.telemetry.observePreflightSkipped("unknown_kind");
+      skipped.push({
+        index,
+        playbackId: asset.playbackId,
+        reason: "unknown_kind",
+      });
+    });
     const results = new Array<PreflightAssetState>(assets.length);
     let cursor = 0;
     const worker = async (): Promise<void> => {
@@ -446,6 +473,7 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
         cacheWarmBytes: 0,
       },
       assets: results,
+      ...(skipped.length ? { skipped } : {}),
     };
   }
 
@@ -1046,15 +1074,20 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
     return publicState;
   }
 
+  /**
+   * The validated asset, or null for a well-formed asset whose `kind` Palazzo
+   * does not know. A missing or non-string kind is still invalid.
+   */
   private validatePreflightAsset(
     programId: string,
     value: ProgramPreflightAsset | undefined,
     field: string,
-  ): ProgramPreflightAsset {
+  ): ProgramPreflightAsset | null {
     const asset = this.validateProgramAsset(programId, value, field);
-    if (!value || !["song", "intro", "instant"].includes(value.kind)) {
+    if (!value || typeof value.kind !== "string" || !value.kind.trim()) {
       throw new BadRequestException(`${field}.kind is invalid`);
     }
+    if (!["song", "intro", "instant"].includes(value.kind)) return null;
     if (
       typeof value.scheduledAt !== "string" ||
       !value.scheduledAt.trim() ||

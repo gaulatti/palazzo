@@ -111,6 +111,7 @@ function assertBoundedLabels(samples) {
       "replaced",
       "song_unavailable",
       "timeout",
+      "unknown_kind",
       "unreachable",
       "unsupported_media",
       "withdrawn",

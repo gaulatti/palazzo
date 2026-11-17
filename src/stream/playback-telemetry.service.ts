@@ -228,6 +228,9 @@ export class PlaybackTelemetryService {
   private readonly pairedCommandResults = new Map<string, number>();
   private readonly introLifecycleResults = new Map<string, number>();
   private readonly preflightResults = new Map<string, number>();
+  private readonly preflightSkipped: Record<'unknown_kind', number> = {
+    unknown_kind: 0,
+  };
   private readonly playoutTransitions = new Map<string, number>();
   private readonly songAnalysisDropped: Record<'loudness' | 'segue', number> =
     { loudness: 0, segue: 0 };
@@ -546,6 +549,11 @@ export class PlaybackTelemetryService {
       failureReason: reason,
     };
     this.emit('intro.failed', data, occurredAt);
+  }
+
+  /** Counts a preflight asset skipped because Palazzo does not know its kind. */
+  observePreflightSkipped(reason: 'unknown_kind'): void {
+    this.preflightSkipped[reason] += 1;
   }
 
   reportPreflight(
@@ -1022,6 +1030,8 @@ export class PlaybackTelemetryService {
       '# TYPE palazzo_intro_lifecycle_total counter',
       '# HELP palazzo_media_preflight_total Media preflight outcomes by bounded result and reason.',
       '# TYPE palazzo_media_preflight_total counter',
+      '# HELP palazzo_media_preflight_skipped_total Preflight assets skipped without probing, by bounded reason.',
+      '# TYPE palazzo_media_preflight_skipped_total counter',
       '# HELP palazzo_playout_transitions_total Authoritative playout transitions by bounded event.',
       '# TYPE palazzo_playout_transitions_total counter',
       '# HELP palazzo_next_requests_total Next-song announcements, by bounded result.',
@@ -1036,6 +1046,11 @@ export class PlaybackTelemetryService {
     }
     for (const [reason, count] of Object.entries(this.nextWithdrawn)) {
       lines.push(`palazzo_next_withdrawn_total{reason="${reason}"} ${count}`);
+    }
+    for (const [reason, count] of Object.entries(this.preflightSkipped)) {
+      lines.push(
+        `palazzo_media_preflight_skipped_total{reason="${reason}"} ${count}`,
+      );
     }
     for (const [group, count] of Object.entries(this.songAnalysisDropped)) {
       lines.push(
