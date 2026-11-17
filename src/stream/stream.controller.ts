@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Delete,
   Get,
   Header,
   Headers,
@@ -126,6 +127,22 @@ export class StreamController {
     this.lifecycle.assertProgram(programId);
     this.lifecycle.startFromPlaybackCommand();
     return this.streamService.playProgramSong(programId, idempotencyKey, data);
+  }
+
+  @Put("v1/programs/:programId/playback/next")
+  async announceNextSong(
+    @Param("programId") programId: string,
+    @Headers("idempotency-key") idempotencyKey: string | undefined,
+    @Body() data: ProgramSongPayload,
+  ) {
+    this.lifecycle.assertProgram(programId);
+    return this.streamService.announceNext(programId, idempotencyKey, data);
+  }
+
+  @Delete("v1/programs/:programId/playback/next")
+  async withdrawNextSong(@Param("programId") programId: string) {
+    this.lifecycle.assertProgram(programId);
+    return this.streamService.withdrawNext();
   }
 
   @Put("v1/programs/:programId/playback/preflight")

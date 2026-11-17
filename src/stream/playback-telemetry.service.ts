@@ -22,7 +22,8 @@ export interface LiquidsoapLifecycleEvent {
     | 'intro_started'
     | 'intro_ended'
     | 'song_request_timeout'
-    | 'song_request_failed';
+    | 'song_request_failed'
+    | 'next_withdrawn';
   playback_request_id: string;
   playback_id: string;
   parent_playback_id: string;
@@ -31,6 +32,8 @@ export interface LiquidsoapLifecycleEvent {
   artist: string;
   cover_url: string;
   url: string;
+  /** Only on next_withdrawn: replaced, withdrawn, flushed or not_ready. */
+  reason?: string;
   occurred_at: number;
 }
 
@@ -80,6 +83,8 @@ export type PlaybackEventType =
   | 'playout.transitioned'
   | 'playout.stopped'
   | 'playout.skipped'
+  | 'playout.next_queued'
+  | 'playout.next_withdrawn'
   | 'playout.fallback'
   | 'playout.request_failed'
   | 'playback.position'
@@ -225,6 +230,20 @@ export class PlaybackTelemetryService {
   /** Song requests Liquidsoap could not resolve (palazzo#42). */
   private readonly songRequestFailures: Record<'timeout' | 'other', number> =
     { timeout: 0, other: 0 };
+  private readonly nextRequests: Record<NextRequestResult, number> = {
+    queued: 0,
+    duplicate: 0,
+    not_ready: 0,
+    invalid: 0,
+    no_current_song: 0,
+  };
+  private readonly nextWithdrawn: Record<NextWithdrawnReason, number> = {
+    replaced: 0,
+    withdrawn: 0,
+    flushed: 0,
+    not_ready: 0,
+  };
+  private nextProgramId: string | null = null;
   /** Cue-in per playback request, so position stays file-relative. */
   private readonly songCueIns = new Map<string, number>();
   private pendingTrackEnd: {
@@ -449,6 +468,29 @@ export class PlaybackTelemetryService {
       key,
       (this.pairedCommandResults.get(key) ?? 0) + 1,
     );
+  }
+
+  /** The song on air, for a next-song announcement; null when nothing is playing. */
+  currentSong(): {
+    playbackRequestId: string;
+    remainingSeconds: number | null;
+  } | null {
+    if (!this.track) return null;
+    return {
+      playbackRequestId: this.track.playbackRequestId,
+      remainingSeconds: this.remainingSeconds,
+    };
+  }
+
+  /** Counts a next-song announcement by its bounded result. */
+  observeNextRequest(result: NextRequestResult): void {
+    this.nextRequests[result] += 1;
+  }
+
+  /** Emits playout.next_queued for an accepted announcement. */
+  reportNextQueued(programId: string, playbackId: string): void {
+    this.nextProgramId = programId;
+    this.emit('playout.next_queued', { programId, playbackId });
   }
 
   /** Counts an invalid song analysis group dropped from a song command. */
@@ -710,6 +752,21 @@ export class PlaybackTelemetryService {
   }
 
   private applyLifecycle(event: LiquidsoapLifecycleEvent): void {
+    if (event.event_type === 'next_withdrawn') {
+      const reason = NEXT_WITHDRAWN_REASONS.find((r) => r === event.reason);
+      if (!reason) return;
+      this.nextWithdrawn[reason] += 1;
+      this.emit(
+        'playout.next_withdrawn',
+        {
+          programId: this.nextProgramId,
+          playbackId: event.playback_id,
+          reason,
+        },
+        new Date(event.occurred_at * 1_000).toISOString(),
+      );
+      return;
+    }
     const data = {
       playbackRequestId: event.playback_request_id,
       title: event.title || null,
@@ -953,9 +1010,19 @@ export class PlaybackTelemetryService {
       '# TYPE palazzo_media_preflight_total counter',
       '# HELP palazzo_playout_transitions_total Authoritative playout transitions by bounded event.',
       '# TYPE palazzo_playout_transitions_total counter',
+      '# HELP palazzo_next_requests_total Next-song announcements, by bounded result.',
+      '# TYPE palazzo_next_requests_total counter',
+      '# HELP palazzo_next_withdrawn_total Announced next songs withdrawn before they started, by bounded reason.',
+      '# TYPE palazzo_next_withdrawn_total counter',
       '# HELP palazzo_song_analysis_dropped_total Invalid song analysis groups dropped from song commands, by bounded group and result.',
       '# TYPE palazzo_song_analysis_dropped_total counter',
     ];
+    for (const [result, count] of Object.entries(this.nextRequests)) {
+      lines.push(`palazzo_next_requests_total{result="${result}"} ${count}`);
+    }
+    for (const [reason, count] of Object.entries(this.nextWithdrawn)) {
+      lines.push(`palazzo_next_withdrawn_total{reason="${reason}"} ${count}`);
+    }
     for (const [group, count] of Object.entries(this.songAnalysisDropped)) {
       lines.push(
         `palazzo_song_analysis_dropped_total{group="${group}",result="invalid"} ${count}`,
@@ -1030,6 +1097,20 @@ function sanitizeValue(value: unknown): unknown {
 }
 
 const SONG_CUE_IN_ENTRIES = 64;
+
+export type NextRequestResult =
+  | 'queued'
+  | 'duplicate'
+  | 'not_ready'
+  | 'invalid'
+  | 'no_current_song';
+type NextWithdrawnReason = 'replaced' | 'withdrawn' | 'flushed' | 'not_ready';
+const NEXT_WITHDRAWN_REASONS: NextWithdrawnReason[] = [
+  'replaced',
+  'withdrawn',
+  'flushed',
+  'not_ready',
+];
 
 function trackFromSnapshot(
   snapshot: LiquidsoapSnapshot,

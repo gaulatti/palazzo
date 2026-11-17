@@ -293,41 +293,221 @@ def palazzo_song_queue(~id, ~timeout) =
 end
 
 songs_queue = palazzo_song_queue(id="songs", timeout=${liqSeconds(options.songRequestTimeoutMs)})
-# Per-song loudness gain from the liq_amplify annotation; 1.0 when absent.
-songs_normalized = amplify(override="liq_amplify", 1., songs_queue)
+# Two song decks (gaulatti/palazzo#40). Deck "a" is the existing songs queue and stays open, so a song
+# command plays exactly as before. An announced next song is resolved ahead of time and pushed to the idle
+# deck behind a closed gate; a gated deck is not pulled, so the song waits at its first frame. The gate
+# opens when the playing deck reaches remaining = the playing song's overlap (0 without one), so the next
+# song starts on the following frame, or under the end of the current one.
+next_queue = request.queue(id="songs_next")
 song_volume = interactive.float("palazzo_song_volume", 1.)
-songs_controlled = amplify(override=null, song_volume, songs_normalized)
-# Per-song fades from liq_fade_in / liq_fade_out; no fade when absent.
-songs_faded = fade.in(duration=0., track_sensitive=true, songs_controlled)
-songs_faded = fade.out(duration=0., track_sensitive=true, songs_faded)
-songs_rms = rms(id="songs_rms", duration=0.1, songs_faded)
+deck_a_open = ref(true)
+deck_b_open = ref(false)
+active_deck = ref("a")
+next_state = ref("none")
+next_deck = ref("")
+next_playback_id = ref("")
+next_overlap = ref(0.)
+next_generation = ref(0)
+
+# Per deck: loudness gain from liq_amplify (1.0 when absent), the song volume, and fades from
+# liq_fade_in / liq_fade_out (none when absent).
+def song_deck(queue, is_open) =
+  gated = switch(track_sensitive=false, [({is_open()}, queue)])
+  normalized = amplify(override="liq_amplify", 1., gated)
+  controlled = amplify(override=null, song_volume, normalized)
+  faded = fade.in(duration=0., track_sensitive=true, controlled)
+  fade.out(duration=0., track_sensitive=true, faded)
+end
+deck_a = song_deck(songs_queue, deck_a_open)
+deck_b = song_deck(next_queue, deck_b_open)
+
+def remember_next_withdrawn(reason) =
+  begin
+    event_sequence := event_sequence() + 1
+    body = json.stringify(compact=true, {
+      sequence=event_sequence(),
+      event_type="next_withdrawn",
+      playback_request_id=next_playback_id(),
+      playback_id=next_playback_id(),
+      parent_playback_id="",
+      program_id="",
+      title="",
+      artist="",
+      cover_url="",
+      url="",
+      reason=reason,
+      occurred_at=time()
+    })
+    events := [body, ...list.prefix(127, events())]
+  end
+end
+
+def deck_queue(name) =
+  if name == "b" then next_queue else songs_queue end
+end
+
+def set_deck_open(name, value) =
+  if name == "b" then deck_b_open := value else deck_a_open := value end
+end
+
+# Drops the announced song, if any, and reports why. Returns whether one was dropped.
+def drop_next(reason) =
+  if next_state() == "none" then
+    false
+  else
+    begin
+      next_generation := next_generation() + 1
+      if next_state() == "queued" then
+        q = deck_queue(next_deck())
+        list.iter(fun (r) -> q.remove(r), q.queue())
+      end
+      set_deck_open(next_deck(), false)
+      next_state := "none"
+      remember_next_withdrawn(reason)
+      true
+    end
+  end
+end
+
+def watch_deck(name, deck) =
+  deck.on_track(
+    synchronous=false,
+    fun (meta) ->
+      begin
+        active_deck := name
+        if next_state() == "started" and next_deck() == name then
+          next_state := "none"
+        end
+        current_playing := true
+        current_request_id := metadata_value("palazzo_request_id", meta)
+        current_title := metadata_value("title", meta)
+        current_artist := metadata_value("artist", meta)
+        current_cover_url := metadata_value("cover_url", meta)
+        current_url := metadata_value("palazzo_url", meta)
+        current_started_at := time()
+        remember_event("track_started", meta)
+      end
+  )
+  # Opens the announced song's gate at remaining = overlap on the deck that is playing.
+  deck.on_position(
+    position={next_overlap()}, remaining=true, allow_partial=true, synchronous=true,
+    fun (_, _) ->
+      if next_state() == "queued" and next_deck() != name and active_deck() == name then
+        begin
+          set_deck_open(next_deck(), true)
+          next_state := "started"
+        end
+      end
+  )
+  deck.on_position(
+    position={0.}, remaining=true, allow_partial=true, synchronous=false,
+    fun (_, meta) ->
+      begin
+        # The announced song is still resolving when the playing song ends: it is not ready in time.
+        if next_state() == "resolving" and active_deck() == name then
+          ignore(drop_next("not_ready"))
+        end
+        remember_event("track_ended", meta)
+        if metadata_value("palazzo_request_id", meta) == current_request_id() then
+          current_playing := false
+        end
+      end
+  )
+end
+watch_deck("a", deck_a)
+watch_deck("b", deck_b)
+
+songs_mixed = add(normalize=false, [deck_a, deck_b])
+songs_rms = rms(id="songs_rms", duration=0.1, songs_mixed)
 get_song_rms = songs_rms.rms
 songs = peak(id="songs_peak", duration=0.1, songs_rms)
 get_song_peak = songs.peak
 
-songs.on_track(
-  synchronous=false,
-  fun (meta) ->
+def active_deck_source() =
+  if active_deck() == "b" then deck_b else deck_a end
+end
+
+# palazzo.prepare_next <playback id> <time limit seconds> <overlap seconds> <annotated uri>
+server.register(
+  namespace="palazzo",
+  usage="prepare_next <playback id> <time limit seconds> <overlap seconds> <uri>",
+  description="Resolve the announced next song and queue it behind a closed gate",
+  "prepare_next",
+  fun (arg) ->
     begin
-      current_playing := true
-      current_request_id := metadata_value("palazzo_request_id", meta)
-      current_title := metadata_value("title", meta)
-      current_artist := metadata_value("artist", meta)
-      current_cover_url := metadata_value("cover_url", meta)
-      current_url := metadata_value("palazzo_url", meta)
-      current_started_at := time()
-      remember_event("track_started", meta)
+      parts = string.split(separator=" ", arg)
+      if list.length(parts) < 4 then
+        "invalid"
+      else
+        begin
+          ignore(drop_next("replaced"))
+          playback_id = list.nth(parts, 0)
+          resolve_limit = float_of_string(default=0., list.nth(parts, 1))
+          overlap = float_of_string(default=0., list.nth(parts, 2))
+          uri = string.concat(separator=" ", list.tl(list.tl(list.tl(parts))))
+          target = if active_deck() == "b" then "a" else "b" end
+          set_deck_open(target, false)
+          q = deck_queue(target)
+          list.iter(fun (r) -> q.remove(r), q.queue())
+          next_generation := next_generation() + 1
+          generation = next_generation()
+          next_state := "resolving"
+          next_deck := target
+          next_playback_id := playback_id
+          next_overlap := overlap
+          thread.run(fun () ->
+            begin
+              r = request.create(uri)
+              ok = request.resolve(timeout=resolve_limit, r)
+              if next_generation() == generation and next_state() == "resolving" then
+                if ok then
+                  begin
+                    q.push(r)
+                    next_state := "queued"
+                  end
+                else
+                  begin
+                    request.destroy(r)
+                    ignore(drop_next("not_ready"))
+                  end
+                end
+              else
+                request.destroy(r)
+              end
+            end
+          )
+          "ok"
+        end
+      end
     end
 )
 
-songs.on_position(
-  position=0., remaining=true, allow_partial=true, synchronous=false,
-  fun (_, meta) ->
+# palazzo.withdraw_next <reason>: drops the announced song. Answers "withdrawn" or "none".
+server.register(
+  namespace="palazzo",
+  usage="withdraw_next <reason>",
+  description="Drop the announced next song",
+  "withdraw_next",
+  fun (reason) -> if drop_next(reason) then "withdrawn" else "none" end
+)
+
+# palazzo.reset_decks: before a song command or a stop. Drops the announcement, stops a song playing on
+# deck b, and reopens deck a, so the existing songs commands act as they always have.
+server.register(
+  namespace="palazzo",
+  usage="reset_decks",
+  description="Return to the single song deck before a song command or stop",
+  "reset_decks",
+  fun (_) ->
     begin
-      remember_event("track_ended", meta)
-      if metadata_value("palazzo_request_id", meta) == current_request_id() then
-        current_playing := false
-      end
+      ignore(drop_next("flushed"))
+      list.iter(fun (r) -> next_queue.remove(r), next_queue.queue())
+      if active_deck() == "b" then next_queue.skip() end
+      deck_b_open := false
+      deck_a_open := true
+      active_deck := "a"
+      next_overlap := 0.
+      "ok"
     end
 )
 
@@ -447,8 +627,8 @@ server.register(
       cover_url=current_cover_url(),
       url=current_url(),
       started_at=current_started_at(),
-      elapsed=finite_level(songs.elapsed()),
-      remaining=finite_level(songs.remaining()),
+      elapsed=finite_level(active_deck_source().elapsed()),
+      remaining=finite_level(active_deck_source().remaining()),
       song_rms=finite_level(get_song_rms()),
       song_peak=finite_level(get_song_peak()),
       instant_rms=finite_level(get_instant_rms()),

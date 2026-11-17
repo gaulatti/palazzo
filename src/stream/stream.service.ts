@@ -1,9 +1,11 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   Logger,
   OnModuleDestroy,
   OnModuleInit,
+  UnprocessableEntityException,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { createHash, randomUUID } from "node:crypto";
@@ -187,6 +189,15 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
   private readonly songRequestTimeoutMs: number;
   private readonly targetLufs: number;
   private readonly truePeakCeilingDbtp: number;
+  private readonly nextResolveMaxSeconds: number;
+  /** True once a next song was announced: song commands and stops then reset the decks first. */
+  private decksUsed = false;
+  /** Overlap (seconds) of recent songs, by playback request, for the announcement that follows them. */
+  private readonly songOverlaps = new Map<string, number>();
+  private readonly nextCommands = new Map<
+    string,
+    { fingerprint: string; playbackRequestId: string }
+  >();
   private playoutJournalLoaded = false;
   private now = (): number => Date.now();
   private assetProbe = async (
@@ -290,6 +301,12 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
       -1,
       -20,
       0,
+    );
+    this.nextResolveMaxSeconds = boundedInteger(
+      this.config.get<string>("PLAYOUT_NEXT_RESOLVE_MAX_SECONDS"),
+      600,
+      1,
+      3_600,
     );
   }
 
@@ -471,6 +488,7 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
       });
       this.telemetry.expectTrackEnd("skipped");
       try {
+        await this.resetDecksIfUsed();
         await this.telnet.send("songs.flush_and_skip");
         await this.telnet.send(`songs.push ${uri}`);
       } catch (error) {
@@ -624,6 +642,7 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
       await this.persistPlayoutJournal();
       this.telemetry.expectTrackEnd("skipped");
       try {
+        await this.resetDecksIfUsed();
         await this.telnet.send("intros.flush_and_skip");
         await this.telnet.send(
           `var.set palazzo_intro_duck_gain = ${playableIntro ? duckGain : 1}`,
@@ -676,6 +695,7 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
     await this.serializeOperation(async () => {
       this.telemetry.expectTrackEnd("stopped");
       try {
+        await this.resetDecksIfUsed();
         await this.telnet.send("songs.flush_and_skip");
       } catch (error) {
         this.telemetry.cancelExpectedTrackEnd();
@@ -713,6 +733,7 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
   async clearProgramMaterial(): Promise<void> {
     await this.serializeOperation(async () => {
       this.telemetry.expectTrackEnd("stopped");
+      await this.resetDecksIfUsed().catch(() => undefined);
       const results = await Promise.allSettled([
         this.telnet.send("songs.flush_and_skip"),
         this.telnet.send("instants.flush_and_skip"),
@@ -1048,6 +1069,132 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
+   * Announces the song that follows the current one (gaulatti/palazzo#40). Palazzo probes it, resolves
+   * it in the background within the current song's remaining time (capped by
+   * PLAYOUT_NEXT_RESOLVE_MAX_SECONDS) and starts it itself at the current song's cue-out minus its overlap.
+   */
+  async announceNext(
+    programId: string,
+    idempotencyKey: string | undefined,
+    data: ProgramSongPayload,
+  ): Promise<{
+    ok: true;
+    playbackRequestId: string;
+    state: "queued";
+    duplicate?: true;
+  }> {
+    return this.serializeOperation(async () => {
+      const key = idempotencyKey?.trim() ?? "";
+      let song: ProgramAsset;
+      try {
+        if (!key || key.length > 200) throw new Error("idempotency");
+        if (!data || typeof data !== "object" || data.intro !== undefined) {
+          throw new Error("intro");
+        }
+        song = this.validateProgramAsset(programId, data.song, "song");
+        if (/\s/.test(song.playbackId)) throw new Error("playbackId");
+      } catch {
+        this.telemetry.observeNextRequest("invalid");
+        throw new BadRequestException({ ok: false, reason: "invalid" });
+      }
+      const fingerprint = JSON.stringify(canonicalValue(data));
+      const digest = this.commandDigest(key);
+      const prior = this.nextCommands.get(digest);
+      if (prior) {
+        if (prior.fingerprint !== fingerprint) {
+          this.telemetry.observeNextRequest("invalid");
+          throw new BadRequestException({ ok: false, reason: "invalid" });
+        }
+        this.telemetry.observeNextRequest("duplicate");
+        return {
+          ok: true,
+          playbackRequestId: prior.playbackRequestId,
+          state: "queued",
+          duplicate: true,
+        };
+      }
+      const current = this.telemetry.currentSong();
+      if (!current) {
+        this.telemetry.observeNextRequest("no_current_song");
+        throw new ConflictException({ ok: false, reason: "no_current_song" });
+      }
+      const readiness = await this.preflightOne({
+        ...song,
+        kind: "song",
+        scheduledAt: new Date(this.now()).toISOString(),
+      });
+      if (readiness.readiness !== "ready") {
+        this.telemetry.observeNextRequest("not_ready");
+        throw new UnprocessableEntityException({
+          ok: false,
+          reason: "not_ready",
+        });
+      }
+      const uri = this.annotatedUri(song.url, {
+        palazzo_request_id: song.playbackId,
+        palazzo_playback_id: song.playbackId,
+        palazzo_program_id: programId,
+        palazzo_url: song.url,
+        title: data.song.title ?? "",
+        artist: data.song.artist ?? "",
+        cover_url: data.song.coverUrl ?? "",
+        ...this.songAnalysisAnnotations(song.playbackId, data.song),
+      });
+      const remaining = current.remainingSeconds;
+      const limit = Math.min(
+        this.nextResolveMaxSeconds,
+        remaining !== null && remaining > 0 ? remaining : this.nextResolveMaxSeconds,
+      );
+      const overlap = this.songOverlaps.get(current.playbackRequestId) ?? 0;
+      this.decksUsed = true;
+      const answer = await this.telnet.send(
+        `palazzo.prepare_next ${song.playbackId} ${decimal(limit)} ${decimal(overlap)} ${uri}`,
+      );
+      if (answer.trim() !== "ok") {
+        this.telemetry.observeNextRequest("not_ready");
+        throw new UnprocessableEntityException({
+          ok: false,
+          reason: "not_ready",
+        });
+      }
+      this.nextCommands.set(digest, {
+        fingerprint,
+        playbackRequestId: song.playbackId,
+      });
+      if (this.nextCommands.size > 64) {
+        const oldest = this.nextCommands.keys().next().value as string;
+        this.nextCommands.delete(oldest);
+      }
+      this.telemetry.observeNextRequest("queued");
+      this.telemetry.reportNextQueued(programId, song.playbackId);
+      return { ok: true, playbackRequestId: song.playbackId, state: "queued" };
+    });
+  }
+
+  /** Withdraws the announced next song, if one is queued and has not started. */
+  async withdrawNext(): Promise<{ ok: true; withdrawn: boolean }> {
+    return this.serializeOperation(async () => {
+      if (!this.decksUsed) return { ok: true, withdrawn: false };
+      const answer = await this.telnet.send("palazzo.withdraw_next withdrawn");
+      return { ok: true, withdrawn: answer.trim() === "withdrawn" };
+    });
+  }
+
+  /** Before a song command or a stop, once announcements were used: back to the single song deck. */
+  private async resetDecksIfUsed(): Promise<void> {
+    if (this.decksUsed) await this.telnet.send("palazzo.reset_decks");
+  }
+
+  private rememberOverlap(playbackRequestId: string, seconds: number): void {
+    this.songOverlaps.delete(playbackRequestId);
+    this.songOverlaps.set(playbackRequestId, seconds);
+    if (this.songOverlaps.size > 64) {
+      const oldest = this.songOverlaps.keys().next().value as string;
+      this.songOverlaps.delete(oldest);
+    }
+  }
+
+  /**
    * Liquidsoap annotations for a song's valid analysis groups. An invalid
    * group is dropped and counted; the song is never refused because of it.
    * Without either group this returns nothing, so the request is unchanged.
@@ -1068,6 +1215,7 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
           playbackRequestId,
           segue.cueInSeconds,
         );
+        this.rememberOverlap(playbackRequestId, segue.overlapSeconds);
       } else {
         this.telemetry.observeSongAnalysisDropped("segue");
       }

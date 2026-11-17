@@ -17,8 +17,10 @@ test("generates a private authoritative telemetry script", () => {
   });
 
   assert.match(script, /settings\.server\.telnet\.bind_addr := "127\.0\.0\.1"/);
-  assert.match(script, /songs\.on_track/);
-  assert.match(script, /songs\.on_position/);
+  // Each song deck reports its own track starts and ends (gaulatti/palazzo#40).
+  assert.match(script, /deck\.on_track\(/);
+  assert.match(script, /deck\.on_position\(\n    position=\{0\.\}, remaining=true/);
+  assert.match(script, /watch_deck\("a", deck_a\)\nwatch_deck\("b", deck_b\)/);
   assert.match(script, /palazzo_request_id/);
   assert.match(script, /cover_url/);
   assert.match(

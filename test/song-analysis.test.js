@@ -258,14 +258,19 @@ test("the script applies song gain and fades on the song chain only", () => {
   });
   assert.ok(
     script.includes(`songs_queue = palazzo_song_queue(id="songs", timeout=29.)
-# Per-song loudness gain from the liq_amplify annotation; 1.0 when absent.
-songs_normalized = amplify(override="liq_amplify", 1., songs_queue)
-song_volume = interactive.float("palazzo_song_volume", 1.)
-songs_controlled = amplify(override=null, song_volume, songs_normalized)
-# Per-song fades from liq_fade_in / liq_fade_out; no fade when absent.
-songs_faded = fade.in(duration=0., track_sensitive=true, songs_controlled)
-songs_faded = fade.out(duration=0., track_sensitive=true, songs_faded)
-songs_rms = rms(id="songs_rms", duration=0.1, songs_faded)
+`) &&
+      script.includes(`def song_deck(queue, is_open) =
+  gated = switch(track_sensitive=false, [({is_open()}, queue)])
+  normalized = amplify(override="liq_amplify", 1., gated)
+  controlled = amplify(override=null, song_volume, normalized)
+  faded = fade.in(duration=0., track_sensitive=true, controlled)
+  fade.out(duration=0., track_sensitive=true, faded)
+end
+deck_a = song_deck(songs_queue, deck_a_open)
+deck_b = song_deck(next_queue, deck_b_open)
+`) &&
+      script.includes(`songs_mixed = add(normalize=false, [deck_a, deck_b])
+songs_rms = rms(id="songs_rms", duration=0.1, songs_mixed)
 `),
   );
   // Intros, instants, filler and mixer are as before.
