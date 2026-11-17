@@ -311,6 +311,9 @@ next_generation = ref(0)
 # A deck still playing (the tail of an overlapped song) cannot take the next song yet: the resolved
 # request waits here until that deck's song ends.
 next_pending = ref([])
+# Request id of the announced song once pushed to its deck. A queue prefetches what is pushed to it, so a
+# withdrawal must remove it by id: removing what queue() lists would miss a prefetched request.
+next_rid = ref(-1)
 deck_a_playing = ref(false)
 deck_b_playing = ref(false)
 # Armed 0.1 s before an overlap starts, so the limiter is already engaged on its first frame.
@@ -377,7 +380,9 @@ def drop_next(reason) =
       if next_state() == "queued" then
         q = deck_queue(next_deck())
         list.iter(fun (r) -> q.remove(r), q.queue())
+        if next_rid() >= 0 then q.remove_request_id(next_rid()) end
       end
+      next_rid := -1
       list.iter(fun (r) -> request.destroy(r), next_pending())
       next_pending := []
       # Never close a deck that is still playing: that would pause its song mid-way.
@@ -441,7 +446,7 @@ def watch_deck(name, deck) =
         if next_state() == "waiting_deck" and next_deck() == name then
           begin
             set_deck_open(name, false)
-            list.iter(fun (r) -> deck_queue(name).push(r), next_pending())
+            list.iter(fun (r) -> begin next_rid := request.id(r) deck_queue(name).push(r) end, next_pending())
             next_pending := []
             next_state := "queued"
           end
@@ -523,6 +528,7 @@ server.register(
                   else
                     begin
                       set_deck_open(target, false)
+                      next_rid := request.id(r)
                       q.push(r)
                       next_state := "queued"
                     end

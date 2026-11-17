@@ -443,6 +443,9 @@ test("the script keeps deck a as the songs queue and gates the announced song on
   // A deck still finishing an overlapped song is never closed; the next song waits for it.
   assert.match(script, /if not deck_playing\(target\) then set_deck_open\(target, false\) end/);
   assert.match(script, /next_state\(\) == "waiting_deck" and next_deck\(\) == name/);
+  // A withdrawal removes the announced request by id, so a request the deck already prefetched goes too.
+  assert.match(script, /if next_rid\(\) >= 0 then q\.remove_request_id\(next_rid\(\)\) end/);
+  assert.match(script, /next_rid := request\.id\(r\)\n                      q\.push\(r\)/);
   // An announced song whose gate opened is on air: never withdrawn, and a late replacement is refused.
   assert.match(script, /if next_state\(\) == "none" or next_state\(\) == "started" then\n    false/);
   assert.match(script, /elsif next_state\(\) == "started" then\n        # The previous announcement has already started under the current song: too late to replace it\.\n        "too_late"/);
