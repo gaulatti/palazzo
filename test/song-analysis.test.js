@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+const { identityRelay } = require('./media-relay-stub');
 const test = require("node:test");
 const { mkdtemp } = require("node:fs/promises");
 const { tmpdir } = require("node:os");
@@ -23,7 +24,7 @@ async function harness(settings = {}) {
   const service = new StreamService(config, telemetry, {
     initialize: async () => undefined,
     activePlaylistPath: "/run/palazzo/active-filler.m3u",
-  });
+  }, identityRelay);
   const commands = [];
   service.telnet = {
     send: async (command) => {

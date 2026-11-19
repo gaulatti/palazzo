@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const { identityRelay } = require('./media-relay-stub');
 const test = require('node:test');
 const fs = require('node:fs/promises');
 const { tmpdir } = require('node:os');
@@ -14,7 +15,7 @@ async function fixture(t, config = {}) {
   const values = { PLAYOUT_COMMAND_JOURNAL_PATH: join(root, 'journal.json'), ...config };
   const cfg = { get: (key) => values[key] };
   const telemetry = new PlaybackTelemetryService(cfg);
-  const service = new StreamService(cfg, telemetry, {});
+  const service = new StreamService(cfg, telemetry, {}, identityRelay);
   const commands = [];
   service.telnet = { send: async (command) => { commands.push(command); return 'ok'; }, close: () => {} };
   t.after(async () => { service.onModuleDestroy(); await fs.rm(root, { recursive: true, force: true }); });

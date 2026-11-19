@@ -1,6 +1,7 @@
 // gaulatti/palazzo#40: the next-song announcement (PUT/DELETE v1/programs/:programId/playback/next),
 // the two song decks it drives, and its telemetry. Contract: palazzo-40.contract.md.
 const assert = require("node:assert/strict");
+const { identityRelay } = require('./media-relay-stub');
 const test = require("node:test");
 const { mkdtemp } = require("node:fs/promises");
 const { tmpdir } = require("node:os");
@@ -62,7 +63,7 @@ async function harness(settings = {}, answers = {}) {
   const service = new StreamService(config, telemetry, {
     initialize: async () => undefined,
     activePlaylistPath: "/run/palazzo/active-filler.m3u",
-  });
+  }, identityRelay);
   const commands = [];
   service.telnet = {
     send: async (command) => {

@@ -42,6 +42,10 @@ test('metrics render on the private control interface', async () => {
           return 'palazzo_build_info 1\n';
         },
       },
+      renderMediaMetrics: () => {
+        calls.push(['media-render']);
+        return 'palazzo_media_fetch_total{path="song",result="ok"} 0\n';
+      },
     },
     {},
     {
@@ -57,9 +61,9 @@ test('metrics render on the private control interface', async () => {
 
   assert.equal(
     response,
-    'palazzo_build_info 1\npalazzo_filler_prepared_versions 1\n',
+    'palazzo_build_info 1\npalazzo_filler_prepared_versions 1\npalazzo_media_fetch_total{path="song",result="ok"} 0\n',
   );
-  assert.deepEqual(calls, [['render'], ['filler-render']]);
+  assert.deepEqual(calls, [['render'], ['filler-render'], ['media-render']]);
 });
 
 test('program playback enforces program scope and preserves the idempotency key', async () => {

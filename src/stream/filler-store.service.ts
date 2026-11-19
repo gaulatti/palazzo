@@ -3,6 +3,7 @@ import {
   ConflictException,
   Injectable,
 } from '@nestjs/common';
+import { MediaRelay } from './media-relay';
 import { ConfigService } from '@nestjs/config';
 import { createHash, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
@@ -88,7 +89,10 @@ export class FillerStoreService {
   private unknownModes = 0;
   private preparedVersionCount = 0;
 
-  constructor(config: ConfigService) {
+  constructor(
+    config: ConfigService,
+    private readonly relay: MediaRelay,
+  ) {
     const programId = config.get<string>('PROGRAM_ID')?.trim() ?? '';
     if (!programId) throw new Error('PROGRAM_ID is required');
     const root =
@@ -394,7 +398,10 @@ export class FillerStoreService {
   private async download(url: string, destination: string): Promise<void> {
     let response: Response;
     try {
-      response = await fetch(url, { signal: AbortSignal.timeout(30_000) });
+      // gaulatti/palazzo#45: read through the loopback media relay, which
+      // connects only to a checked public address.
+      const target = await this.relay.issue(url, 'filler', 30_000);
+      response = await fetch(target, { signal: AbortSignal.timeout(30_000) });
     } catch {
       throw new Error('download-failed');
     }

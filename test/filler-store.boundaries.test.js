@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const { identityRelay } = require('./media-relay-stub');
 const test = require('node:test');
 const fs = require('node:fs/promises');
 const { createHash } = require('node:crypto');
@@ -11,7 +12,7 @@ async function fixture(t) {
   const root = await fs.mkdtemp(join(tmpdir(), 'palazzo-filler-boundary-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const config = { PROGRAM_ID: 'station', RADIO_FILLER_STORE_DIR: root, RADIO_FILLER_PLAYLIST_PATH: join(root, 'active.m3u') };
-  const store = new FillerStoreService({ get: (key) => config[key] });
+  const store = new FillerStoreService({ get: (key) => config[key] }, identityRelay);
   await store.initialize();
   return { store, root, config, programRoot: join(root, createHash('sha256').update('station').digest('hex')) };
 }
@@ -20,9 +21,9 @@ const request = { commandId: 'prepare', assets: [asset] };
 
 test('filler configuration validates required scope and bitrate and keeps documented defaults', () => {
   for (const config of [{}, { PROGRAM_ID: ' ' }, ...['0', '321', '1.5', 'bad'].map((BITRATE) => ({ PROGRAM_ID: 'station', BITRATE }))]) {
-    assert.throws(() => new FillerStoreService({ get: (key) => config[key] }), /PROGRAM_ID|BITRATE/);
+    assert.throws(() => new FillerStoreService({ get: (key) => config[key] }, identityRelay), /PROGRAM_ID|BITRATE/);
   }
-  const store = new FillerStoreService({ get: (key) => key === 'PROGRAM_ID' ? 'station' : undefined });
+  const store = new FillerStoreService({ get: (key) => key === 'PROGRAM_ID' ? 'station' : undefined }, identityRelay);
   assert.equal(store.activePlaylistPath, '/run/palazzo/active-filler.m3u');
   assert.deepEqual(store.getRuntimeState(), { activeVersion: null, activeReady: false, preparationStatus: 'idle', preparedVersions: 0 });
 });
@@ -102,7 +103,7 @@ test('invalid manifests and missing/corrupt artifacts never activate or survive 
   await fs.writeFile(join(dir, 'track.mp3'), 'tampered');
   assert.equal((await store.getPublicState('v1')).ready, false);
   await fs.writeFile(join(programRoot, '.active-version'), 'v1\n');
-  const restarted = new FillerStoreService({ get: (key) => config[key] });
+  const restarted = new FillerStoreService({ get: (key) => config[key] }, identityRelay);
   await restarted.initialize();
   assert.equal(restarted.getActiveVersion(), null);
   await assert.rejects(fs.stat(join(programRoot, '.active-version')), { code: 'ENOENT' });

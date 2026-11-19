@@ -20,6 +20,9 @@ Palazzo retains at most `PREFLIGHT_CACHE_ENTRIES` readiness records. Repeating
 the same playback ID and URL before expiry reuses the probe. A changed URL or
 expired state is probed again. Media bytes are not cached.
 
+Probes read the media through the loopback media relay ([media-reads.md](media-reads.md));
+a URL the relay refuses is reported as `unreachable`.
+
 ## Quarantine and fallback
 
 Reason classes are closed: `outside_lookahead`, `missing`, `unreachable`,

@@ -35,3 +35,19 @@ test('deployment verifies a candidate and retains a rollback container', async (
   assert.match(workflow, /palazzo-fillers:\/var\/lib\/palazzo\/fillers/);
   assert.doesNotMatch(workflow, /\/opt\/palazzo/);
 });
+
+// gaulatti/palazzo#45: the media relay binds 127.0.0.1 on an ephemeral port
+// inside the container. No deploy path or Compose file publishes anything but
+// the API and Icecast, and production never sets the local-only allowance.
+test('deployments publish only the API and Icecast and never allow private media', async () => {
+  const files = ['.github/workflows/deploy.yml', 'deploy/cumulus.sh', 'compose.yml'];
+  for (const file of files) {
+    const text = await readFile(join(process.cwd(), file), 'utf8');
+    const published = [...text.matchAll(/(?:^|\s)(?:-p|--publish)\s+((?:\d+\.){3}\d+:.+?)\s*\\?$|^\s*-\s*"(127\.0\.0\.1:[^"]+)"/gm)].map((m) => (m[1] ?? m[2]).trim());
+    assert.ok(published.length >= 2, `${file} lists its published ports`);
+    for (const port of published) {
+      assert.match(port, /:(3100|8000|\$\{ICECAST_PORT:-8000\})$/, `${file} publishes ${port}`);
+    }
+    if (file !== 'compose.yml') assert.doesNotMatch(text, /PALAZZO_MEDIA_ALLOW_PRIVATE/, file);
+  }
+});

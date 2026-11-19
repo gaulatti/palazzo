@@ -12,6 +12,8 @@ services:
       - LIFECYCLE_TRANSITION_TIMEOUT_MS=${LIFECYCLE_TRANSITION_TIMEOUT_MS:-5000}
       - ICECAST_PORT=${ICECAST_PORT:-8000}
       - ICECAST_SOURCE_PASSWORD=${ICECAST_SOURCE_PASSWORD:-palazzo-source}
+      # Local stacks serve media from private addresses; refused in production.
+      - PALAZZO_MEDIA_ALLOW_PRIVATE=${PALAZZO_MEDIA_ALLOW_PRIVATE:-true}
     ports:
       - "127.0.0.1:${PALAZZO_PORT:-3100}:3100"
       - "127.0.0.1:${ICECAST_PORT:-8000}:${ICECAST_PORT:-8000}"

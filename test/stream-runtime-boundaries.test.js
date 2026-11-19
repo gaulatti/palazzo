@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const { identityRelay } = require('./media-relay-stub');
 const test = require('node:test');
 const cp = require('node:child_process');
 const fs = require('node:fs/promises');
@@ -14,7 +15,7 @@ async function fixture(t, values = {}, pipes = true) {
   const config = { get: (key) => ({ PLAYOUT_COMMAND_JOURNAL_PATH: join(root, 'commands.json'), PLAYBACK_EVENT_SEQUENCE_PATH: join(root, 'events.json'), ...values })[key] };
   const telemetry = new PlaybackTelemetryService(config);
   const filler = { initialize: async () => {}, activePlaylistPath: '/fixture/active.m3u', getRuntimeState: () => ({ activeVersion: null }) };
-  const service = new StreamService(config, telemetry, filler);
+  const service = new StreamService(config, telemetry, filler, identityRelay);
   service.logger = { log() {}, debug() {}, error() {}, warn() {} };
   const commands = [];
   service.telnet = {
@@ -120,7 +121,7 @@ test('failed script validation never spawns an unchecked long-lived engine', asy
 test('the service reconnect observer publishes its real bounded dependency metric', async () => {
   const config = { get: () => undefined };
   const telemetry = new PlaybackTelemetryService(config);
-  const service = new StreamService(config, telemetry, {});
+  const service = new StreamService(config, telemetry, {}, identityRelay);
   service.telnet.options.onReconnect();
   assert.match(await telemetry.renderMetrics(), /operation="telnet_connect"\} 1/);
   service.onModuleDestroy();

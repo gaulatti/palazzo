@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const { identityRelay } = require('../media-relay-stub');
 const { execFile } = require('node:child_process');
 const { createHash } = require('node:crypto');
 const { mkdtemp, readFile, rm, writeFile } = require('node:fs/promises');
@@ -30,7 +31,7 @@ async function fixture() {
     RADIO_FILLER_PLAYLIST_PATH: join(root, 'run', 'active.m3u'),
     BITRATE: '128',
   };
-  const store = new FillerStoreService({ get: (key) => config[key] });
+  const store = new FillerStoreService({ get: (key) => config[key] }, identityRelay);
   await store.initialize();
   const asset = async (name, id) => {
     const body = await readFile(join(assets, name));
@@ -55,7 +56,7 @@ test('prepares ordered local audio, binds it immutably, and restores it after re
     await assert.rejects(context.store.activate('other-version'));
 
     const config = { PROGRAM_ID: 'program-one', RADIO_FILLER_STORE_DIR: join(context.root, 'store'), RADIO_FILLER_PLAYLIST_PATH: join(context.root, 'run', 'active.m3u'), BITRATE: '128' };
-    const restarted = new FillerStoreService({ get: (key) => config[key] });
+    const restarted = new FillerStoreService({ get: (key) => config[key] }, identityRelay);
     await restarted.initialize();
     assert.equal(restarted.getActiveVersion(), 'version-one');
     assert.match(restarted.renderMetrics(), /palazzo_filler_active 1/);

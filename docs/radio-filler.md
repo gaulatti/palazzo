@@ -55,7 +55,9 @@ manifest, deterministic playlist, and normalized 44.1 kHz stereo MP3 artifacts
 at the configured broadcast bitrate. Signed URLs and credentials are never
 persisted or returned.
 
-Palazzo bounds each download at 512 MiB, verifies the source SHA-256, decodes
+Palazzo downloads each source through the loopback media relay
+([media-reads.md](media-reads.md)), which bounds it at 200 MiB (the store's own
+bound is 512 MiB), verifies the source SHA-256, decodes
 and normalizes it with ffmpeg, then validates codec, sample rate, channels, and
 duration with ffprobe. The version directory is replaced atomically only after
 every asset succeeds. Failure therefore preserves all known-good versions.

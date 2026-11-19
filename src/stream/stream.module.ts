@@ -7,6 +7,7 @@ import { ProgramMonitorService } from './program-monitor.service';
 import { PlaybackTelemetryService } from './playback-telemetry.service';
 import { BroadcastLifecycleService } from './broadcast-lifecycle.service';
 import { FillerStoreService } from './filler-store.service';
+import { MediaRelay } from './media-relay';
 
 /**
  * Stream feature module.
@@ -19,6 +20,7 @@ import { FillerStoreService } from './filler-store.service';
 @Module({
   controllers: [StreamController],
   providers: [
+    MediaRelay,
     PlaybackTelemetryService,
     FillerStoreService,
     StreamService,

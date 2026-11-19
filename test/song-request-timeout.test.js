@@ -1,6 +1,7 @@
 // gaulatti/palazzo#42: an explicit song request time limit, and one counted
 // failure event for each song request Liquidsoap cannot resolve.
 const assert = require("node:assert/strict");
+const { identityRelay } = require('./media-relay-stub');
 const test = require("node:test");
 const { mkdtemp } = require("node:fs/promises");
 const { tmpdir } = require("node:os");
@@ -37,7 +38,7 @@ function limitFor(settings) {
   const service = new StreamService(
     config,
     new PlaybackTelemetryService(config),
-    { initialize: async () => undefined, activePlaylistPath: "/run/palazzo/active-filler.m3u" },
+    { initialize: async () => undefined, activePlaylistPath: "/run/palazzo/active-filler.m3u" }, identityRelay
   );
   return service.songRequestTimeoutMs;
 }
@@ -103,7 +104,7 @@ for (const [configured, expected] of [[undefined, "29."], ["60000", "60."]]) {
     const service = new StreamService(config, new PlaybackTelemetryService(config), {
       initialize: async () => undefined,
       activePlaylistPath: "/fixture/active.m3u",
-    });
+    }, identityRelay);
     let script;
     const mkdir = fs.mkdir;
     const writeFile = fs.writeFile;
@@ -259,7 +260,7 @@ test("a song whose probe fails is reported once, by preflight, never as a reques
   const service = new StreamService(config, telemetry, {
     initialize: async () => undefined,
     activePlaylistPath: "/run/palazzo/active-filler.m3u",
-  });
+  }, identityRelay);
   const commands = [];
   service.telnet = { send: async (command) => { commands.push(command); return "ok"; }, close: () => undefined };
   service.playoutJournalPath = join(await mkdtemp(join(tmpdir(), "palazzo-42-")), "commands.json");

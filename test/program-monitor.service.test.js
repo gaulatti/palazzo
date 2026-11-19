@@ -141,7 +141,10 @@ test("the Fastify route returns live audio and exposes the actual collector afte
       { provide: ProgramMonitorService, useValue: service },
       {
         provide: StreamService,
-        useValue: { telemetry: { renderMetrics: async () => "" } },
+        useValue: {
+          telemetry: { renderMetrics: async () => "" },
+          renderMediaMetrics: () => "",
+        },
       },
       {
         provide: BroadcastLifecycleService,

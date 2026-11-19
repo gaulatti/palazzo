@@ -1,6 +1,7 @@
 // gaulatti/palazzo#41: every track's end is reported with the reason it
 // actually ended, bound to its own playback, never to one shared slot.
 const assert = require('node:assert/strict');
+const { identityRelay } = require('./media-relay-stub');
 const test = require('node:test');
 const fs = require('node:fs/promises');
 const { tmpdir } = require('node:os');
@@ -23,7 +24,7 @@ async function station(t) {
   };
   const config = { get: (key) => values[key] };
   const telemetry = new PlaybackTelemetryService(config);
-  const service = new StreamService(config, telemetry, { getRuntimeState: () => ({}) });
+  const service = new StreamService(config, telemetry, { getRuntimeState: () => ({}) }, identityRelay);
   service.logger = { log() {}, debug() {} };
   service.assetProbe = async () => mediaProbeResult();
   const liq = { decks: { a: null, b: null }, pushed: null, journal: [], sequence: 0, ingested: 0, failOn: null };

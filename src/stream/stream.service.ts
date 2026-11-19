@@ -15,6 +15,7 @@ import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { buildLiquidsoapScript } from "./liquidsoap-script";
 import { FillerStoreService } from "./filler-store.service";
+import { MediaRelay, type MediaFetchPath } from "./media-relay";
 import { LiquidsoapTelnetClient } from "./liquidsoap-telnet.client";
 import {
   LiquidsoapLifecycleEvent,
@@ -215,6 +216,9 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
       [
         "-v",
         "error",
+        // The only address ffprobe opens is Palazzo's loopback media relay.
+        "-protocol_whitelist",
+        "http,tcp",
         "-read_intervals",
         "%+#1",
         "-select_streams",
@@ -242,6 +246,7 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
     private readonly config: ConfigService,
     readonly telemetry: PlaybackTelemetryService,
     private readonly fillerStore: FillerStoreService,
+    private readonly relay: MediaRelay,
   ) {
     this.telnet = new LiquidsoapTelnetClient({
       port: this.telnetPort,
@@ -507,7 +512,12 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
   async playSong(data: SongPayload): Promise<PlaybackRequestAccepted> {
     return this.serializeOperation(async () => {
       const playbackRequestId = data.playbackRequestId?.trim() || randomUUID();
-      const uri = this.annotatedUri(data.url, {
+      const target = await this.relayed(
+        data.url,
+        "song",
+        this.songRequestTimeoutMs,
+      );
+      const uri = this.annotatedUri(target, {
         palazzo_request_id: playbackRequestId,
         palazzo_url: data.url,
         title: data.title ?? "",
@@ -640,7 +650,9 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
         }
       }
 
-      const songUri = this.annotatedUri(song.url, {
+      const songUri = this.annotatedUri(
+        await this.relayed(song.url, "song", this.songRequestTimeoutMs),
+        {
         palazzo_request_id: song.playbackId,
         palazzo_playback_id: song.playbackId,
         palazzo_program_id: programId,
@@ -649,8 +661,16 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
         artist: data.song.artist ?? "",
         cover_url: data.song.coverUrl ?? "",
         ...this.songAnalysisAnnotations(song.playbackId, data.song),
-      });
+        },
+      );
       const playableIntro = intro?.url ? intro : undefined;
+      const introTarget = playableIntro
+        ? await this.relayed(
+            playableIntro.url,
+            "intro",
+            this.songRequestTimeoutMs,
+          )
+        : "";
       const record: PlayoutCommandRecord = {
         digest,
         fingerprint,
@@ -679,7 +699,7 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
           `palazzo.arm_intro ${playableIntro ? song.playbackId : ""}`,
         );
         if (playableIntro) {
-          const introUri = this.annotatedUri(playableIntro.url, {
+          const introUri = this.annotatedUri(introTarget, {
             palazzo_request_id: song.playbackId,
             palazzo_playback_id: playableIntro.playbackId,
             palazzo_parent_playback_id: song.playbackId,
@@ -735,7 +755,12 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
   async playInstant(data: InstantPayload): Promise<PlaybackRequestAccepted> {
     return this.serializeOperation(async () => {
       const playbackRequestId = data.playbackRequestId?.trim() || randomUUID();
-      const uri = this.annotatedUri(data.url, {
+      const target = await this.relayed(
+        data.url,
+        "instant",
+        this.songRequestTimeoutMs,
+      );
+      const uri = this.annotatedUri(target, {
         palazzo_request_id: playbackRequestId,
         palazzo_url: data.url,
         palazzo_kind: "instant",
@@ -1019,7 +1044,9 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
-      const media = await this.assetProbe(asset.url);
+      const media = await this.assetProbe(
+        await this.relayed(asset.url, "preflight", this.preflightTimeoutMs),
+      );
       validateProbeResult(media);
       const completedAt = this.now();
       checkedAt = new Date(completedAt).toISOString();
@@ -1179,22 +1206,25 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
           ),
         );
       }
-      const uri = this.annotatedUri(song.url, {
-        palazzo_request_id: song.playbackId,
-        palazzo_playback_id: song.playbackId,
-        palazzo_program_id: programId,
-        palazzo_url: song.url,
-        title: data.song.title ?? "",
-        artist: data.song.artist ?? "",
-        cover_url: data.song.coverUrl ?? "",
-        ...annotations,
-      });
       const remaining = current.remainingSeconds;
       const limit = Math.min(
         this.nextResolveMaxSeconds,
         remaining !== null && remaining > 0
           ? remaining
           : this.nextResolveMaxSeconds,
+      );
+      const uri = this.annotatedUri(
+        await this.relayed(song.url, "next", limit * 1000),
+        {
+          palazzo_request_id: song.playbackId,
+          palazzo_playback_id: song.playbackId,
+          palazzo_program_id: programId,
+          palazzo_url: song.url,
+          title: data.song.title ?? "",
+          artist: data.song.artist ?? "",
+          cover_url: data.song.coverUrl ?? "",
+          ...annotations,
+        },
       );
       this.decksUsed = true;
       const answer = await this.telnet.send(
@@ -1294,13 +1324,36 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
     return annotations;
   }
 
-  private annotatedUri(url: string, metadata: Record<string, string>): string {
+  /** palazzo_media_fetch_total, from the media relay. */
+  renderMediaMetrics(): string {
+    return this.relay.renderMetrics();
+  }
+
+  /**
+   * The loopback relay address that reads `url` under the outbound check
+   * (gaulatti/palazzo#45). Liquidsoap and ffprobe are only ever given this;
+   * the original URL stays in the palazzo_url annotation for events.
+   */
+  private relayed(
+    url: string,
+    path: MediaFetchPath,
+    ttlMs: number,
+  ): Promise<string> {
+    this.assertMediaUrl(url);
+    return this.relay.issue(url.trim(), path, ttlMs);
+  }
+
+  private assertMediaUrl(url: string): void {
     if (typeof url !== "string" || !url.trim()) {
       throw new BadRequestException("url must be a non-empty string");
     }
     if (/\r|\n/.test(url)) {
       throw new BadRequestException("Audio URL cannot contain newlines");
     }
+  }
+
+  private annotatedUri(url: string, metadata: Record<string, string>): string {
+    this.assertMediaUrl(url);
     const annotations = Object.entries(metadata)
       .map(([key, value]) => `${key}="${this.annotationValue(value)}"`)
       .join(",");
