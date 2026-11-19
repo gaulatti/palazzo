@@ -51,3 +51,11 @@ test('deployments publish only the API and Icecast and never allow private media
     if (file !== 'compose.yml') assert.doesNotMatch(text, /PALAZZO_MEDIA_ALLOW_PRIVATE/, file);
   }
 });
+
+test('the deploy log marks when the old instance stops and the new one is ready', async () => {
+  const script = await readFile(join(process.cwd(), 'deploy', 'cumulus.sh'), 'utf8');
+  const stop = script.indexOf('echo "PALAZZO_STOP');
+  const ready = script.indexOf('echo "PALAZZO_READY');
+  assert.ok(stop !== -1 && stop < script.indexOf('docker stop palazzo'));
+  assert.ok(ready > script.indexOf('deployed_ready=true'));
+});

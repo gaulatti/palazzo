@@ -174,7 +174,12 @@ test('a token expires at its deadline and the map stays bounded', async (t) => {
   const url = await relay.issue('https://media.example.test/a.mp3', 'song', 1_000);
   advance(1_000);
   assert.equal((await get(url)).status, 404);
-  const first = await relay.issue('https://media.example.test/a.mp3', 'song', 60_000);
+  // A song token survives any number of preflight tokens issued after it.
+  const song = await relay.issue('https://media.example.test/a.mp3', 'song', 60_000);
+  for (let i = 0; i < MAX_RELAY_TOKENS * 2; i += 1) await relay.issue('https://media.example.test/a.mp3', 'preflight', 60_000);
+  assert.equal((await get(song)).status, 200);
+  // Only playout tokens alone evict their oldest.
+  const first = await relay.issue('https://media.example.test/a.mp3', 'next', 60_000);
   for (let i = 0; i < MAX_RELAY_TOKENS; i += 1) await relay.issue('https://media.example.test/a.mp3', 'song', 60_000);
   assert.equal((await get(first)).status, 404);
 });

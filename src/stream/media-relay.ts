@@ -241,8 +241,18 @@ export class MediaRelay implements OnModuleInit, OnModuleDestroy {
       refused,
     });
     while (this.tokens.size > MAX_RELAY_TOKENS) {
+      // Look-ahead preflight tokens go first, oldest first, so a burst of
+      // preflight batches never evicts a song, intro, instant, announced or
+      // filler read. Only a map of playout tokens alone drops its oldest.
+      let victim: string | undefined;
+      for (const [key, entry] of this.tokens) {
+        if (entry.path === "preflight") {
+          victim = key;
+          break;
+        }
+      }
       // An over-capacity map is nonempty; its first key is the oldest token.
-      this.tokens.delete(this.tokens.keys().next().value!);
+      this.tokens.delete(victim ?? this.tokens.keys().next().value!);
     }
     return `http://127.0.0.1:${this.port}/m/${token}${extension ? `.${extension[1].toLowerCase()}` : ""}`;
   }
