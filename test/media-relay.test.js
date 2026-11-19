@@ -286,11 +286,30 @@ test('stops reading the origin when the tool hangs up, and an origin that breaks
     res.once('close', originClosed);
   });
   const { relay } = await relayFor(t, port, { 'media.example.test': [PUBLIC] });
-  const url = await relay.issue('https://media.example.test/a.mp3', 'song', 5_000);
+  // ffprobe hangs up once it has read what it needs: a successful read, and
+  // the deadline must not later count it as a timeout.
+  const url = await relay.issue('https://media.example.test/a.mp3', 'preflight', 200);
   await new Promise((resolve) => {
     const req = http.get(url, (res) => res.once('data', () => { req.destroy(); resolve(); }));
   });
   await gone;
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const afterHangUp = await counts(relay);
+  assert.equal(afterHangUp.get('palazzo_media_fetch_total{path="preflight",result="ok"}'), 1);
+  assert.equal(afterHangUp.get('palazzo_media_fetch_total{path="preflight",result="timeout"}'), 0);
+  // A hang-up before any answer is a failed read.
+  let release;
+  const { port: slowPort } = await origin(t, (_req, res) => { release = () => res.destroy(); });
+  const { relay: slow } = await relayFor(t, slowPort, { 'media.example.test': [PUBLIC] });
+  const early = await slow.issue('https://media.example.test/a.mp3', 'preflight', 5_000);
+  await new Promise((resolve) => {
+    const req = http.get(early, () => undefined);
+    req.on('error', () => undefined);
+    setTimeout(() => { req.destroy(); resolve(); }, 50);
+  });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  release?.();
+  assert.equal((await counts(slow)).get('palazzo_media_fetch_total{path="preflight",result="network"}'), 1);
   await get(await relay.issue('https://media.example.test/breaks', 'song', 5_000)).catch(() => undefined);
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal((await counts(relay)).get('palazzo_media_fetch_total{path="song",result="network"}'), 1);
@@ -310,14 +329,20 @@ test('no token, URL or host appears in the metrics, and every series starts at z
   }
 });
 
-test('the private-address allowance is test-only: refused in production, effective elsewhere', async (t) => {
-  assert.throws(
-    () => new MediaRelay({ get: (key) => ({ PALAZZO_MEDIA_ALLOW_PRIVATE: 'true', NODE_ENV: 'production' })[key] }),
-    /refused in production/,
-  );
-  assert.equal(new MediaRelay({ get: (key) => ({ NODE_ENV: 'production' })[key] }).allowPrivate, false);
+test('the private-address allowance fails closed: honoured only when NODE_ENV says development or test', async (t) => {
+  for (const environment of [undefined, '', 'production', 'staging', ' Production ', 'dev']) {
+    assert.throws(
+      () => new MediaRelay({ get: (key) => ({ PALAZZO_MEDIA_ALLOW_PRIVATE: 'true', NODE_ENV: environment })[key] }),
+      /refused unless NODE_ENV is development or test/,
+      String(environment),
+    );
+  }
+  for (const environment of [undefined, 'production']) {
+    assert.equal(new MediaRelay({ get: (key) => ({ NODE_ENV: environment })[key] }).allowPrivate, false);
+  }
+  assert.equal(new MediaRelay({ get: (key) => ({ PALAZZO_MEDIA_ALLOW_PRIVATE: 'true', NODE_ENV: 'development' })[key] }).allowPrivate, true);
   const { port } = await origin(t, audio());
-  const { relay } = await relayFor(t, port, { 'media.local': ['10.0.0.5'] }, { PALAZZO_MEDIA_ALLOW_PRIVATE: 'true' });
+  const { relay } = await relayFor(t, port, { 'media.local': ['10.0.0.5'] }, { PALAZZO_MEDIA_ALLOW_PRIVATE: 'true', NODE_ENV: 'test' });
   assert.equal((await get(await relay.issue('http://media.local:8080/a.mp3', 'song', 5_000))).status, 200);
   assert.equal((await get(await relay.issue('http://127.0.0.1:8080/a.mp3', 'song', 5_000))).status, 200);
 });

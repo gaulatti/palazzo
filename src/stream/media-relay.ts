@@ -52,8 +52,13 @@ export const MAX_MEDIA_BYTES = 200 * 1024 * 1024;
 export const MEDIA_USER_AGENT = "palazzo-media-relay";
 /** Tokens held at once; the oldest is dropped beyond this. */
 export const MAX_RELAY_TOKENS = 512;
-/** Test-only: allow private media addresses (local stacks). Refused in production. */
+/** Test-only: allow private media addresses (local stacks). */
 export const ALLOW_PRIVATE_ENV = "PALAZZO_MEDIA_ALLOW_PRIVATE";
+/** The only NODE_ENV values under which the allowance is honoured. */
+export const LOCAL_ENVIRONMENTS: ReadonlySet<string> = new Set([
+  "development",
+  "test",
+]);
 
 export class MediaRefusal extends Error {
   constructor(readonly reason: MediaRefusalReason) {
@@ -166,9 +171,12 @@ export class MediaRelay implements OnModuleInit, OnModuleDestroy {
   constructor(config: ConfigService) {
     this.allowPrivate =
       config.get<string>(ALLOW_PRIVATE_ENV)?.trim() === "true";
-    if (this.allowPrivate && config.get<string>("NODE_ENV") === "production") {
+    // Fail closed: the allowance is honoured only in an environment that says
+    // it is local or test. Unset, production or anything else refuses to start.
+    const environment = config.get<string>("NODE_ENV")?.trim() ?? "";
+    if (this.allowPrivate && !LOCAL_ENVIRONMENTS.has(environment)) {
       throw new Error(
-        `${ALLOW_PRIVATE_ENV} is a local test setting and is refused in production`,
+        `${ALLOW_PRIVATE_ENV} is a local test setting; it is refused unless NODE_ENV is development or test`,
       );
     }
   }
@@ -355,11 +363,14 @@ export class MediaRelay implements OnModuleInit, OnModuleDestroy {
     };
     const timer = setTimeout(() => finish("timeout"), remainingMs);
     response.once("close", () => {
+      if (response.writableFinished) return;
       // The tool hung up before the answer finished: stop reading the origin.
-      if (!response.writableFinished) {
-        upstream?.destroy();
-        outgoing?.destroy();
-      }
+      // ffprobe does this once it has read what it needs, so a hang-up after
+      // a valid answer started is a successful read; one before any answer is
+      // a failed one. Either way the deadline timer stops here.
+      upstream?.destroy();
+      outgoing?.destroy();
+      finish(response.headersSent ? "ok" : "network");
     });
     try {
       const url = parseMediaUrl(entry.url);

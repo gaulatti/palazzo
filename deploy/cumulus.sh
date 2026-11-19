@@ -42,6 +42,7 @@ docker run -d --name palazzo-candidate \
   --log-driver=local \
   --log-opt max-size=10m \
   --log-opt max-file=3 \
+  -e NODE_ENV=production \
   -e PALAZZO_PORT=3100 \
   -e PALAZZO_INSTANCE_ID=palazzo-production-candidate \
   -e PROGRAM_ID="$program_id" \
@@ -80,6 +81,7 @@ if ! docker run -d --name palazzo \
   --volume palazzo-fillers:/var/lib/palazzo/fillers \
   -p 127.0.0.1:3100:3100 \
   -p 127.0.0.1:8000:8000 \
+  -e NODE_ENV=production \
   -e PALAZZO_PORT=3100 \
   -e PALAZZO_INSTANCE_ID=palazzo-production \
   -e PROGRAM_ID="$program_id" \

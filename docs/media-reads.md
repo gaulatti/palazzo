@@ -46,6 +46,12 @@ supplied from a host Palazzo will not read.
 ## Local stacks
 
 Local Compose serves media from private addresses, so `compose.yml` sets
-`PALAZZO_MEDIA_ALLOW_PRIVATE=true`, which lets the relay read them. Palazzo
-refuses to start with that setting when `NODE_ENV=production`, and no deploy
-path sets it.
+`PALAZZO_MEDIA_ALLOW_PRIVATE=true` with `NODE_ENV=development`, which lets the
+relay read them; the runtime station check does the same with `NODE_ENV=test`.
+The allowance fails closed: Palazzo refuses to start with it unless `NODE_ENV`
+is exactly `development` or `test`, so an unset, `production` or unknown value
+refuses. The Cumulus deploy runs Palazzo with `NODE_ENV=production`, and no
+deploy path sets the allowance.
+
+A tool that hangs up once it has read what it needs (ffprobe does) is counted
+as `ok`; a hang-up before any answer is `network`.

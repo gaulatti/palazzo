@@ -21,6 +21,7 @@ docker run --rm --detach --name "$station_container" \
   --env ICECAST_PORT=8000 \
   --env ICECAST_SOURCE_PASSWORD=ci-password \
   --env PALAZZO_MEDIA_ALLOW_PRIVATE=true \
+  --env NODE_ENV=test \
   "$station_image"
 station_api="http://$(docker port "$station_container" 3100/tcp)"
 docker inspect "$station_container" \

@@ -59,3 +59,21 @@ test('the deploy log marks when the old instance stops and the new one is ready'
   assert.ok(stop !== -1 && stop < script.indexOf('docker stop palazzo'));
   assert.ok(ready > script.indexOf('deployed_ready=true'));
 });
+
+// The Cumulus path is the live deploy (vars.ON_PREMISES is false). The
+// on-premises branch of deploy.yml gains the same line in a workflow change;
+// without it the allowance still fails closed there, since NODE_ENV is unset.
+test('every Cumulus production and candidate container runs with NODE_ENV=production', async () => {
+  for (const file of ['deploy/cumulus.sh']) {
+    const text = await readFile(join(process.cwd(), file), 'utf8');
+    const runs = text.split(/docker run -d --name /).slice(1);
+    assert.ok(runs.length >= 2, `${file} starts a candidate and a production container`);
+    for (const run of runs) {
+      // One docker run command ends at its image argument.
+      const end = run.search(/"\$(image|IMAGE)"/);
+      assert.notEqual(end, -1, `${file}: a docker run without its image`);
+      const command = run.slice(0, end);
+      assert.match(command, /NODE_ENV=production/, `${file}: ${run.split(/\s/)[0]}`);
+    }
+  }
+});
