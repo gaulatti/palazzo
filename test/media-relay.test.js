@@ -11,7 +11,7 @@ const {
   isAudioMediaType,
 } = require('../dist/stream/media-relay');
 const { unsafeAddress } = require('../dist/stream/address-policy');
-const { parseExposition } = require('./prometheus-exposition');
+const { assertBoundedLabels, parseExposition } = require('./prometheus-exposition');
 
 // gaulatti/palazzo#45: media is read only through the loopback relay, which
 // checks the address on every request and connects to the checked address.
@@ -78,8 +78,8 @@ function get(url, options = {}) {
 
 async function counts(relay) {
   const text = relay.renderMetrics();
-  // The exposition must parse as Prometheus text; values are read by series.
-  parseExposition(text);
+  // The exposition must parse as Prometheus text with bounded labels.
+  assertBoundedLabels(parseExposition(text));
   const map = new Map();
   for (const line of text.split('\n')) {
     const match = /^(\S+) (\d+)$/.exec(line);

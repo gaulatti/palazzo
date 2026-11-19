@@ -91,6 +91,17 @@ function assertBoundedLabels(samples) {
       "reused",
       "started",
       "success",
+      "ok",
+      "invalid_url",
+      "scheme",
+      "address",
+      "dns",
+      "redirect",
+      "http_status",
+      "content_type",
+      "too_large",
+      "timeout",
+      "network",
     ]),
     reason: new Set([
       "asset_unavailable",
@@ -116,6 +127,8 @@ function assertBoundedLabels(samples) {
       "unsupported_media",
       "withdrawn",
     ]),
+    // palazzo_media_fetch_total (gaulatti/palazzo#45)
+    path: new Set(["song", "intro", "instant", "next", "preflight", "filler"]),
     route: new Set([
       "/metrics",
       "/proxy-audio",

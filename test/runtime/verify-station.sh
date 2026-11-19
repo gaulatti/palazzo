@@ -20,6 +20,7 @@ docker run --rm --detach --name "$station_container" \
   --env PROGRAM_ID=program-ci \
   --env ICECAST_PORT=8000 \
   --env ICECAST_SOURCE_PASSWORD=ci-password \
+  --env PALAZZO_MEDIA_ALLOW_PRIVATE=true \
   "$station_image"
 station_api="http://$(docker port "$station_container" 3100/tcp)"
 docker inspect "$station_container" \
@@ -48,7 +49,7 @@ grep --ignore-case '^access-control-allow-headers:.*X-Command-Sequence' "${stati
 docker exec "$station_container" ffmpeg -hide_banner -loglevel error -y \
   -f lavfi -i sine=frequency=440:sample_rate=44100 -t 2 /tmp/filler.wav
 docker exec --detach "$station_container" node -e \
-  'const fs=require("node:fs");const media="/tmp/filler.wav";require("node:http").createServer((_,response)=>{response.setHeader("Content-Length",fs.statSync(media).size);response.setHeader("Accept-Ranges","bytes");fs.createReadStream(media).pipe(response)}).listen(3200,"127.0.0.1")'
+  'const fs=require("node:fs");const media="/tmp/filler.wav";require("node:http").createServer((_,response)=>{response.setHeader("Content-Type","audio/wav");response.setHeader("Content-Length",fs.statSync(media).size);response.setHeader("Accept-Ranges","bytes");fs.createReadStream(media).pipe(response)}).listen(3200,"127.0.0.1")'
 for attempt in $(seq 1 20); do
   if docker exec "$station_container" node -e \
     'fetch("http://127.0.0.1:3200/filler.wav").then(response=>{if(!response.ok)process.exit(1)}).catch(()=>process.exit(1))'; then
