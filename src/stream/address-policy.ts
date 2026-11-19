@@ -8,22 +8,22 @@
  * NAT64 IPv6. Anything that does not parse as an address is unsafe.
  */
 export function unsafeAddress(address: string): boolean {
-  if (address.includes(':')) {
+  if (address.includes(":")) {
     const normalized = address.toLowerCase();
-    if (normalized.startsWith('64:ff9b::')) {
-      const tail = normalized.slice('64:ff9b::'.length);
-      if (tail.includes('.')) return unsafeAddress(tail);
-      const words = tail.split(':').map((word) => Number.parseInt(word, 16));
+    if (normalized.startsWith("64:ff9b::")) {
+      const tail = normalized.slice("64:ff9b::".length);
+      if (tail.includes(".")) return unsafeAddress(tail);
+      const words = tail.split(":").map((word) => Number.parseInt(word, 16));
       if (words.length === 2 && words.every((word) => Number.isInteger(word)))
         return unsafeAddress(
           `${words[0] >> 8}.${words[0] & 255}.${words[1] >> 8}.${words[1] & 255}`,
         );
       return true;
     }
-    if (normalized.startsWith('::ffff:')) {
-      const tail = normalized.slice('::ffff:'.length);
-      if (tail.includes('.')) return unsafeAddress(tail);
-      const words = tail.split(':').map((word) => Number.parseInt(word, 16));
+    if (normalized.startsWith("::ffff:")) {
+      const tail = normalized.slice("::ffff:".length);
+      if (tail.includes(".")) return unsafeAddress(tail);
+      const words = tail.split(":").map((word) => Number.parseInt(word, 16));
       if (words.length === 2 && words.every((word) => Number.isInteger(word))) {
         return unsafeAddress(
           `${words[0] >> 8}.${words[0] & 255}.${words[1] >> 8}.${words[1] & 255}`,
@@ -32,20 +32,20 @@ export function unsafeAddress(address: string): boolean {
       return true;
     }
     return (
-      normalized === '::' ||
-      normalized === '::1' ||
+      normalized === "::" ||
+      normalized === "::1" ||
       /^fe[89ab]/.test(normalized) ||
       /^::[\d.]+$/.test(normalized) ||
-      normalized.startsWith('fc') ||
-      normalized.startsWith('fd') ||
-      normalized.startsWith('ff') ||
-      normalized.startsWith('100:') ||
-      normalized.startsWith('2001:db8:') ||
-      normalized.startsWith('2001:10:') ||
-      normalized.startsWith('2001:2:')
+      normalized.startsWith("fc") ||
+      normalized.startsWith("fd") ||
+      normalized.startsWith("ff") ||
+      normalized.startsWith("100:") ||
+      normalized.startsWith("2001:db8:") ||
+      normalized.startsWith("2001:10:") ||
+      normalized.startsWith("2001:2:")
     );
   }
-  const parts = address.split('.').map(Number);
+  const parts = address.split(".").map(Number);
   if (
     parts.length !== 4 ||
     parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)

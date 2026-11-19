@@ -19,7 +19,8 @@ annotation, so playback events report it unchanged.
 - On every request it checks the URL again: `http` or `https`, no user name or
   password, and every address the host resolves to must be public (the same
   address rule as Alcantara's outbound requests). The connection goes to the
-  checked address only, keeping the host name for TLS and the `Host` header.
+  checked address only, keeping the host name for TLS and the `Host` header,
+  and sends `User-Agent: palazzo-media-relay` and no other header.
 - It follows no redirect, accepts only an audio type (`audio/*`,
   `application/ogg`) or a generic binary type (`application/octet-stream`,
   `binary/octet-stream`), stops at 200 MiB (Alcantara's upload limit; this also

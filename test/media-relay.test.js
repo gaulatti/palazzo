@@ -117,7 +117,8 @@ test('relays an audio answer from the checked address, keeping SNI and Host and 
   assert.equal(response.headers['set-cookie'], undefined);
   assert.deepEqual(pinned, [{ scheme: 'https:', address: PUBLIC, servername: 'media.example.test', host: 'media.example.test' }]);
   assert.equal(requests[0].url, '/songs/a.MP3?sig=abc');
-  assert.deepEqual(Object.keys(requests[0].headers).sort(), ['connection', 'host']);
+  assert.deepEqual(Object.keys(requests[0].headers).sort(), ['connection', 'host', 'user-agent']);
+  assert.equal(requests[0].headers['user-agent'], 'palazzo-media-relay');
   assert.equal((await counts(relay)).get('palazzo_media_fetch_total{path="song",result="ok"}'), 1);
 });
 
