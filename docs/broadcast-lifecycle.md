@@ -26,15 +26,21 @@ same command returns the current lifecycle state without repeating effects;
 reusing it for another action or sequence returns 409. Raw keys
 tokens are never returned, retained, or logged.
 
-Start refuses a missing or unprepared filler version. The bound version is
-immutable until Stop; filler edits prepare a later version without changing the
-active session. See [radio-filler.md](radio-filler.md).
+Start refuses a missing or unprepared filler version. A version bound by Start
+is immutable until Stop; filler edits prepare a later version without changing
+the active session. A filler Palazzo bound by itself (`filler.boundBy`
+`fallback`) is replaced by an explicit Start. See [radio-filler.md](radio-filler.md).
 
 A program-scoped song command also reconciles
 `reconciliation-required` to Ready when Liquidsoap, control telemetry, and
 Icecast are all healthy. This preserves direct Alcantara playout across a
-Palazzo process restart without weakening the dependency checks. Explicit
-Start remains the path that binds an immutable prepared filler version.
+Palazzo process restart without weakening the dependency checks. When no filler
+is bound at that moment, Palazzo starts binding the newest valid prepared
+version itself (`filler.boundBy` `fallback`, not awaited by the song command)
+so a failed song is covered rather than silent (gaulatti/palazzo#46). Boot
+alone binds nothing without a persisted Start selection, so a stopped radio
+sounds the same after a restart. Explicit Start remains the path that binds an
+immutable prepared filler version and replaces such a fallback.
 
 ## State and failure semantics
 
@@ -82,10 +88,16 @@ container for rollback until those checks pass in production.
 
 1. After process restart, confirm the lifecycle says
    `reconciliation-required` even if transport is healthy.
-2. Issue Start with a new key/sequence and confirm Ready with an empty queue.
-3. Play a song and instant, then issue Stop; confirm both queues are flushed,
+2. Read `filler` in the state: `boundBy` is `restored` after boot with a
+   persisted Start selection, `fallback` once a playback command has bound a
+   valid prepared version, and `null` otherwise.
+   `palazzo_filler_unbound_while_running` is 0 while the state is
+   `reconciliation-required` (after boot, before any playback command), so
+   `palazzo_filler_active` is the signal in that window.
+3. Issue Start with a new key/sequence and confirm Ready with an empty queue.
+4. Play a song and instant, then issue Stop; confirm both queues are flushed,
    playback is idle, and `dependencies.icecast` stays true.
-4. Interrupt Telnet or Liquidsoap and confirm actual state becomes degraded,
+5. Interrupt Telnet or Liquidsoap and confirm actual state becomes degraded,
    not stopped.
-5. Disconnect Icecast and confirm the Icecast dependency becomes false while
+6. Disconnect Icecast and confirm the Icecast dependency becomes false while
    requested automation state remains unchanged.

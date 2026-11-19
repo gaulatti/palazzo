@@ -44,7 +44,9 @@ based on command, mode, seed, asset IDs, and checksums—not URL query data.
 
 Start requires `X-Filler-Version`. An unprepared version returns 409. An active
 session cannot switch versions; a new prepared version remains pending until
-Stop and the next Start. Stop clears program queues and the filler binding but
+Stop and the next Start. The one exception is a filler Palazzo bound by itself
+(`boundBy` `fallback`, below): an explicit Start always replaces it, so
+Alcantara's Start with `X-Filler-Version` is unaffected by the fallback. Stop clears program queues and the filler binding but
 does not stop Liquidsoap or disconnect Icecast.
 
 ## Storage and validation
@@ -67,17 +69,54 @@ Liquidsoap watches `/run/palazzo/active-filler.m3u`. Its program source prefers
 the live song queue and immediately falls back to the prepared local playlist;
 the final `mksafe` boundary preserves the 24x7 Icecast transport when no version
 is active. On restart Palazzo checks every artifact checksum and reconstructs
-the watched playlist from the persisted active selection. Invalid selections
-fail closed to safe silence. Cleanup retains the three newest valid versions
+the watched playlist from the persisted active selection. Cleanup retains the three newest valid versions
 and never removes the active version.
+
+## Binding after a restart (gaulatti/palazzo#46)
+
+The persisted selection (`.active-version`, in the `palazzo-fillers` volume) is
+written atomically, and only by a Start. Without one (a Start never sent for
+the program, or removed by Stop or by a failed Start), the radio used to run
+with an empty filler playlist, so a failed song fell to silence. Palazzo now
+binds a filler by itself, by this rule:
+
+1. At boot, the version a Start last activated is restored while its selection
+   is present and still validates (`boundBy` `restored`). With no selection, or
+   an invalid one, nothing is bound at boot: a deliberately stopped radio
+   sounds the same after a restart.
+2. When a program-scoped playback command moves the state to `running` with
+   nothing bound, Palazzo binds the most recently prepared version whose
+   manifest and artifact checksums validate (order by manifest `preparedAt`,
+   then the greater name; a manifest without `preparedAt` is the oldest;
+   `boundBy` `fallback`). A fallback is never written as a selection.
+3. If none validates, nothing is bound, a log line says so, and
+   `palazzo_filler_unbound_while_running` reports it. A version that fails
+   validation is never bound.
+
+While still running and unbound, later playback commands retry once a validated
+version has been prepared. The bind is started and not awaited, so a song
+start never waits on it; a failure is logged and never fails the command.
+Alcantara's Start (`X-Filler-Version`) replaces a fallback-bound filler and
+then stays immutable as above; a `restored` or `activate` binding is not
+replaced.
+
+`GET /v1/programs/{programId}/automation` reports it as the additive
+`filler.boundBy` (`activate`, `restored`, `fallback`, or `null` when unbound);
+`filler.activeVersion` and `filler.ready` are unchanged. Boot logs
+`filler bound at boot: version=... boundBy=restored` or `no filler bound at boot`,
+and a fallback binding logs `filler bound: version=... boundBy=fallback`.
 
 ## Operations
 
 `GET /metrics` adds bounded gauges for active/preparing state and a preparation
 counter labeled only by `success`, `failure`, or `conflict`, plus the unlabeled
-`palazzo_filler_unknown_modes_total`, exposed from 0. Version, program, mode,
+`palazzo_filler_unknown_modes_total`, exposed from 0. The unlabeled gauge
+`palazzo_filler_unbound_while_running` is 1 while automation is requested
+`running` and no validated filler is bound (a failed song is then silence), and
+0 otherwise, including before any playback command or Start has set the
+requested state after a boot. `palazzo_filler_active` is unchanged. Version, program, mode,
 asset, URL, seed, and failure text never become labels. Lifecycle state exposes
-only the active version and whether a validated binding exists. Preparation
+only the active version, whether a validated binding exists, and how it was bound. Preparation
 failure reasons are limited to checksum, download, size, decode, validation, or
 generic preparation categories.
 

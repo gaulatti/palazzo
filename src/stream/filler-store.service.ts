@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
 } from '@nestjs/common';
 import { MediaRelay } from './media-relay';
 import { ConfigService } from '@nestjs/config';
@@ -25,6 +26,13 @@ const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const MAX_ASSETS = 100;
 const MAX_ASSET_BYTES = 512 * 1024 * 1024;
+
+/**
+ * How the bound filler came to be bound (gaulatti/palazzo#46): `activate` by
+ * an automation Start, `restored` from the persisted selection at boot, or
+ * `fallback` by Palazzo itself from the newest valid prepared version.
+ */
+export type FillerBoundBy = 'activate' | 'restored' | 'fallback';
 
 interface AssetRequest {
   id: string;
@@ -82,7 +90,10 @@ export class FillerStoreService {
   readonly activePlaylistPath: string;
   private readonly programRoot: string;
   private readonly bitrateKbps: number;
+  private readonly logger = new Logger(FillerStoreService.name);
   private activeVersion: string | null = null;
+  private boundBy: FillerBoundBy | null = null;
+  private bindingTail: Promise<void> = Promise.resolve();
   private preparationState: FillerPublicState | null = null;
   private operationTail: Promise<void> = Promise.resolve();
   private outcomes = { success: 0, failure: 0, conflict: 0 };
@@ -119,12 +130,21 @@ export class FillerStoreService {
     if (selected && (await this.readValidManifest(selected))) {
       await this.writeActivePlaylist(selected);
       this.activeVersion = selected;
+      this.boundBy = 'restored';
     } else {
       await this.atomicWrite(this.activePlaylistPath, '');
       this.activeVersion = null;
+      this.boundBy = null;
       if (selected) await rm(this.activeSelectionPath(), { force: true });
+      // Nothing is bound without a selection: a program that was stopped
+      // stays silent after a restart. A playback command binds a fallback.
     }
     this.preparedVersionCount = await this.countPreparedVersions();
+    this.logger.log(
+      this.activeVersion
+        ? `filler bound at boot: version=${this.activeVersion} boundBy=${this.boundBy} preparedVersions=${this.preparedVersionCount}`
+        : `no filler bound at boot: preparedVersions=${this.preparedVersionCount}`,
+    );
   }
 
   prepare(version: string, request: FillerPreparationRequest, key?: string) {
@@ -145,26 +165,62 @@ export class FillerStoreService {
       : { version, status: 'unprepared', ready: false };
   }
 
-  async activate(version: string): Promise<void> {
-    const manifest = await this.readValidManifest(version);
-    if (!manifest)
-      throw new ConflictException('requested filler version is not prepared');
-    if (this.activeVersion && this.activeVersion !== version) {
-      throw new ConflictException('active session filler version is immutable');
-    }
-    await this.writeActivePlaylist(version);
-    await this.atomicWrite(this.activeSelectionPath(), `${version}\n`);
-    this.activeVersion = version;
+  activate(version: string): Promise<void> {
+    return this.serializeBinding(async () => {
+      const manifest = await this.readValidManifest(version);
+      if (!manifest)
+        throw new ConflictException('requested filler version is not prepared');
+      // Only a version Palazzo bound by itself may be replaced; one bound by
+      // a Start, or restored from one, stays immutable for the session.
+      if (
+        this.activeVersion &&
+        this.activeVersion !== version &&
+        this.boundBy !== 'fallback'
+      ) {
+        throw new ConflictException(
+          'active session filler version is immutable',
+        );
+      }
+      await this.writeActivePlaylist(version);
+      await this.atomicWrite(this.activeSelectionPath(), `${version}\n`);
+      this.activeVersion = version;
+      this.boundBy = 'activate';
+    });
   }
 
-  async deactivate(): Promise<void> {
-    await this.atomicWrite(this.activePlaylistPath, '');
-    await rm(this.activeSelectionPath(), { force: true });
-    this.activeVersion = null;
+  /**
+   * Binds the newest valid prepared version when nothing is bound
+   * (gaulatti/palazzo#46). Returns whether it bound one; a version that fails
+   * validation is never bound.
+   */
+  bindFallback(): Promise<boolean> {
+    return this.serializeBinding(async () => {
+      if (this.activeVersion) return false;
+      const bound = await this.bindNewestValid();
+      if (bound) {
+        this.logger.log(
+          `filler bound: version=${this.activeVersion} boundBy=fallback`,
+        );
+      }
+      return bound;
+    });
+  }
+
+  deactivate(): Promise<void> {
+    return this.serializeBinding(async () => {
+      await this.atomicWrite(this.activePlaylistPath, '');
+      await rm(this.activeSelectionPath(), { force: true });
+      this.activeVersion = null;
+      this.boundBy = null;
+    });
   }
 
   getActiveVersion(): string | null {
     return this.activeVersion;
+  }
+
+  getBoundBy(): FillerBoundBy | null {
+    return this.boundBy;
   }
 
   getRuntimeState() {
@@ -596,17 +652,52 @@ export class FillerStoreService {
   }
 
   private async countPreparedVersions(): Promise<number> {
+    return (await this.listValidVersions()).length;
+  }
+
+  /** Every prepared version whose manifest and checksums validate. */
+  private async listValidVersions(): Promise<
+    Array<{ name: string; preparedAt: number }>
+  > {
     const entries = await readdir(this.programRoot, { withFileTypes: true });
-    let count = 0;
+    const versions: Array<{ name: string; preparedAt: number }> = [];
     for (const entry of entries) {
-      if (
-        entry.isDirectory() &&
-        !entry.name.startsWith('.') &&
-        (await this.readValidManifest(entry.name))
-      )
-        count += 1;
+      if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+      // A directory that is not a version identifier is not a version.
+      const manifest = await this.readValidManifest(entry.name).catch(
+        () => null,
+      );
+      if (!manifest) continue;
+      const preparedAt = Date.parse(manifest.preparedAt);
+      versions.push({
+        name: entry.name,
+        preparedAt: Number.isNaN(preparedAt) ? 0 : preparedAt,
+      });
     }
-    return count;
+    return versions;
+  }
+
+  /** Newest by manifest `preparedAt`; the greater name wins a tie. */
+  private async bindNewestValid(): Promise<boolean> {
+    const [newest] = (await this.listValidVersions()).sort(
+      (left, right) =>
+        right.preparedAt - left.preparedAt ||
+        right.name.localeCompare(left.name),
+    );
+    if (!newest) return false;
+    await this.writeActivePlaylist(newest.name);
+    this.activeVersion = newest.name;
+    this.boundBy = 'fallback';
+    return true;
+  }
+
+  private serializeBinding<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.bindingTail.then(operation, operation);
+    this.bindingTail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
   }
   private versionDirectory(version: string): string {
     return join(this.programRoot, version);

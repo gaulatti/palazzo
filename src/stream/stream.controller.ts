@@ -236,7 +236,7 @@ export class StreamController {
   @Header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
   async getMetrics(): Promise<string> {
     const telemetry = await this.streamService.telemetry.renderMetrics();
-    return `${telemetry}${this.fillerStore.renderMetrics()}${this.streamService.renderMediaMetrics()}${await this.monitor.renderMetrics()}`;
+    return `${telemetry}${this.fillerStore.renderMetrics()}${this.lifecycle.renderMetrics()}${this.streamService.renderMediaMetrics()}${await this.monitor.renderMetrics()}`;
   }
 
   /**

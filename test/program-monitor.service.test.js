@@ -152,6 +152,7 @@ test("the Fastify route returns live audio and exposes the actual collector afte
           assertProgram: (id) => {
             if (id !== "station") throw new NotFoundException();
           },
+          renderMetrics: () => "",
         },
       },
       { provide: FillerStoreService, useValue: { renderMetrics: () => "" } },

@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
@@ -37,6 +38,7 @@ export class BroadcastLifecycleService {
   readonly programId: string;
   readonly instanceId: string;
 
+  private readonly logger = new Logger(BroadcastLifecycleService.name);
   private readonly transitionTimeoutMs: number;
   private readonly bootedAt = new Date().toISOString();
   private requestedState: RequestedState = 'reconciliation-required';
@@ -108,6 +110,7 @@ export class BroadcastLifecycleService {
       filler: {
         activeVersion: this.fillerStore.getActiveVersion(),
         ready: this.fillerStore.getActiveVersion() !== null,
+        boundBy: this.fillerStore.getBoundBy(),
       },
       transition: this.transition,
       dependencies,
@@ -132,26 +135,72 @@ export class BroadcastLifecycleService {
     }
   }
 
+  /**
+   * Prometheus gauge for gaulatti/palazzo#46: automation is requested running
+   * while no validated filler is bound, so a failed song is silence.
+   */
+  renderMetrics(): string {
+    const unbound =
+      this.requestedState === 'running' &&
+      this.fillerStore.getActiveVersion() === null;
+    return [
+      '# HELP palazzo_filler_unbound_while_running Whether automation is requested running while no validated filler version is bound.',
+      '# TYPE palazzo_filler_unbound_while_running gauge',
+      `palazzo_filler_unbound_while_running ${unbound ? 1 : 0}`,
+      '',
+    ].join('\n');
+  }
+
   startFromPlaybackCommand(): void {
     const state = this.getState();
-    if (state.readiness) return;
-    if (
-      !this.transition &&
-      state.dependencies.liquidsoap &&
-      state.dependencies.control &&
-      state.dependencies.icecast
-    ) {
+    const reconciled = !state.readiness;
+    if (reconciled) {
+      if (
+        this.transition ||
+        !state.dependencies.liquidsoap ||
+        !state.dependencies.control ||
+        !state.dependencies.icecast
+      ) {
+        throw new ConflictException({
+          error: 'automation is not ready',
+          lifecycle: state,
+        });
+      }
       const stamp = new Date().toISOString();
       this.requestedState = 'running';
       this.actualState = 'ready';
       this.timestamps.requestedAt = stamp;
       this.timestamps.readyAt = stamp;
+    }
+    this.bindMissingFiller(reconciled);
+  }
+
+  /**
+   * A running program with no filler bound falls to silence when a song
+   * fails. Bind the newest valid prepared version when the command flipped
+   * the state to running, and again on later commands once a version has been
+   * prepared. The bind is started and not awaited: a song start never waits
+   * on it, and its failure is logged, never thrown.
+   */
+  private bindMissingFiller(reconciled: boolean): void {
+    if (this.fillerStore.getActiveVersion() !== null) return;
+    if (this.fillerStore.getRuntimeState().preparedVersions === 0) {
+      if (reconciled)
+        this.logger.warn('automation running with no prepared filler to bind');
       return;
     }
-    throw new ConflictException({
-      error: 'automation is not ready',
-      lifecycle: state,
-    });
+    this.fillerStore.bindFallback().then(
+      (bound) => {
+        if (!bound && reconciled) {
+          this.logger.warn(
+            'automation running with no valid prepared filler to bind',
+          );
+        }
+      },
+      () => {
+        this.logger.error('binding a prepared filler failed; none is bound');
+      },
+    );
   }
 
   start(
@@ -219,7 +268,8 @@ export class BroadcastLifecycleService {
       if (
         this.requestedState === 'running' &&
         activeVersion &&
-        activeVersion !== fillerVersion
+        activeVersion !== fillerVersion &&
+        this.fillerStore.getBoundBy() !== 'fallback'
       ) {
         throw new ConflictException(
           'active session filler version is immutable',

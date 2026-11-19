@@ -31,7 +31,7 @@ function playback(overrides = {}) {
   };
 }
 
-function fixture({ state = playback(), clearError, clearState, config = {} } = {}) {
+function fixture({ state = playback(), clearError, clearState, config = {}, prepared = 0, bind } = {}) {
   let currentState = state;
   let clears = 0;
   const telemetry = { getState: () => currentState };
@@ -43,14 +43,26 @@ function fixture({ state = playback(), clearError, clearState, config = {} } = {
     },
   };
   let activeVersion = null;
+  let boundBy = null;
+  let binds = 0;
   const filler = {
     getActiveVersion: () => activeVersion,
+    getBoundBy: () => boundBy,
+    getRuntimeState: () => ({ preparedVersions: prepared }),
+    bindFallback: async () => {
+      binds += 1;
+      if (bind && !(await bind())) return false;
+      activeVersion = 'fallback-v';
+      boundBy = 'fallback';
+      return true;
+    },
     activate: async (version) => {
       if (version === 'missing') throw new Error('unprepared');
-      if (activeVersion && activeVersion !== version) throw new Error('immutable');
+      if (activeVersion && activeVersion !== version && boundBy !== 'fallback') throw new Error('immutable');
       activeVersion = version;
+      boundBy = 'activate';
     },
-    deactivate: async () => { activeVersion = null; },
+    deactivate: async () => { activeVersion = null; boundBy = null; },
   };
   const values = {
     PROGRAM_ID: 'program-one',
@@ -68,6 +80,9 @@ function fixture({ state = playback(), clearError, clearState, config = {} } = {
     service,
     get clears() {
       return clears;
+    },
+    get binds() {
+      return binds;
     },
     setState: (next) => {
       currentState = next;
@@ -318,4 +333,76 @@ test('private control rejects the wrong single-program scope without credentials
     /program not found/,
   );
   service.assertProgram('program-one');
+});
+
+test('the state reports how the filler came to be bound and nothing when it is not', async () => {
+  const context = fixture({ prepared: 1 });
+  assert.deepEqual(context.service.getState().filler, { activeVersion: null, ready: false, boundBy: null });
+  context.service.startFromPlaybackCommand();
+  await new Promise(setImmediate);
+  assert.deepEqual(context.service.getState().filler, { activeVersion: 'fallback-v', ready: true, boundBy: 'fallback' });
+  await context.service.start('start', '1', 'filler-v1');
+  assert.deepEqual(context.service.getState().filler, { activeVersion: 'filler-v1', ready: true, boundBy: 'activate' });
+});
+
+test('a playback command binds a missing filler once and an explicit Start replaces a fallback but not a Start', async () => {
+  const context = fixture({ prepared: 1 });
+  context.service.startFromPlaybackCommand();
+  await new Promise(setImmediate);
+  context.service.startFromPlaybackCommand();
+  assert.equal(context.binds, 1);
+  const replaced = await context.service.start('start', '1', 'filler-v1');
+  assert.equal(replaced.filler.activeVersion, 'filler-v1');
+  await assert.rejects(context.service.start('again', '2', 'filler-v2'), (error) => error.getStatus() === 409);
+  assert.equal(context.service.getState().filler.boundBy, 'activate');
+});
+
+test('a playback command never waits on or fails with the filler binding', async (t) => {
+  const none = fixture({ prepared: 0 });
+  none.service.startFromPlaybackCommand();
+  assert.equal(none.binds, 0);
+  assert.equal(none.service.getState().filler.boundBy, null);
+  none.service.startFromPlaybackCommand();
+  const invalid = fixture({ prepared: 1, bind: async () => false });
+  invalid.service.startFromPlaybackCommand();
+  invalid.service.startFromPlaybackCommand();
+  await new Promise(setImmediate);
+  assert.equal(invalid.binds, 2);
+  assert.equal(invalid.service.getState().readiness, true);
+  const failing = fixture({ prepared: 1, bind: async () => { throw new Error('disk'); } });
+  const errors = [];
+  t.mock.method(failing.service.logger, 'error', (message) => errors.push(message));
+  failing.service.startFromPlaybackCommand();
+  await new Promise(setImmediate);
+  assert.deepEqual(errors, ['binding a prepared filler failed; none is bound']);
+  assert.equal(failing.service.getState().readiness, true);
+  assert.equal(failing.service.getState().filler.boundBy, null);
+});
+
+test('the unbound-while-running gauge reads 1 only while automation is requested running without a filler', async () => {
+  const gauge = (service) => service.renderMetrics().match(/^palazzo_filler_unbound_while_running (\d)$/m)[1];
+  const context = fixture({ prepared: 0 });
+  assert.equal(gauge(context.service), '0');
+  context.service.startFromPlaybackCommand();
+  assert.equal(gauge(context.service), '1');
+  await context.service.start('start', '1', 'filler-v1');
+  assert.equal(gauge(context.service), '0');
+  await context.service.stop('stop', '2');
+  assert.equal(gauge(context.service), '0');
+});
+
+test('a playback command returns before a slow bind finishes and the filler is bound once it is released', async () => {
+  let release;
+  const context = fixture({
+    prepared: 1,
+    bind: () => new Promise((resolve) => { release = resolve; }),
+  });
+  context.service.startFromPlaybackCommand();
+  // The command has returned and the program is running while the bind is pending.
+  assert.equal(context.service.getState().readiness, true);
+  assert.equal(context.service.getState().filler.boundBy, null);
+  assert.equal(context.binds, 1);
+  release(true);
+  await new Promise(setImmediate);
+  assert.deepEqual(context.service.getState().filler, { activeVersion: 'fallback-v', ready: true, boundBy: 'fallback' });
 });
