@@ -1,0 +1,58 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Latency listener</title>
+<!-- palazzo#47 proof harness, ear side. Open with ?src=<stream URL> for the
+     Icecast path, or ?livekit=<ws url>&token=<subscribe token> for the WebRTC
+     path (livekit-client loaded from the pinned CDN build). It detects each
+     click's onset in the decoded audio and records the wall-clock time it
+     reaches the speaker: detection time + AudioContext output latency.
+     Results: window.earLog (array of {onset, ear_ms}); press "Copy" to export. -->
+<button id="start">Start</button> <button id="copy">Copy</button>
+<pre id="out"></pre>
+<script type="module">
+const params = new URLSearchParams(location.search);
+const out = document.getElementById('out');
+window.earLog = [];
+const THRESHOLD = 0.5, REFRACTORY_MS = 1000;
+async function start() {
+  const ctx = new AudioContext({ latencyHint: 'interactive' });
+  let source;
+  if (params.get('src')) {
+    const audio = new Audio(params.get('src'));
+    audio.crossOrigin = 'anonymous';
+    await audio.play();
+    source = ctx.createMediaElementSource(audio);
+  } else {
+    const { Room, RoomEvent } = await import('https://cdn.jsdelivr.net/npm/livekit-client@2.21.0/+esm');
+    const room = new Room();
+    const track = await new Promise((resolve, reject) => {
+      room.on(RoomEvent.TrackSubscribed, (t) => t.kind === 'audio' && resolve(t));
+      room.connect(params.get('livekit'), params.get('token')).catch(reject);
+    });
+    source = ctx.createMediaStreamSource(new MediaStream([track.mediaStreamTrack]));
+  }
+  const node = ctx.createScriptProcessor(256, 1, 1);
+  let last = -Infinity, onset = 0;
+  node.onaudioprocess = (event) => {
+    const data = event.inputBuffer.getChannelData(0);
+    for (let i = 0; i < data.length; i += 1) {
+      if (Math.abs(data[i]) < THRESHOLD) continue;
+      const now = performance.timeOrigin + performance.now();
+      if (now - last < REFRACTORY_MS) break;
+      last = now;
+      // This buffer is played after the output path's latency.
+      const lag = ((ctx.outputLatency || 0) + ctx.baseLatency) * 1000;
+      const entry = { onset: onset++, ear_ms: now + lag - ((data.length - i) / ctx.sampleRate) * 1000 };
+      window.earLog.push(entry);
+      out.textContent += JSON.stringify(entry) + '\n';
+      break;
+    }
+  };
+  source.connect(node);
+  node.connect(ctx.destination);
+  source.connect(ctx.destination);
+}
+document.getElementById('start').onclick = start;
+document.getElementById('copy').onclick = () =>
+  navigator.clipboard.writeText(window.earLog.map((e) => JSON.stringify(e)).join('\n'));
+</script>
