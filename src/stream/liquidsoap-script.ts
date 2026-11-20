@@ -27,8 +27,8 @@ function liqSeconds(milliseconds: number): string {
 }
 
 /**
- * Seconds with no song, intro or instant on air before the filler takes the
- * air (gaulatti/alcantara#230); see the script comment for the measurements.
+ * Seconds with no song, intro, instant or live input on air before the filler
+ * takes the air (gaulatti/alcantara#230); see the script comment for the measurements.
  */
 export const FILLER_HOLDOFF_SECONDS = 15;
 
@@ -36,9 +36,11 @@ export function buildLiquidsoapScript(
   options: LiquidsoapScriptOptions,
 ): string {
   const rtmpInput = options.rtmpUrl
-    ? `live = mksafe(input.rtmp("${liqString(options.rtmpUrl)}"))`
+    ? `live_input = input.rtmp("${liqString(options.rtmpUrl)}")
+live = mksafe(live_input)`
     : "";
   const rtmpSource = options.rtmpUrl ? ", live" : "";
+  const livePresence = options.rtmpUrl ? " or source.is_ready(live_input)" : "";
 
   return `#!/usr/bin/liquidsoap
 
@@ -729,14 +731,17 @@ filler_playlist = playlist(
   "${liqString(options.fillerPlaylistPath)}"
 )
 # The filler takes the air only when the rotation is really absent: nothing
-# (song, intro or instant) for FILLER_HOLDOFF_SECONDS (gaulatti/alcantara#230).
+# (song, intro, instant or live input) for FILLER_HOLDOFF_SECONDS
+# (gaulatti/alcantara#230, gaulatti/palazzo#48).
 # Production since 2026-11-19: the longest instant was 11 s and the longest
 # time from an accepted song command to the song on air was 1 s; an ordinary
 # handoff passes about 4 s with nothing on. 15 s clears all of them with margin
 # and is still short of dead air. A song arriving takes the air at once.
+# A live RTMP input on the air counts too, so the filler does not play under it.
+${rtmpInput}
 filler_last_on_air = ref(time())
 thread.run(every=0.1, fun () ->
-  if source.is_ready(songs) or source.is_ready(intros) or source.is_ready(instants_requests) then
+  if source.is_ready(songs) or source.is_ready(intros) or source.is_ready(instants_requests)${livePresence} then
     filler_last_on_air := time()
   end
 )
@@ -762,7 +767,6 @@ songs_on_air = switch(
   [({source.is_ready(songs) or source.is_ready(intros)}, ducked_songs)]
 )
 program_audio = fallback(track_sensitive=false, [songs_on_air, filler])
-${rtmpInput}
 radio = add(normalize=false, [program_audio, instants${rtmpSource}])
 radio = mksafe(radio)
 main_volume = interactive.float("palazzo_main_volume", 1.)

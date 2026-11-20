@@ -125,6 +125,11 @@ intro and no instant has been on air for `FILLER_HOLDOFF_SECONDS` (15 s,
 - **Instants.** An instant counts as presence: it cuts the filler while it plays
   and restarts the hold-off, so a long instant with no song queued plays on its
   own, with no filler under it.
+- **Live input** (gaulatti/palazzo#48). When `RTMP_URL` is set, a live RTMP
+  feed on the air counts as presence too, so the filler never plays under a
+  live show. The raw `live_input` reports whether the feed is on; the mix hears
+  its `mksafe` wrapper (`live`), which is silent while the feed is off. With no
+  `RTMP_URL` the script has no live input and nothing else counts.
 - **Before this change** the filler could never take the air: `smooth_add`
   reports ready even with nothing on it, so the program fallback always chose
   the empty song chain, and a stalled rotation was silence (2026-11-20, about

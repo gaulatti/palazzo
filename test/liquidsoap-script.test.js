@@ -66,6 +66,12 @@ test("generates a private authoritative telemetry script", () => {
     /source\.is_ready\(songs\) or source\.is_ready\(intros\) or source\.is_ready\(instants_requests\)/,
   );
   assert.match(script, /time\(\) - filler_last_on_air\(\) > 15\./);
+  // gaulatti/palazzo#48: without a live input nothing else counts as on air.
+  assert.match(
+    script,
+    /source\.is_ready\(instants_requests\) then\n\s*filler_last_on_air := time\(\)/,
+  );
+  assert.doesNotMatch(script, /live_input|input\.rtmp/);
   assert.match(script, /interactive\.float\("palazzo_song_volume", 1\.\)/);
   assert.match(script, /interactive\.float\("palazzo_instant_volume", 1\.\)/);
   assert.match(script, /interactive\.float\("palazzo_main_volume", 1\.\)/);
@@ -91,5 +97,39 @@ test("escapes user-controlled Liquidsoap string values", () => {
   assert.match(
     script,
     /input\.rtmp\("rtmp:\/\/example\.test\/live\\"\\nnext"\)/,
+  );
+});
+
+test("counts a live RTMP input on the air as presence for the filler", () => {
+  const script = buildLiquidsoapScript({
+    telnetPort: 14000,
+    icecastPort: 8000,
+    icecastPassword: "fixture-value",
+    mount: "/stream",
+    streamName: "Fixture",
+    genre: "Various",
+    bitrate: 128,
+    fillerPlaylistPath: "/run/palazzo/active-filler.m3u",
+    rtmpUrl: "rtmp://example.test/live",
+  });
+
+  // gaulatti/palazzo#48: the raw input reports whether a live feed is on; the
+  // mksafe wrapper is what the mix hears.
+  assert.match(
+    script,
+    /live_input = input\.rtmp\("rtmp:\/\/example\.test\/live"\)\nlive = mksafe\(live_input\)/,
+  );
+  assert.match(
+    script,
+    /source\.is_ready\(instants_requests\) or source\.is_ready\(live_input\) then\n\s*filler_last_on_air := time\(\)/,
+  );
+  assert.ok(
+    script.indexOf("live_input = input.rtmp") <
+      script.indexOf("filler_last_on_air = ref"),
+    "the live input is defined before the presence thread reads it",
+  );
+  assert.match(
+    script,
+    /add\(normalize=false, \[program_audio, instants, live\]\)/,
   );
 });
