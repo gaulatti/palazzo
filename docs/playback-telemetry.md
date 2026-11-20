@@ -42,6 +42,13 @@ Alcantara's rotation watchdog (gaulatti/alcantara#230), checks `live.onAir`
 first. It comes from Liquidsoap's own readiness of the raw input
 (`source.is_ready(live_input)`), the same signal that holds the filler off.
 
+## Capabilities
+
+`capabilities` in the playback state lists what this Palazzo supports beyond
+the base contract. A client relies on a capability only when it is listed.
+Today the list is `["next.bumper"]`: a spot announced with the next song
+(gaulatti/palazzo#50, see [program-playout.md](program-playout.md)).
+
 ## Why a track ended
 
 Every song's end carries the reason it actually ended, bound to that playback
@@ -132,13 +139,15 @@ Useful metrics:
   next-song announcements by outcome; all series exposed from 0.
 - `palazzo_next_withdrawn_total{reason="replaced|withdrawn|flushed|not_ready"}`:
   announced songs dropped before they started; one per `playout.next_withdrawn`.
-- `palazzo_song_change_gap_seconds{handoff="announced|command"}` (histogram,
+- `palazzo_song_change_gap_seconds{handoff="announced|bumper|command"}` (histogram,
   buckets 0, 0.25, 0.5, 1, 1.5, 2, 3, 5, 8, 10, 15, 30 s): the silence at each
   song change (gaulatti/palazzo#49), from a song's `track_ended` to the next
   song's `track_started`, both on Liquidsoap's clock. `handoff` says how the
   next song came:
   - `announced`: the song accepted through `PUT /playback/next`, started from
     its deck;
+  - `bumper`: the announced song, started after the spot announced with it
+    (gaulatti/palazzo#50);
   - `command`: a song command after the end.
 
   A spot on air is not silence. The time an instant is on air between the end
@@ -156,6 +165,12 @@ Useful metrics:
   `sum(rate(palazzo_song_change_gap_seconds_count[1h])) -
   sum(rate(palazzo_song_change_gap_seconds_bucket{le="1.5"}[1h]))` is the rate
   of changes with an audible gap.
+- `palazzo_next_bumper_total{result="played|dropped_unresolved|dropped_late|dropped_failed"}`:
+  spots announced with the next song (gaulatti/palazzo#50, see
+  [program-playout.md](program-playout.md)) by what became of them. Every
+  series is exposed from 0. A song changed after an announced spot is labelled
+  `handoff="bumper"` in `palazzo_song_change_gap_seconds`, with the spot's time
+  subtracted.
 - `palazzo_song_change_last_gap_seconds`: the gap at the most recent song
   change. It is absent until the first change after a restart.
 

@@ -291,8 +291,12 @@ intros_faded = fade.out(
 )`),
   );
   assert.ok(
+    // gaulatti/palazzo#50: the queue is declared before the song decks, which push an announced spot to it.
     script.includes(`instants_requests = request.queue(id="instants")
-instants_queue = mksafe(instants_requests)
+`) &&
+      script.indexOf(`instants_requests = request.queue(id="instants")`) <
+        script.indexOf(`deck_a = song_deck(`) &&
+      script.includes(`instants_queue = mksafe(instants_requests)
 instant_volume = interactive.float("palazzo_instant_volume", 1.)
 instants_per_item = amplify(1., instants_queue)
 instants_controlled = amplify(override=null, instant_volume, instants_per_item)`),

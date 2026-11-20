@@ -102,6 +102,11 @@ function assertBoundedLabels(samples) {
       "too_large",
       "timeout",
       "network",
+      // palazzo_next_bumper_total (gaulatti/palazzo#50)
+      "played",
+      "dropped_unresolved",
+      "dropped_late",
+      "dropped_failed",
     ]),
     reason: new Set([
       "asset_unavailable",
@@ -128,7 +133,7 @@ function assertBoundedLabels(samples) {
       "withdrawn",
     ]),
     // palazzo_song_change_gap_seconds (gaulatti/palazzo#49)
-    handoff: new Set(["announced", "command"]),
+    handoff: new Set(["announced", "bumper", "command"]),
     // palazzo_media_fetch_total (gaulatti/palazzo#45)
     path: new Set(["song", "intro", "instant", "next", "preflight", "filler"]),
     route: new Set([

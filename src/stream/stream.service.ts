@@ -137,6 +137,12 @@ export interface ProgramSongPayload {
     fadeInSeconds?: number;
     fadeOutSeconds?: number;
   };
+  /**
+   * On PUT /playback/next only (gaulatti/palazzo#50, capability `next.bumper`): a spot played when the
+   * current song ends, before the announced song, which starts at the spot's own end. The spot belongs
+   * to the program the request names.
+   */
+  bumper?: { playbackId: string; url: string };
 }
 
 interface PlayoutCommandRecord {
@@ -1147,6 +1153,7 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
     return this.serializeOperation(async () => {
       const key = idempotencyKey?.trim() ?? "";
       let song: ProgramAsset;
+      let bumper: ProgramAsset | null = null;
       try {
         if (!key || key.length > 200) throw new Error("idempotency");
         if (!data || typeof data !== "object" || data.intro !== undefined) {
@@ -1154,6 +1161,19 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
         }
         song = this.validateProgramAsset(programId, data.song, "song");
         if (/\s/.test(song.playbackId)) throw new Error("playbackId");
+        if (data.bumper !== undefined) {
+          if (!data.bumper || typeof data.bumper !== "object") {
+            throw new Error("bumper");
+          }
+          bumper = this.validateProgramAsset(
+            programId,
+            { ...data.bumper, programId },
+            "bumper",
+          );
+          if (/\s/.test(bumper.playbackId) || bumper.playbackId === song.playbackId) {
+            throw new Error("bumper");
+          }
+        }
       } catch {
         this.telemetry.observeNextRequest("invalid");
         throw new BadRequestException({ ok: false, reason: "invalid" });
@@ -1237,6 +1257,30 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
           reason: "not_ready",
         });
       }
+      // The spot is resolved alongside the song. A spot Palazzo cannot hand to Liquidsoap never fails the
+      // announcement: the song plays at the end as without one, and the drop is counted.
+      let withBumper = false;
+      if (bumper) {
+        try {
+          const bumperUri = this.annotatedUri(
+            await this.relayed(bumper.url, "instant", limit * 1000),
+            {
+              palazzo_request_id: bumper.playbackId,
+              palazzo_url: bumper.url,
+              palazzo_kind: "instant",
+            },
+          );
+          withBumper =
+            (
+              await this.telnet.send(
+                `palazzo.prepare_bumper ${bumper.playbackId} ${decimal(limit)} ${bumperUri}`,
+              )
+            ).trim() === "ok";
+        } catch {
+          withBumper = false;
+        }
+        if (!withBumper) this.telemetry.observeBumper("dropped_unresolved");
+      }
       this.nextCommands.set(digest, {
         fingerprint,
         playbackRequestId: song.playbackId,
@@ -1246,7 +1290,7 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
         this.nextCommands.delete(oldest);
       }
       this.telemetry.observeNextRequest("queued");
-      this.telemetry.reportNextQueued(programId, song.playbackId);
+      this.telemetry.reportNextQueued(programId, song.playbackId, withBumper);
       return { ok: true, playbackRequestId: song.playbackId, state: "queued" };
     });
   }

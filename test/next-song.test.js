@@ -482,3 +482,66 @@ test("a song command after an announcement drops it from the gap metric's announ
   await service.stopSong();
   assert.equal(telemetry.announcedPlaybackId, null);
 });
+
+// gaulatti/palazzo#50: a spot announced with the next song.
+const SPOT = { playbackId: "spot-1", url: "https://example.test/spot.mp3" };
+const SPOT_URI =
+  'annotate:palazzo_request_id="spot-1",palazzo_url="https://example.test/spot.mp3",palazzo_kind="instant":https://example.test/spot.mp3';
+
+test("an announcement with a spot resolves the spot after the song, and the state advertises it", async () => {
+  const { service, telemetry, commands, onAir, announce } = await harness();
+  assert.deepEqual(service.telemetry.getState().capabilities, ["next.bumper"]);
+  onAir();
+  const response = await announce({}, "next-b", { bumper: SPOT });
+  assert.equal(response.state, "queued");
+  assert.deepEqual(commands, [
+    `palazzo.prepare_next song-b 120.5 0 ${B_URI}`,
+    `palazzo.prepare_bumper spot-1 120.5 ${SPOT_URI}`,
+  ]);
+  assert.equal(telemetry.announcedWithBumper, true);
+});
+
+test("a spot Liquidsoap will not take still announces the song, counted as dropped", async () => {
+  const { commands, telemetry, onAir, announce } = await harness({}, { "palazzo.prepare_bumper": "none" });
+  onAir();
+  const response = await announce({}, "next-b", { bumper: SPOT });
+  assert.equal(response.state, "queued");
+  assert.equal(commands.length, 2);
+  assert.equal(telemetry.announcedWithBumper, false);
+  const samples = parseExposition(await telemetry.renderMetrics());
+  assertBoundedLabels(samples);
+  assert.equal(
+    samples.find((s) => s.name === "palazzo_next_bumper_total" && s.labels.result === "dropped_unresolved").value,
+    1,
+  );
+});
+
+test("a spot whose send fails still announces the song, counted as dropped", async () => {
+  const { service, telemetry, commands, onAir, announce } = await harness();
+  const send = service.telnet.send;
+  service.telnet.send = async (command) => {
+    if (command.startsWith("palazzo.prepare_bumper")) throw new Error("telnet lost");
+    return send(command);
+  };
+  onAir();
+  const response = await announce({}, "next-b", { bumper: SPOT });
+  assert.equal(response.state, "queued");
+  assert.equal(telemetry.announcedWithBumper, false);
+  assert.deepEqual(commands, [`palazzo.prepare_next song-b 120.5 0 ${B_URI}`]);
+});
+
+test("a malformed spot is a 400 and nothing is sent", async () => {
+  for (const bumper of [
+    null,
+    "spot",
+    { playbackId: "spot 1", url: SPOT.url },
+    { playbackId: "song-b", url: SPOT.url },
+    { playbackId: "spot-1", url: "ftp://example.test/spot.mp3" },
+    { playbackId: "", url: SPOT.url },
+  ]) {
+    const { commands, onAir, announce } = await harness();
+    onAir();
+    await rejects(announce({}, "next-b", { bumper }), 400, "invalid");
+    assert.deepEqual(commands, []);
+  }
+});

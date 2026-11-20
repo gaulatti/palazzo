@@ -26,7 +26,8 @@ export interface LiquidsoapLifecycleEvent {
     | 'next_withdrawn'
     | 'track_skipped'
     | 'instant_started'
-    | 'instant_ended';
+    | 'instant_ended'
+    | 'bumper_result';
   playback_request_id: string;
   playback_id: string;
   parent_playback_id: string;
@@ -164,7 +165,13 @@ export interface PlaybackState {
   // false when the station has no RTMP_URL. Status stays 'idle' during a live
   // show, so a reader that acts on 'idle' checks this first.
   live: { onAir: boolean };
+  // What this Palazzo supports beyond the base contract. `next.bumper` (gaulatti/palazzo#50): PUT
+  // /playback/next takes an optional `bumper` spot played before the announced song.
+  capabilities: string[];
 }
+
+/** Capabilities a client may rely on only when listed in the playback state. */
+export const PALAZZO_CAPABILITIES = ['next.bumper'] as const;
 
 const MAX_REPLAY_EVENTS = 512;
 const SEQUENCE_RESERVATION_SIZE = 1_000_000_000;
@@ -197,7 +204,7 @@ const NORMALIZED_ROUTES = new Set([
   '/v1/programs/:programId/mixer',
 ]);
 
-type SongChangePath = 'announced' | 'command';
+type SongChangePath = 'announced' | 'bumper' | 'command';
 /** A song started more than this after the previous one ended is not a song change (the filler, a stop). */
 const SONG_CHANGE_WINDOW_MS = 30_000;
 /** Seconds; 1.5 s is the audible-silence line of gaulatti/palazzo#49. */
@@ -299,6 +306,7 @@ export class PlaybackTelemetryService {
     { buckets: number[]; sum: number; count: number }
   > = {
     announced: emptyGapHistogram(),
+    bumper: emptyGapHistogram(),
     command: emptyGapHistogram(),
   };
   private lastSongChangeGapSeconds: number | null = null;
@@ -310,6 +318,14 @@ export class PlaybackTelemetryService {
   private spotMsInChange = 0;
   /** The song last accepted through PUT /playback/next, to tell an announced start from a command. */
   private announcedPlaybackId: string | null = null;
+  /** Whether the announced song was announced with a spot before it (gaulatti/palazzo#50). */
+  private announcedWithBumper = false;
+  private readonly bumperResults: Record<BumperResult, number> = {
+    played: 0,
+    dropped_unresolved: 0,
+    dropped_late: 0,
+    dropped_failed: 0,
+  };
   /**
    * The last song start, from the journal only (never the engine snapshot), on Liquidsoap's clock: an
    * announced song that starts before the playing one ends is a change with no gap, counted at that end.
@@ -558,11 +574,22 @@ export class PlaybackTelemetryService {
   /** A song command or a stop: the next song to start is not the announced one. */
   forgetAnnouncement(): void {
     this.announcedPlaybackId = null;
+    this.announcedWithBumper = false;
   }
 
-  reportNextQueued(programId: string, playbackId: string): void {
+  /** Counts what became of an announced spot that Palazzo itself decided before Liquidsoap had it. */
+  observeBumper(result: BumperResult): void {
+    this.bumperResults[result] += 1;
+  }
+
+  reportNextQueued(
+    programId: string,
+    playbackId: string,
+    withBumper = false,
+  ): void {
     this.nextProgramId = programId;
     this.announcedPlaybackId = playbackId;
+    this.announcedWithBumper = withBumper;
     this.emit('playout.next_queued', { programId, playbackId });
   }
 
@@ -706,6 +733,7 @@ export class PlaybackTelemetryService {
       remainingSeconds: this.remainingSeconds,
       levels: this.levels,
       live: { onAir: this.liveOnAir },
+      capabilities: [...PALAZZO_CAPABILITIES],
     };
   }
 
@@ -853,6 +881,11 @@ export class PlaybackTelemetryService {
       this.recordEndReason(event.playback_request_id, event.reason);
       return;
     }
+    if (event.event_type === 'bumper_result') {
+      const result = BUMPER_RESULTS.find((r) => r === event.reason);
+      if (result) this.bumperResults[result] += 1;
+      return;
+    }
     if (
       event.event_type === 'instant_started' ||
       event.event_type === 'instant_ended'
@@ -947,7 +980,11 @@ export class PlaybackTelemetryService {
       const startedAt = event.occurred_at * 1_000;
       const startedPlaybackId = event.playback_id || event.playback_request_id;
       const path: SongChangePath =
-        startedPlaybackId === this.announcedPlaybackId ? 'announced' : 'command';
+        startedPlaybackId !== this.announcedPlaybackId
+          ? 'command'
+          : this.announcedWithBumper
+            ? 'bumper'
+            : 'announced';
       this.lastStartedTrack = { playbackId: startedPlaybackId, atMs: startedAt };
       if (
         this.lastEndedTrack &&
@@ -1162,7 +1199,7 @@ export class PlaybackTelemetryService {
       '# HELP palazzo_song_change_gap_seconds Silence between a song ending and the next song starting, on Liquidsoap\'s clock, by how the next song came (announced or command). Time an instant is journalled on air in between is subtracted; an instant Liquidsoap does not journal is counted as silence.',
       '# TYPE palazzo_song_change_gap_seconds histogram',
     ];
-    for (const path of ['announced', 'command'] as const) {
+    for (const path of ['announced', 'bumper', 'command'] as const) {
       const histogram = this.songChangeGaps[path];
       SONG_CHANGE_GAP_BUCKETS.forEach((bound, index) => {
         lines.push(
@@ -1202,6 +1239,8 @@ export class PlaybackTelemetryService {
       '# TYPE palazzo_next_requests_total counter',
       '# HELP palazzo_next_withdrawn_total Announced next songs withdrawn before they started, by bounded reason.',
       '# TYPE palazzo_next_withdrawn_total counter',
+      '# HELP palazzo_next_bumper_total Spots announced with the next song, by what became of them: played, or dropped (unresolved by the song end, late past 60 s, or failed to start) with the song started at once.',
+      '# TYPE palazzo_next_bumper_total counter',
       '# HELP palazzo_song_analysis_dropped_total Invalid song analysis groups dropped from song commands, by bounded group and result.',
       '# TYPE palazzo_song_analysis_dropped_total counter',
     ];
@@ -1210,6 +1249,9 @@ export class PlaybackTelemetryService {
     }
     for (const [reason, count] of Object.entries(this.nextWithdrawn)) {
       lines.push(`palazzo_next_withdrawn_total{reason="${reason}"} ${count}`);
+    }
+    for (const [result, count] of Object.entries(this.bumperResults)) {
+      lines.push(`palazzo_next_bumper_total{result="${result}"} ${count}`);
     }
     for (const [reason, count] of Object.entries(this.preflightSkipped)) {
       lines.push(
@@ -1300,6 +1342,18 @@ export type NextRequestResult =
   | 'invalid'
   | 'no_current_song';
 type NextWithdrawnReason = 'replaced' | 'withdrawn' | 'flushed' | 'not_ready';
+/** What became of a spot announced with the next song (gaulatti/palazzo#50). */
+export type BumperResult =
+  | 'played'
+  | 'dropped_unresolved'
+  | 'dropped_late'
+  | 'dropped_failed';
+const BUMPER_RESULTS: BumperResult[] = [
+  'played',
+  'dropped_unresolved',
+  'dropped_late',
+  'dropped_failed',
+];
 const NEXT_WITHDRAWN_REASONS: NextWithdrawnReason[] = [
   'replaced',
   'withdrawn',

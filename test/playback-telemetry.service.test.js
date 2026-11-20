@@ -686,3 +686,40 @@ test('relays an instant journalled with only its request id and no program, and 
     ['instant.started', 'spot-y', null],
   ]);
 });
+
+// gaulatti/palazzo#50: Liquidsoap's bumper results are counted, and a song started after an announced
+// spot is a `bumper` change whose gap excludes the spot.
+test('counts bumper results and measures a change after an announced spot without the spot', async () => {
+  const telemetry = service();
+  telemetry.setLiquidsoapRunning(true);
+  const event = (sequence, type, id, occurred_at, extra = {}) => ({
+    ...lifecycle(sequence, type),
+    playback_request_id: id,
+    playback_id: id,
+    occurred_at,
+    ...extra,
+  });
+  const journal = [];
+  const step = (...events) => {
+    journal.push(...events);
+    telemetry.apply(snapshot({ liquidsoap_sequence: journal.length }), [...journal]);
+  };
+  step(event(1, 'track_started', 'song-a', 3_000));
+  telemetry.reportNextQueued('program-one', 'song-b', true);
+  step(event(2, 'track_ended', 'song-a', 3_100));
+  step(event(3, 'instant_started', 'spot-1', 3_100.02), event(4, 'bumper_result', 'spot-1', 3_100.02, { reason: 'played' }));
+  step(event(5, 'instant_ended', 'spot-1', 3_105.62), event(6, 'track_started', 'song-b', 3_105.66));
+  step(event(7, 'bumper_result', 'spot-2', 3_200, { reason: 'dropped_late' }));
+  step(event(8, 'bumper_result', 'spot-3', 3_201, { reason: 'something_else' }));
+  const samples = parseExposition(await telemetry.renderMetrics());
+  assertBoundedLabels(samples);
+  const value = (name, labels) =>
+    samples.find((s) => s.name === name && Object.entries(labels).every(([k, v]) => s.labels[k] === v))?.value;
+  assert.equal(value('palazzo_next_bumper_total', { result: 'played' }), 1);
+  assert.equal(value('palazzo_next_bumper_total', { result: 'dropped_late' }), 1);
+  assert.equal(value('palazzo_next_bumper_total', { result: 'dropped_failed' }), 0);
+  assert.equal(value('palazzo_song_change_gap_seconds_count', { handoff: 'bumper' }), 1);
+  assert.equal(value('palazzo_song_change_gap_seconds_bucket', { handoff: 'bumper', le: '0.25' }), 1);
+  telemetry.observeBumper('dropped_unresolved');
+  assert.match(await telemetry.renderMetrics(), /palazzo_next_bumper_total\{result="dropped_unresolved"\} 1/);
+});

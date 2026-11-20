@@ -32,6 +32,12 @@ function liqSeconds(milliseconds: number): string {
  */
 export const FILLER_HOLDOFF_SECONDS = 15;
 
+/**
+ * Seconds before the playing song's end that an announced spot is pushed to the instants queue
+ * (gaulatti/palazzo#50), so it is on air as the song ends; pushed at the end it starts about 0.14 s late.
+ */
+export const BUMPER_LEAD_SECONDS = "0.12";
+
 export function buildLiquidsoapScript(
   options: LiquidsoapScriptOptions,
 ): string {
@@ -331,6 +337,57 @@ deck_b_request = ref("")
 # Armed 0.1 s before an overlap starts, so the limiter is already engaged on its first frame.
 overlap_limiter_armed = ref(false)
 
+# Instants (spots and clips fired by hand) play from this queue, mixed over the program.
+instants_requests = request.queue(id="instants")
+# A spot announced with the next song (gaulatti/palazzo#50). It is resolved ahead of time like the song;
+# when the playing song ends it plays on the instants queue, and the song's gate opens at the spot's own
+# end, so the song follows the spot with no gap and no fixed wait. A spot never holds the song: one not
+# resolved by the song's end, not on air within 1 s, or on air for more than 60 s is dropped and the gate
+# opens at once. bumper_state: none, resolving, ready (resolved, waiting for the end) or playing.
+bumper_state = ref("none")
+bumper_playback_id = ref("")
+bumper_pending = ref([])
+bumper_generation = ref(0)
+bumper_on_air = ref(false)
+# Request id of the spot once pushed to the instants queue, and the playback id of one dropped there as
+# not on air in time: it is removed from the queue, and skipped if it still comes on air, so nothing of it
+# plays over the song.
+bumper_rid = ref(-1)
+bumper_dropped_id = ref("")
+
+def remember_bumper_result(result) =
+  begin
+    event_sequence := event_sequence() + 1
+    body = json.stringify(compact=true, {
+      sequence=event_sequence(),
+      event_type="bumper_result",
+      playback_request_id=bumper_playback_id(),
+      playback_id=bumper_playback_id(),
+      parent_playback_id=next_playback_id(),
+      program_id="",
+      title="",
+      artist="",
+      cover_url="",
+      url="",
+      reason=result,
+      occurred_at=time()
+    })
+    events := [body, ...list.prefix(127, events())]
+  end
+end
+
+# Drops a spot that is not on air yet (resolving or ready); one already playing plays out.
+def drop_bumper() =
+  if bumper_state() != "playing" then
+    begin
+      bumper_generation := bumper_generation() + 1
+      list.iter(fun (r) -> request.destroy(r), bumper_pending())
+      bumper_pending := []
+      bumper_state := "none"
+    end
+  end
+end
+
 # Per deck: loudness gain from liq_amplify (1.0 when absent), the song volume, and fades from
 # liq_fade_in / liq_fade_out (none when absent).
 def song_deck(queue, is_open) =
@@ -388,6 +445,16 @@ def set_deck_request(name, value) =
   if name == "b" then deck_b_request := value else deck_a_request := value end
 end
 
+# Opens the announced song's gate: it starts on the next frame, marked on air in this same frame so the
+# overlap limiter is engaged from its start.
+def open_next_gate() =
+  begin
+    set_deck_open(next_deck(), true)
+    set_deck_playing(next_deck(), true)
+    next_state := "started"
+  end
+end
+
 # Journals why the song on a deck is about to end: replacement or operator, before a command cuts it, or
 # cancel when that command failed (gaulatti/palazzo#41). Palazzo binds the reason to that playback.
 def remember_track_skipped(request_id, reason) =
@@ -432,9 +499,52 @@ def drop_next(reason) =
       if not deck_playing(next_deck()) then set_deck_open(next_deck(), false) end
       next_state := "none"
       overlap_limiter_armed := false
+      # A spot waiting with the song goes with it; one the song was not ready for is journalled.
+      if bumper_state() == "resolving" or bumper_state() == "ready" then
+        begin
+          drop_bumper()
+          if reason == "not_ready" then remember_bumper_result("dropped_unresolved") end
+        end
+      end
       remember_next_withdrawn(reason)
       true
     end
+  end
+end
+
+# Puts the ready spot on air; the announced song waits for its end. A spot not on air within 1 s, or on
+# air for more than 60 s, gives the air to the song.
+def start_bumper() =
+  begin
+    bumper_state := "playing"
+    bumper_on_air := false
+    generation = bumper_generation()
+    list.iter(fun (r) -> begin bumper_rid := request.id(r) instants_requests.push(r) end, bumper_pending())
+    bumper_pending := []
+    # Not on air within 1 s: the spot failed and the song takes the air.
+    thread.run(delay=1., fun () ->
+      if bumper_generation() == generation and bumper_state() == "playing" and not bumper_on_air() then
+        begin
+          bumper_state := "none"
+          bumper_dropped_id := bumper_playback_id()
+          instants_requests.remove_request_id(bumper_rid())
+          remember_bumper_result("dropped_failed")
+          if next_state() == "queued" then open_next_gate() end
+        end
+      end
+    )
+    # On air for more than 60 s: the spot is cut and the song takes the air.
+    thread.run(delay=60., fun () ->
+      if bumper_generation() == generation and bumper_state() == "playing" then
+        begin
+          bumper_state := "none"
+          bumper_on_air := false
+          remember_bumper_result("dropped_late")
+          instants_requests.skip()
+          if next_state() == "queued" then open_next_gate() end
+        end
+      end
+    )
   end
 end
 
@@ -463,20 +573,46 @@ def watch_deck(name, deck) =
   deck.on_position(
     position={next_overlap() + 0.1}, remaining=true, allow_partial=true, synchronous=true,
     fun (_, _) ->
-      if next_state() == "queued" and next_deck() != name and active_deck() == name and next_overlap() > 0. then
+      if next_state() == "queued" and next_deck() != name and active_deck() == name and next_overlap() > 0. and bumper_state() == "none" then
         overlap_limiter_armed := true
       end
   )
-  # Opens the announced song's gate at remaining = overlap on the deck that is playing.
+  # Opens the announced song's gate at remaining = overlap on the deck that is playing. With a spot
+  # announced there is no overlap: the spot plays first (below).
   deck.on_position(
     position={next_overlap()}, remaining=true, allow_partial=true, synchronous=true,
     fun (_, _) ->
+      if next_state() == "queued" and next_deck() != name and active_deck() == name and bumper_state() == "none" then
+        open_next_gate()
+      end
+  )
+  # BUMPER_LEAD_SECONDS before the playing song's end, with the announced song queued: a ready spot is
+  # pushed then, so it is on air as the song ends (pushed at the end, it starts about 0.14 s late,
+  # measured), and the song waits for the spot's end. At the end itself: a spot still resolving is dropped
+  # and the song starts now, as does a song whose gate is still closed (a spot dropped after the overlap
+  # point).
+  deck.on_position(
+    position={${BUMPER_LEAD_SECONDS}}, remaining=true, allow_partial=true, synchronous=true,
+    fun (_, _) ->
+      if next_state() == "queued" and next_deck() != name and active_deck() == name and bumper_state() == "ready" then
+          start_bumper()
+      end
+  )
+  deck.on_position(
+    position={0.}, remaining=true, allow_partial=true, synchronous=true,
+    fun (_, _) ->
       if next_state() == "queued" and next_deck() != name and active_deck() == name then
-        begin
-          set_deck_open(next_deck(), true)
-          # Marked on air here, in the frame the gate opens, so the overlap limiter is engaged from its start.
-          set_deck_playing(next_deck(), true)
-          next_state := "started"
+        if bumper_state() == "resolving" then
+          begin
+            drop_bumper()
+            remember_bumper_result("dropped_unresolved")
+            open_next_gate()
+          end
+        elsif bumper_state() == "ready" then
+          # Resolved in the last BUMPER_LEAD_SECONDS: on air now, slightly late.
+          start_bumper()
+        elsif bumper_state() == "none" then
+          open_next_gate()
         end
       end
   )
@@ -584,6 +720,58 @@ server.register(
                   begin
                     request.destroy(r)
                     ignore(drop_next("not_ready"))
+                  end
+                end
+              else
+                request.destroy(r)
+              end
+            end
+          )
+          "ok"
+        end
+      end
+    end
+)
+
+# palazzo.prepare_bumper <playback id> <time limit seconds> <annotated uri>: resolves a spot to play
+# before the announced next song (gaulatti/palazzo#50). Sent after prepare_next; answers "none" when no
+# song is announced or it has already started, "invalid" on a malformed command, else "ok".
+server.register(
+  namespace="palazzo",
+  usage="prepare_bumper <playback id> <time limit seconds> <uri>",
+  description="Resolve a spot to play before the announced next song",
+  "prepare_bumper",
+  fun (arg) ->
+    begin
+      parts = string.split(separator=" ", arg)
+      if list.length(parts) < 3 then
+        "invalid"
+      elsif next_state() == "none" or next_state() == "started" or bumper_state() == "playing" then
+        "none"
+      else
+        begin
+          drop_bumper()
+          playback_id = list.nth(parts, 0)
+          resolve_limit = float_of_string(default=0., list.nth(parts, 1))
+          uri = string.concat(separator=" ", list.tl(list.tl(parts)))
+          generation = bumper_generation()
+          bumper_state := "resolving"
+          bumper_playback_id := playback_id
+          thread.run(fun () ->
+            begin
+              r = request.create(uri)
+              ok = request.resolve(timeout=resolve_limit, r)
+              if bumper_generation() == generation and bumper_state() == "resolving" then
+                if ok then
+                  begin
+                    bumper_pending := [r]
+                    bumper_state := "ready"
+                  end
+                else
+                  begin
+                    request.destroy(r)
+                    bumper_state := "none"
+                    remember_bumper_result("dropped_unresolved")
                   end
                 end
               else
@@ -715,7 +903,42 @@ server.register(
     end
 )
 
-instants_requests = request.queue(id="instants")
+# Every instant is journalled on and off the air (gaulatti/palazzo#49, #50). The end of the announced
+# spot opens the announced song's gate.
+instants_requests.on_track(
+  synchronous=true,
+  fun (meta) ->
+    begin
+      # A spot dropped as not on air in time that comes on air anyway is skipped at once.
+      if bumper_dropped_id() != "" and metadata_value("palazzo_request_id", meta) == bumper_dropped_id() then
+        begin
+          bumper_dropped_id := ""
+          instants_requests.skip()
+        end
+      end
+      remember_event("instant_started", meta)
+      if bumper_state() == "playing" and metadata_value("palazzo_request_id", meta) == bumper_playback_id() then
+        begin
+          bumper_on_air := true
+          remember_bumper_result("played")
+        end
+      end
+    end
+)
+instants_requests.on_position(
+  position={0.}, remaining=true, allow_partial=true, synchronous=true,
+  fun (_, meta) ->
+    begin
+      remember_event("instant_ended", meta)
+      if bumper_state() == "playing" and metadata_value("palazzo_request_id", meta) == bumper_playback_id() then
+        begin
+          bumper_state := "none"
+          bumper_on_air := false
+          if next_state() == "queued" then open_next_gate() end
+        end
+      end
+    end
+)
 instants_queue = mksafe(instants_requests)
 instant_volume = interactive.float("palazzo_instant_volume", 1.)
 instants_per_item = amplify(1., instants_queue)

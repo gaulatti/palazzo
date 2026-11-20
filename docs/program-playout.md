@@ -198,6 +198,59 @@ at a time; a new announcement replaces the previous one.
   `track.ended` (current) then `track.started` (next); with overlap it is
   `track.started` (next) at cue-out minus the overlap, then `track.ended`
   (current) at its cue-out. Every song has exactly one of each.
+
+### A spot before the announced song (`bumper`, gaulatti/palazzo#50)
+
+`GET …/playback/state` lists `"next.bumper"` in `capabilities`. A client sends
+`bumper` only when it is listed; a Palazzo without the capability ignores the
+field. The announcement then takes an optional
+
+```json
+"bumper": { "playbackId": "<id>", "url": "<spot audio URL>" }
+```
+
+The spot belongs to the program the request names. Its `playbackId` has no
+whitespace and differs from the song's, otherwise the request is a 400
+`invalid`. Palazzo resolves the spot alongside the song, within the same time
+limit, and sends it to Liquidsoap with `palazzo.prepare_bumper`. Then:
+
+- 0.12 s before the playing song's end (`BUMPER_LEAD_SECONDS`), the spot goes on
+  air from the instants queue. The announced song's gate stays closed, and
+  opens on the frame the spot's own track ends. With a spot there is no
+  overlap. Measured on Liquidsoap 2.4.5 (`test/runtime/verify-bumper.sh`): the
+  spot started 10 ms before the song's end and the song 20 ms after the spot's
+  end.
+- A spot never holds the song. The song's gate opens at the playing song's end
+  (never earlier, so the playing song is never cut) in these cases:
+  - the spot is not resolved by then (`dropped_unresolved`);
+  - Liquidsoap refuses it;
+  - it fails before going on air;
+  - it is not on air within 1 s (`dropped_failed`).
+
+  A spot on air for more than 60 s is cut and the song starts
+  (`dropped_late`). A spot that played counts as `played`. All four results
+  are counted in `palazzo_next_bumper_total{result}`.
+- The announcement is accepted even when the spot is dropped; the song then
+  plays at the end as without one.
+- Withdrawing or replacing the announcement drops a spot that is not on air
+  yet. A song command or a stop does the same, through
+  `palazzo.reset_decks` → `drop_next("flushed")`. A song command that arrives
+  while the spot is on air leaves the spot to play out. No gate opens, because
+  the announcement is gone, and the commanded song starts as soon as it loads,
+  over the end of the spot.
+- A spot dropped as not on air within 1 s is also removed from the instants
+  queue. If it still comes on air it is skipped at once, so nothing of it plays
+  over the song (verified with a spot held behind a 14 s clip fired by hand).
+- Every instant, a spot or one fired by hand, is journalled as
+  `instant_started` / `instant_ended`. The journal's `playback_request_id`
+  field carries the instant's playback id; for a spot it is the `bumper`
+  `playbackId`. SSE relays them as `instant.started` / `instant.ended`
+  `{playbackId, programId, liquidsoapSequence}`. As-run and royalties read the
+  spot's real play from these events.
+- The bumper interval and the choice of spot stay with the client (Alcantara,
+  gaulatti/alcantara#232).
+- Out of scope: cold song changes without a spot are tracked in
+  gaulatti/alcantara#232.
 - Headroom: while both songs are on air a limiter holds the sum under the
   true-peak ceiling, and a song entering under an overlap rises over at least
   0.25 s. With one song the limiter is dry (bit-identical output).
