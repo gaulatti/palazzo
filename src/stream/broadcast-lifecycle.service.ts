@@ -172,7 +172,19 @@ export class BroadcastLifecycleService {
       this.timestamps.requestedAt = stamp;
       this.timestamps.readyAt = stamp;
     }
+    this.recordRunning();
     this.bindMissingFiller(reconciled);
+  }
+
+  /**
+   * Remembers across a restart that the program was running, so the next boot
+   * binds a filler (see FillerStoreService.initialize). Not awaited and never
+   * thrown: a song start does not wait on it.
+   */
+  private recordRunning(): void {
+    this.fillerStore.recordRunning().catch(() => {
+      this.logger.error('recording that automation is running failed');
+    });
   }
 
   /**
@@ -300,6 +312,7 @@ export class BroadcastLifecycleService {
       }
       this.actualState = 'ready';
       this.timestamps.readyAt = new Date().toISOString();
+      this.recordRunning();
       return this.finish(digest, action, sequence, 'ready', 200, fillerVersion);
     }
 

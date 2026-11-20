@@ -82,8 +82,15 @@ binds a filler by itself, by this rule:
 
 1. At boot, the version a Start last activated is restored while its selection
    is present and still validates (`boundBy` `restored`). With no selection, or
-   an invalid one, nothing is bound at boot: a deliberately stopped radio
-   sounds the same after a restart.
+   an invalid one, Palazzo binds at boot only when the program was running
+   when it went down: then the newest valid prepared version is bound at once
+   (the rule in 2, `boundBy` `fallback`). A deliberately stopped radio binds
+   nothing and sounds the same after a restart. "Running" is the
+   `.automation-running` record in the same volume, written the first time a
+   playback command or a Start puts automation in `running`, and removed by
+   Stop or a failed Start (with the selection). Before this, the boot waited
+   for the first song command to bind; on 2026-11-20 that command arrived
+   before Palazzo could play, failed, and the filler stayed unbound.
 2. When a program-scoped playback command moves the state to `running` with
    nothing bound, Palazzo binds the most recently prepared version whose
    manifest and artifact checksums validate (order by manifest `preparedAt`,
@@ -103,7 +110,8 @@ replaced.
 `GET /v1/programs/{programId}/automation` reports it as the additive
 `filler.boundBy` (`activate`, `restored`, `fallback`, or `null` when unbound);
 `filler.activeVersion` and `filler.ready` are unchanged. Boot logs
-`filler bound at boot: version=... boundBy=restored` or `no filler bound at boot`,
+`filler bound at boot: version=... boundBy=restored` (or `boundBy=fallback` from
+the running record) or `no filler bound at boot`,
 and a fallback binding logs `filler bound: version=... boundBy=fallback`.
 
 ## When the filler takes the air (gaulatti/alcantara#230)

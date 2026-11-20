@@ -236,3 +236,49 @@ test('a restart restores a Start-bound filler, which is reported as restored', a
   assert.equal(second.getBoundBy(), 'restored');
   assert.equal(lifecycleFor(second, context.config).getState().filler.boundBy, 'restored');
 });
+
+// palazzo#48 follow-up (2026-11-20): the boot binds a filler only when the
+// program was running when Palazzo went down.
+test('a program running at shutdown binds the newest valid filler at boot; a stopped one stays silent', async (t) => {
+  const context = await station(t);
+  const artifact = await prepare(context.programRoot, 'v1', '2026-11-01T00:00:00.000Z');
+  await prepare(context.programRoot, 'v2', '2026-11-02T00:00:00.000Z', { corrupt: true });
+
+  // Running when it went down: a playback command recorded it.
+  const first = await context.boot();
+  const lifecycle = lifecycleFor(first, context.config);
+  lifecycle.startFromPlaybackCommand();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(await fs.readFile(join(context.programRoot, '.automation-running'), 'utf8'), 'running\n');
+
+  context.logs.length = 0;
+  const restarted = await context.boot();
+  assert.equal(restarted.getActiveVersion(), 'v1');
+  assert.equal(restarted.getBoundBy(), 'fallback');
+  assert.equal(await context.playlist(), `${artifact}\n`);
+  assert.match(context.logs.join('\n'), /filler bound at boot: version=v1 boundBy=fallback preparedVersions=1/);
+  // The record is written once per session.
+  await restarted.recordRunning();
+
+  // A Stop clears the record: the next boot binds nothing.
+  await restarted.deactivate();
+  await assert.rejects(fs.readFile(join(context.programRoot, '.automation-running'), 'utf8'));
+  context.logs.length = 0;
+  const stopped = await context.boot();
+  assert.equal(stopped.getActiveVersion(), null);
+  assert.equal(await context.playlist(), '');
+  assert.match(context.logs.join('\n'), /no filler bound at boot: preparedVersions=1/);
+});
+
+test('a running record with no valid prepared filler binds nothing at boot', async (t) => {
+  const context = await station(t);
+  await fs.writeFile(join(context.programRoot, '.automation-running'), 'running\n');
+  const filler = await context.boot();
+  assert.equal(filler.getActiveVersion(), null);
+  assert.equal(await context.playlist(), '');
+
+  await fs.writeFile(join(context.programRoot, '.automation-running'), 'something else\n');
+  await prepare(context.programRoot, 'v1', '2026-11-01T00:00:00.000Z');
+  const unreadable = await context.boot();
+  assert.equal(unreadable.getActiveVersion(), null);
+});

@@ -31,8 +31,9 @@ function playback(overrides = {}) {
   };
 }
 
-function fixture({ state = playback(), clearError, clearState, config = {}, prepared = 0, bind } = {}) {
+function fixture({ state = playback(), clearError, clearState, config = {}, prepared = 0, bind, recordError } = {}) {
   let currentState = state;
+  let records = 0;
   let clears = 0;
   const telemetry = { getState: () => currentState };
   const stream = {
@@ -46,6 +47,10 @@ function fixture({ state = playback(), clearError, clearState, config = {}, prep
   let boundBy = null;
   let binds = 0;
   const filler = {
+    recordRunning: async () => {
+      if (recordError) throw recordError;
+      records += 1;
+    },
     getActiveVersion: () => activeVersion,
     getBoundBy: () => boundBy,
     getRuntimeState: () => ({ preparedVersions: prepared }),
@@ -83,6 +88,9 @@ function fixture({ state = playback(), clearError, clearState, config = {}, prep
     },
     get binds() {
       return binds;
+    },
+    get records() {
+      return records;
     },
     setState: (next) => {
       currentState = next;
@@ -326,7 +334,7 @@ test('private control rejects the wrong single-program scope without credentials
     { get: (key) => values[key] },
     { clearProgramMaterial: async () => undefined },
     { getState: () => state },
-    { getActiveVersion: () => null, activate: async () => undefined, deactivate: async () => undefined },
+    { getActiveVersion: () => null, activate: async () => undefined, deactivate: async () => undefined, recordRunning: async () => undefined },
   );
   assert.throws(
     () => service.assertProgram('wrong-program'),
@@ -405,4 +413,24 @@ test('a playback command returns before a slow bind finishes and the filler is b
   release(true);
   await new Promise(setImmediate);
   assert.deepEqual(context.service.getState().filler, { activeVersion: 'fallback-v', ready: true, boundBy: 'fallback' });
+});
+
+test('a playback command and a Start record that automation is running (palazzo#48 boot bind)', async (t) => {
+  const command = fixture({ prepared: 1 });
+  command.service.startFromPlaybackCommand();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(command.records, 1);
+
+  const started = fixture();
+  await started.service.start('start-record', '1', 'v1');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(started.records, 1);
+
+  // A failure to record is logged, never thrown into the song start.
+  const failing = fixture({ prepared: 1, recordError: new Error('disk') });
+  const errors = [];
+  t.mock.method(failing.service.logger, 'error', (message) => errors.push(message));
+  assert.doesNotThrow(() => failing.service.startFromPlaybackCommand());
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(errors, ['recording that automation is running failed']);
 });

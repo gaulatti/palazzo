@@ -99,6 +99,7 @@ export class FillerStoreService {
   private outcomes = { success: 0, failure: 0, conflict: 0 };
   private unknownModes = 0;
   private preparedVersionCount = 0;
+  private runningRecorded = false;
 
   constructor(
     config: ConfigService,
@@ -136,8 +137,13 @@ export class FillerStoreService {
       this.activeVersion = null;
       this.boundBy = null;
       if (selected) await rm(this.activeSelectionPath(), { force: true });
-      // Nothing is bound without a selection: a program that was stopped
-      // stays silent after a restart. A playback command binds a fallback.
+      // A program that was stopped stays silent after a restart. One that was
+      // running when Palazzo went down binds the newest valid prepared filler
+      // now, so the air never depends on the first song command after the
+      // restart succeeding (2026-11-20: it failed and the filler stayed
+      // unbound). Otherwise a playback command binds a fallback.
+      this.runningRecorded = await this.readRunningRecord();
+      if (this.runningRecorded) await this.bindNewestValid();
     }
     this.preparedVersionCount = await this.countPreparedVersions();
     this.logger.log(
@@ -210,8 +216,24 @@ export class FillerStoreService {
     return this.serializeBinding(async () => {
       await this.atomicWrite(this.activePlaylistPath, '');
       await rm(this.activeSelectionPath(), { force: true });
+      // A stopped program stays silent after a restart.
+      await rm(this.runningRecordPath(), { force: true });
+      this.runningRecorded = false;
       this.activeVersion = null;
       this.boundBy = null;
+    });
+  }
+
+  /**
+   * Records that automation is running, so a restart binds the newest valid
+   * prepared filler at boot. Written once per running session; deactivate
+   * (a Stop or a failed Start) removes it.
+   */
+  recordRunning(): Promise<void> {
+    return this.serializeBinding(async () => {
+      if (this.runningRecorded) return;
+      await this.atomicWrite(this.runningRecordPath(), 'running\n');
+      this.runningRecorded = true;
     });
   }
 
@@ -649,6 +671,19 @@ export class FillerStoreService {
 
   private activeSelectionPath(): string {
     return join(this.programRoot, '.active-version');
+  }
+
+  private runningRecordPath(): string {
+    return join(this.programRoot, '.automation-running');
+  }
+
+  private async readRunningRecord(): Promise<boolean> {
+    try {
+      const record = await readFile(this.runningRecordPath(), 'utf8');
+      return record.trim() === 'running';
+    } catch {
+      return false;
+    }
   }
 
   private async countPreparedVersions(): Promise<number> {
