@@ -21,6 +21,9 @@ const opts = Object.fromEntries(
 const clicks = Number(opts.clicks ?? 12);
 const spacingMs = Number(opts.spacing ?? 10_000);
 const leadMs = Number(opts.lead ?? 3_000);
+// Nothing is written until the downstream has started, so its start-up time
+// never sits in the pipe as a backlog that delays every click after it.
+const startDelayMs = Number(opts['start-delay'] ?? 0);
 const log = opts.log ?? 'sent.jsonl';
 const RATE = 48_000;
 const CHUNK_MS = 10; // pacing granularity
@@ -34,8 +37,10 @@ const encoder = spawn(cmd, cmdArgs, { stdio: ['pipe', 'inherit', 'inherit'] });
 const clickAt = (i) => Math.round(((leadMs + i * spacingMs) * RATE) / 1000);
 const totalSamples = clickAt(clicks - 1) + RATE * 3;
 let written = 0;
-const t0 = performance.now();
+let t0 = 0;
 const origin = performance.timeOrigin;
+await new Promise((resolve) => setTimeout(resolve, startDelayMs));
+t0 = performance.now();
 
 function chunk() {
   const buf = Buffer.alloc(CHUNK * 2);
@@ -44,8 +49,13 @@ function chunk() {
     if (start >= written + CHUNK || start + CLICK_SAMPLES <= written) continue;
     for (let s = Math.max(start, written); s < Math.min(start + CLICK_SAMPLES, written + CHUNK); s += 1)
       buf.writeInt16LE(s - start < CLICK_SAMPLES / 2 ? 32_000 : -32_000, (s - written) * 2);
+    // The click's own scheduled time: its first sample is handed over at or
+    // after it (a chunk is written only once its last sample is due).
     if (start >= written)
-      appendFileSync(log, JSON.stringify({ click: i, sent_ms: origin + performance.now() }) + '\n');
+      appendFileSync(
+        log,
+        JSON.stringify({ click: i, sent_ms: origin + t0 + (start / RATE) * 1000 }) + '\n',
+      );
   }
   written += CHUNK;
   return buf;
@@ -54,10 +64,14 @@ function chunk() {
 // Real-time pacing: write a chunk whenever its due time has come.
 const tick = setInterval(() => {
   const due = ((performance.now() - t0) * RATE) / 1000;
-  while (written <= due && written < totalSamples) encoder.stdin.write(chunk());
+  while (written + CHUNK <= due && written < totalSamples)
+    encoder.stdin.write(chunk());
   if (written >= totalSamples) {
     clearInterval(tick);
     encoder.stdin.end();
+    // A live input (Liquidsoap's) never ends on its own: stop the downstream
+    // once the last click has had time to come out.
+    setTimeout(() => encoder.kill('SIGTERM'), Number(opts.drain ?? 4000));
   }
 }, 2);
 encoder.on('exit', (code) => process.exit(code ?? 0));

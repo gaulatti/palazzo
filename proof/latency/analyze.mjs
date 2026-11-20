@@ -6,10 +6,15 @@
 import { readFileSync } from 'node:fs';
 const read = (f) => readFileSync(f, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
 const sent = read(process.argv[2]);
-const ear = read(process.argv[3]).filter((e) => e.ear_ms >= sent[0].sent_ms);
-const spacing = sent.length > 1 ? sent[1].sent_ms - sent[0].sent_ms : Infinity;
-const rows = sent.slice(0, ear.length).map((s, i) => ({ click: s.click, latency_ms: ear[i].ear_ms - s.sent_ms }));
-if (rows.some((r) => r.latency_ms >= spacing)) throw new Error('a latency exceeds the click spacing: pairing is ambiguous, widen --spacing');
+const ear = read(process.argv[3]);
+// Each onset belongs to the latest click sent before it; a click with no onset
+// before the next click is missed.
+const rows = [];
+for (const [i, s] of sent.entries()) {
+  const next = sent[i + 1]?.sent_ms ?? Infinity;
+  const hit = ear.find((e) => e.ear_ms >= s.sent_ms && e.ear_ms < next);
+  if (hit) rows.push({ click: s.click, latency_ms: hit.ear_ms - s.sent_ms });
+}
 const ms = rows.map((r) => r.latency_ms).sort((a, b) => a - b);
 const median = ms.length % 2 ? ms[(ms.length - 1) / 2] : (ms[ms.length / 2 - 1] + ms[ms.length / 2]) / 2;
 console.table(rows.map((r) => ({ ...r, latency_ms: Math.round(r.latency_ms) })));
