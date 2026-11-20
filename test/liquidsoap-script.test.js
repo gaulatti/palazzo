@@ -48,10 +48,24 @@ test("generates a private authoritative telemetry script", () => {
   assert.match(script, /remember_event\("intro_ended"/);
   assert.match(script, /smooth_add\(/);
   assert.match(script, /reload_mode="watch"/);
+  // gaulatti/alcantara#230: the filler takes the air whenever no song or intro
+  // is on, because smooth_add alone always reports ready.
   assert.match(
     script,
-    /fallback\(track_sensitive=false, \[ducked_songs, filler\]\)/,
+    /songs_on_air = switch\(\s*id="songs_on_air",\s*track_sensitive=false,\s*\[\(\{source\.is_ready\(songs\) or source\.is_ready\(intros\)\}, ducked_songs\)\]\s*\)/,
   );
+  assert.match(
+    script,
+    /fallback\(track_sensitive=false, \[songs_on_air, filler\]\)/,
+  );
+  // The filler waits out ordinary handoffs, loads and instants.
+  assert.match(script, /instants_requests = request\.queue\(id="instants"\)/);
+  assert.match(script, /instants_queue = mksafe\(instants_requests\)/);
+  assert.match(
+    script,
+    /source\.is_ready\(songs\) or source\.is_ready\(intros\) or source\.is_ready\(instants_requests\)/,
+  );
+  assert.match(script, /time\(\) - filler_last_on_air\(\) > 15\./);
   assert.match(script, /interactive\.float\("palazzo_song_volume", 1\.\)/);
   assert.match(script, /interactive\.float\("palazzo_instant_volume", 1\.\)/);
   assert.match(script, /interactive\.float\("palazzo_main_volume", 1\.\)/);

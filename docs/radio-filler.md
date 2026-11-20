@@ -106,6 +106,36 @@ replaced.
 `filler bound at boot: version=... boundBy=restored` or `no filler bound at boot`,
 and a fallback binding logs `filler bound: version=... boundBy=fallback`.
 
+## When the filler takes the air (gaulatti/alcantara#230)
+
+The bound filler plays only when the rotation is really absent: no song, no
+intro and no instant has been on air for `FILLER_HOLDOFF_SECONDS` (15 s,
+`src/stream/liquidsoap-script.ts`). A song arriving takes the air at once.
+
+- **Why 15 s.** Production since 2026-11-19: the longest instant was 11 s and
+  the longest time from an accepted song command to the song on air was 1 s; an
+  ordinary handoff passes about 4 s with nothing on. 15 s clears all of them
+  with margin and is still short of dead air. Ordinary handoffs stay silent, as
+  before; only a real absence brings the filler.
+- **Handovers are hard cuts**, measured on the local runtime: a song replaces
+  the filler within one 50 ms window, and when the song ends and the hold-off
+  passes, the filler returns within one window. There is no fade, no overlap
+  and no gap.
+- **The filler resumes where it paused**, not from its first track.
+- **Instants.** An instant counts as presence: it cuts the filler while it plays
+  and restarts the hold-off, so a long instant with no song queued plays on its
+  own, with no filler under it.
+- **Before this change** the filler could never take the air: `smooth_add`
+  reports ready even with nothing on it, so the program fallback always chose
+  the empty song chain, and a stalled rotation was silence (2026-11-20, about
+  ten hours). The song chain is now gated on a song or an intro actually being
+  ready (`songs_on_air`), and the filler on the hold-off (`filler_on_air`).
+- `test/runtime/verify-station.sh` checks it on the real image:
+  - the filler is heard with no song queued;
+  - a song takes the air;
+  - the filler resumes after the hold-off;
+  - an instant followed by a song after an ordinary gap never puts the filler on air.
+
 ## Operations
 
 `GET /metrics` adds bounded gauges for active/preparing state and a preparation

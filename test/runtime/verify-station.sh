@@ -49,8 +49,13 @@ grep --ignore-case '^access-control-allow-headers:.*Idempotency-Key' "${station_
 grep --ignore-case '^access-control-allow-headers:.*X-Command-Sequence' "${station_work}/cors-headers.txt"
 docker exec "$station_container" ffmpeg -hide_banner -loglevel error -y \
   -f lavfi -i sine=frequency=440:sample_rate=44100 -t 2 /tmp/filler.wav
+# A distinct 4 s song for the handover checks (gaulatti/alcantara#230).
+docker exec "$station_container" ffmpeg -hide_banner -loglevel error -y \
+  -f lavfi -i sine=frequency=1000:sample_rate=44100 -t 4 /tmp/song.wav
+docker exec "$station_container" ffmpeg -hide_banner -loglevel error -y \
+  -f lavfi -i sine=frequency=2000:sample_rate=44100 -t 2 /tmp/instant.wav
 docker exec --detach "$station_container" node -e \
-  'const fs=require("node:fs");const media="/tmp/filler.wav";require("node:http").createServer((_,response)=>{response.setHeader("Content-Type","audio/wav");response.setHeader("Content-Length",fs.statSync(media).size);response.setHeader("Accept-Ranges","bytes");fs.createReadStream(media).pipe(response)}).listen(3200,"127.0.0.1")'
+  'const fs=require("node:fs");require("node:http").createServer((request,response)=>{const path=new URL(request.url,"http://x").pathname;const name=path==="/song.wav"?"song.wav":path==="/instant.wav"?"instant.wav":"filler.wav";const media="/tmp/"+name;response.setHeader("Content-Type","audio/wav");response.setHeader("Content-Length",fs.statSync(media).size);response.setHeader("Accept-Ranges","bytes");fs.createReadStream(media).pipe(response)}).listen(3200,"127.0.0.1")'
 for attempt in $(seq 1 20); do
   if docker exec "$station_container" node -e \
     'fetch("http://127.0.0.1:3200/filler.wav").then(response=>{if(!response.ok)process.exit(1)}).catch(()=>process.exit(1))'; then
@@ -112,6 +117,59 @@ curl --fail --silent \
   "$station_api"/v1/programs/program-ci/automation/start \
   | jq --exit-status '.actualState == "ready" and .readiness == true and .filler.activeVersion == "ci-v1"'
 docker exec "$station_container" node -e 'fetch("http://127.0.0.1:8000/stream").then(async response=>{const reader=response.body.getReader();let total=0;while(total<16384){const chunk=await reader.read();if(chunk.done)break;total+=chunk.value.length}if(total<16384)throw new Error("Icecast filler stream starved")}).catch(error=>{console.error(error.message);process.exit(1)})'
+# gaulatti/alcantara#230: the filler is heard, not only streamed. Bytes alone
+# pass for silence: before the fix the song chain held the air with nothing in
+# it and the output level stayed at zero.
+await_state() {
+  local what="$1" filter="$2"
+  for attempt in $(seq 1 60); do
+    if curl --fail --silent "$station_api"/v1/programs/program-ci/playback/state \
+      | jq --exit-status "$filter" >/dev/null; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  echo "station check failed: $what"
+  curl --silent "$station_api"/v1/programs/program-ci/playback/state | jq '{status, track: .track.playbackRequestId, levels: .levels.output}'
+  exit 1
+}
+await_state 'the filler is heard with no song queued' \
+  '.status == "idle" and .levels.output.rms > 0.01'
+curl --fail --silent \
+  --header 'Idempotency-Key: ci-song' \
+  --header 'Content-Type: application/json' \
+  --request POST \
+  --data '{"song":{"programId":"program-ci","playbackId":"ci-song","url":"http://127.0.0.1:3200/song.wav?signed=redacted","title":"CI","artist":"CI","duration":4}}' \
+  "$station_api"/v1/programs/program-ci/playback/song \
+  | jq --exit-status '.ok == true'
+await_state 'a song arriving takes the air' \
+  '.status == "playing" and .track.playbackRequestId == "ci-song" and .levels.output.rms > 0.01'
+await_state 'the filler resumes when the queue empties' \
+  '.status == "idle" and .levels.output.rms > 0.01'
+# An instant then a song after an ordinary gap never puts the filler on air:
+# it waits FILLER_HOLDOFF_SECONDS (15 s) with nothing on before it enters.
+curl --fail --silent \
+  --header 'Idempotency-Key: ci-instant' \
+  --header 'Content-Type: application/json' \
+  --request POST \
+  --data '{"programId":"program-ci","playbackId":"ci-instant","url":"http://127.0.0.1:3200/instant.wav?signed=redacted"}' \
+  "$station_api"/v1/programs/program-ci/playback/instant >/dev/null
+sleep 4
+for sample in $(seq 1 6); do
+  curl --fail --silent "$station_api"/v1/programs/program-ci/playback/state \
+    | jq --exit-status '.status == "idle" and .levels.output.rms < 0.01' >/dev/null \
+    || { echo 'station check failed: the filler entered during an ordinary handoff'; exit 1; }
+  sleep 0.5
+done
+curl --fail --silent \
+  --header 'Idempotency-Key: ci-song-2' \
+  --header 'Content-Type: application/json' \
+  --request POST \
+  --data '{"song":{"programId":"program-ci","playbackId":"ci-song-2","url":"http://127.0.0.1:3200/song.wav?signed=redacted","title":"CI","artist":"CI","duration":4}}' \
+  "$station_api"/v1/programs/program-ci/playback/song \
+  | jq --exit-status '.ok == true'
+await_state 'the next song takes the air after the handoff' \
+  '.status == "playing" and .track.playbackRequestId == "ci-song-2"'
 curl --fail --silent \
   --header 'Idempotency-Key: ci-stop' \
   --header 'X-Command-Sequence: 2' \

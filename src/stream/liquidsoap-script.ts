@@ -26,6 +26,12 @@ function liqSeconds(milliseconds: number): string {
   return Number.isInteger(seconds) ? `${seconds}.` : String(seconds);
 }
 
+/**
+ * Seconds with no song, intro or instant on air before the filler takes the
+ * air (gaulatti/alcantara#230); see the script comment for the measurements.
+ */
+export const FILLER_HOLDOFF_SECONDS = 15;
+
 export function buildLiquidsoapScript(
   options: LiquidsoapScriptOptions,
 ): string {
@@ -706,7 +712,8 @@ server.register(
     end
 )
 
-instants_queue = mksafe(request.queue(id="instants"))
+instants_requests = request.queue(id="instants")
+instants_queue = mksafe(instants_requests)
 instant_volume = interactive.float("palazzo_instant_volume", 1.)
 instants_per_item = amplify(1., instants_queue)
 instants_controlled = amplify(override=null, instant_volume, instants_per_item)
@@ -721,7 +728,23 @@ filler_playlist = playlist(
   reload_mode="watch",
   "${liqString(options.fillerPlaylistPath)}"
 )
-filler = mksafe(filler_playlist)
+# The filler takes the air only when the rotation is really absent: nothing
+# (song, intro or instant) for FILLER_HOLDOFF_SECONDS (gaulatti/alcantara#230).
+# Production since 2026-11-19: the longest instant was 11 s and the longest
+# time from an accepted song command to the song on air was 1 s; an ordinary
+# handoff passes about 4 s with nothing on. 15 s clears all of them with margin
+# and is still short of dead air. A song arriving takes the air at once.
+filler_last_on_air = ref(time())
+thread.run(every=0.1, fun () ->
+  if source.is_ready(songs) or source.is_ready(intros) or source.is_ready(instants_requests) then
+    filler_last_on_air := time()
+  end
+)
+filler = switch(
+  id="filler_on_air",
+  track_sensitive=false,
+  [({time() - filler_last_on_air() > ${FILLER_HOLDOFF_SECONDS}.}, mksafe(filler_playlist))]
+)
 intro_duck_gain = interactive.float("palazzo_intro_duck_gain", 0.35)
 ducked_songs = smooth_add(
   duration=0.25,
@@ -729,7 +752,16 @@ ducked_songs = smooth_add(
   normal=songs,
   special=intros
 )
-program_audio = fallback(track_sensitive=false, [ducked_songs, filler])
+# smooth_add reports ready even when no song and no intro is playing, so the
+# fallback below never reached the filler and the air was silent whenever the
+# song chain was empty (gaulatti/alcantara#230). The song chain takes the air
+# only while a song or an intro is actually on it.
+songs_on_air = switch(
+  id="songs_on_air",
+  track_sensitive=false,
+  [({source.is_ready(songs) or source.is_ready(intros)}, ducked_songs)]
+)
+program_audio = fallback(track_sensitive=false, [songs_on_air, filler])
 ${rtmpInput}
 radio = add(normalize=false, [program_audio, instants${rtmpSource}])
 radio = mksafe(radio)
