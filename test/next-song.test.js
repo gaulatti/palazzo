@@ -463,3 +463,22 @@ test("the script keeps deck a as the songs queue and gates the announced song on
   }
   assert.match(script, /elapsed=finite_level\(active_deck_source\(\)\.elapsed\(\)\)/);
 });
+
+// gaulatti/palazzo#49 (review): a song command after an announcement starts a commanded song, even when it
+// carries the announced playback id; the gap metric must label that change a command.
+test("a song command after an announcement drops it from the gap metric's announced label", async () => {
+  const { service, telemetry, onAir, announce } = await harness();
+  onAir();
+  await announce();
+  assert.equal(telemetry.announcedPlaybackId, "song-b");
+  await service.playSong({
+    playbackRequestId: "song-b",
+    url: "https://example.test/b.mp3",
+    title: "B",
+    artist: "Artist",
+  });
+  assert.equal(telemetry.announcedPlaybackId, null);
+  await announce({ playbackId: "song-c" }, "next-c");
+  await service.stopSong();
+  assert.equal(telemetry.announcedPlaybackId, null);
+});

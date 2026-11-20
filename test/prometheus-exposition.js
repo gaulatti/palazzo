@@ -127,6 +127,8 @@ function assertBoundedLabels(samples) {
       "unsupported_media",
       "withdrawn",
     ]),
+    // palazzo_song_change_gap_seconds (gaulatti/palazzo#49)
+    handoff: new Set(["announced", "command"]),
     // palazzo_media_fetch_total (gaulatti/palazzo#45)
     path: new Set(["song", "intro", "instant", "next", "preflight", "filler"]),
     route: new Set([

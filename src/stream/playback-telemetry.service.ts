@@ -24,7 +24,9 @@ export interface LiquidsoapLifecycleEvent {
     | 'song_request_timeout'
     | 'song_request_failed'
     | 'next_withdrawn'
-    | 'track_skipped';
+    | 'track_skipped'
+    | 'instant_started'
+    | 'instant_ended';
   playback_request_id: string;
   playback_id: string;
   parent_playback_id: string;
@@ -90,6 +92,8 @@ export type PlaybackEventType =
   | 'playout.skipped'
   | 'playout.next_queued'
   | 'playout.next_withdrawn'
+  | 'instant.started'
+  | 'instant.ended'
   | 'playout.fallback'
   | 'playout.request_failed'
   | 'playback.position'
@@ -193,6 +197,20 @@ const NORMALIZED_ROUTES = new Set([
   '/v1/programs/:programId/mixer',
 ]);
 
+type SongChangePath = 'announced' | 'command';
+/** A song started more than this after the previous one ended is not a song change (the filler, a stop). */
+const SONG_CHANGE_WINDOW_MS = 30_000;
+/** Seconds; 1.5 s is the audible-silence line of gaulatti/palazzo#49. */
+export const SONG_CHANGE_GAP_BUCKETS = [
+  0, 0.25, 0.5, 1, 1.5, 2, 3, 5, 8, 10, 15, 30,
+] as const;
+const emptyGapHistogram = () => ({
+  buckets: SONG_CHANGE_GAP_BUCKETS.map(() => 0),
+  sum: 0,
+  count: 0,
+});
+const roundSeconds = (seconds: number) => Math.round(seconds * 1_000) / 1_000;
+
 @Injectable()
 export class PlaybackTelemetryService {
   readonly instanceId: string;
@@ -268,6 +286,35 @@ export class PlaybackTelemetryService {
    */
   private readonly endReasons = new Map<string, 'replacement' | 'operator'>();
   private lastEndedTrack: { playbackId: string; occurredAt: number } | null =
+    null;
+  /**
+   * Silence at each song change (gaulatti/palazzo#49): seconds from a song's track_ended to the next
+   * song's track_started, both on Liquidsoap's clock, by how the next song came: `announced` (the song
+   * announced through PUT /playback/next, started from its deck) or `command` (a song command after the
+   * end). An announced song that starts under the end of the previous one is a change with no gap (0).
+   * Only changes within SONG_CHANGE_WINDOW_MS count; a longer pause is not a song change.
+   */
+  private readonly songChangeGaps: Record<
+    SongChangePath,
+    { buckets: number[]; sum: number; count: number }
+  > = {
+    announced: emptyGapHistogram(),
+    command: emptyGapHistogram(),
+  };
+  private lastSongChangeGapSeconds: number | null = null;
+  /**
+   * A spot on air is not silence: the time an instant is on air between a song's end and the next song's
+   * start, from Liquidsoap's instant_started/instant_ended journal, is subtracted from that change's gap.
+   */
+  private instantOnAirSinceMs: number | null = null;
+  private spotMsInChange = 0;
+  /** The song last accepted through PUT /playback/next, to tell an announced start from a command. */
+  private announcedPlaybackId: string | null = null;
+  /**
+   * The last song start, from the journal only (never the engine snapshot), on Liquidsoap's clock: an
+   * announced song that starts before the playing one ends is a change with no gap, counted at that end.
+   */
+  private lastStartedTrack: { playbackId: string; atMs: number } | null =
     null;
   private readonly httpMetrics = new Map<
     string,
@@ -508,8 +555,14 @@ export class PlaybackTelemetryService {
   }
 
   /** Emits playout.next_queued for an accepted announcement. */
+  /** A song command or a stop: the next song to start is not the announced one. */
+  forgetAnnouncement(): void {
+    this.announcedPlaybackId = null;
+  }
+
   reportNextQueued(programId: string, playbackId: string): void {
     this.nextProgramId = programId;
+    this.announcedPlaybackId = playbackId;
     this.emit('playout.next_queued', { programId, playbackId });
   }
 
@@ -746,6 +799,7 @@ export class PlaybackTelemetryService {
       `palazzo_liquidsoap_restarts_total ${this.processRestarts}`,
       ...this.dependencyMetricLines(),
       ...this.playoutMetricLines(),
+      ...this.songChangeGapLines(),
       ...this.songRequestFailureLines(),
       '# HELP palazzo_level_samples_coalesced_total Level samples coalesced before SSE emission.',
       '# TYPE palazzo_level_samples_coalesced_total counter',
@@ -797,6 +851,13 @@ export class PlaybackTelemetryService {
     }
     if (event.event_type === 'track_skipped') {
       this.recordEndReason(event.playback_request_id, event.reason);
+      return;
+    }
+    if (
+      event.event_type === 'instant_started' ||
+      event.event_type === 'instant_ended'
+    ) {
+      this.applyInstantLifecycle(event);
       return;
     }
     const data = {
@@ -884,11 +945,25 @@ export class PlaybackTelemetryService {
         occurredAt,
       );
       const startedAt = event.occurred_at * 1_000;
+      const startedPlaybackId = event.playback_id || event.playback_request_id;
+      const path: SongChangePath =
+        startedPlaybackId === this.announcedPlaybackId ? 'announced' : 'command';
+      this.lastStartedTrack = { playbackId: startedPlaybackId, atMs: startedAt };
       if (
         this.lastEndedTrack &&
         startedAt >= this.lastEndedTrack.occurredAt &&
-        startedAt - this.lastEndedTrack.occurredAt <= 30_000
+        startedAt - this.lastEndedTrack.occurredAt <= SONG_CHANGE_WINDOW_MS
       ) {
+        const changeStart = this.lastEndedTrack.occurredAt;
+        const spotMs =
+          this.spotMsInChange +
+          (this.instantOnAirSinceMs !== null
+            ? startedAt - Math.max(this.instantOnAirSinceMs, changeStart)
+            : 0);
+        this.observeSongChangeGap(
+          path,
+          Math.max(0, startedAt - changeStart - Math.max(0, spotMs)) / 1_000,
+        );
         this.countPlayoutTransition('transitioned');
         this.emit(
           'playout.transitioned',
@@ -902,8 +977,25 @@ export class PlaybackTelemetryService {
         );
       }
       this.lastEndedTrack = null;
-    } else {
+      this.spotMsInChange = 0;
+    } else if (event.event_type === 'track_ended') {
       this.lifecycleEnded += 1;
+      // An announced song already on air when this one ends started under its end: a change with no gap.
+      const endedPlaybackId = event.playback_id || event.playback_request_id;
+      if (
+        this.lastStartedTrack &&
+        this.lastStartedTrack.playbackId !== endedPlaybackId &&
+        this.lastStartedTrack.atMs <= event.occurred_at * 1_000
+      ) {
+        this.observeSongChangeGap(
+          this.lastStartedTrack.playbackId === this.announcedPlaybackId
+            ? 'announced'
+            : 'command',
+          0,
+        );
+      }
+      if (this.lastStartedTrack?.playbackId === endedPlaybackId)
+        this.lastStartedTrack = null;
       if (this.track?.playbackRequestId === event.playback_request_id) {
         this.track = null;
       }
@@ -914,6 +1006,7 @@ export class PlaybackTelemetryService {
         playbackId: event.playback_id || event.playback_request_id,
         occurredAt: event.occurred_at * 1_000,
       };
+      this.spotMsInChange = 0;
       if (disposition === 'replacement') {
         this.countPlayoutTransition('skipped');
         this.emit(
@@ -1028,6 +1121,69 @@ export class PlaybackTelemetryService {
       `palazzo_song_request_failures_total{reason="timeout"} ${this.songRequestFailures.timeout}`,
       `palazzo_song_request_failures_total{reason="other"} ${this.songRequestFailures.other}`,
     ];
+  }
+
+  /** instant.started / instant.ended for any instant (a spot or one fired by hand), without its URL. */
+  private applyInstantLifecycle(event: LiquidsoapLifecycleEvent): void {
+    const at = event.occurred_at * 1_000;
+    if (event.event_type === 'instant_started') {
+      this.instantOnAirSinceMs = at;
+    } else if (this.instantOnAirSinceMs !== null) {
+      if (this.lastEndedTrack)
+        this.spotMsInChange += Math.max(
+          0,
+          at - Math.max(this.instantOnAirSinceMs, this.lastEndedTrack.occurredAt),
+        );
+      this.instantOnAirSinceMs = null;
+    }
+    this.emit(
+      event.event_type === 'instant_started' ? 'instant.started' : 'instant.ended',
+      {
+        playbackId: event.playback_id || event.playback_request_id,
+        programId: event.program_id || null,
+        liquidsoapSequence: event.sequence,
+      },
+      new Date(at).toISOString(),
+    );
+  }
+
+  private observeSongChangeGap(path: SongChangePath, seconds: number): void {
+    const histogram = this.songChangeGaps[path];
+    SONG_CHANGE_GAP_BUCKETS.forEach((bound, index) => {
+      if (seconds <= bound) histogram.buckets[index] += 1;
+    });
+    histogram.sum += seconds;
+    histogram.count += 1;
+    this.lastSongChangeGapSeconds = seconds;
+  }
+
+  private songChangeGapLines(): string[] {
+    const lines = [
+      '# HELP palazzo_song_change_gap_seconds Silence between a song ending and the next song starting, on Liquidsoap\'s clock, by how the next song came (announced or command). Time an instant is journalled on air in between is subtracted; an instant Liquidsoap does not journal is counted as silence.',
+      '# TYPE palazzo_song_change_gap_seconds histogram',
+    ];
+    for (const path of ['announced', 'command'] as const) {
+      const histogram = this.songChangeGaps[path];
+      SONG_CHANGE_GAP_BUCKETS.forEach((bound, index) => {
+        lines.push(
+          `palazzo_song_change_gap_seconds_bucket{handoff="${path}",le="${bound}"} ${histogram.buckets[index]}`,
+        );
+      });
+      lines.push(
+        `palazzo_song_change_gap_seconds_bucket{handoff="${path}",le="+Inf"} ${histogram.count}`,
+        `palazzo_song_change_gap_seconds_sum{handoff="${path}"} ${roundSeconds(histogram.sum)}`,
+        `palazzo_song_change_gap_seconds_count{handoff="${path}"} ${histogram.count}`,
+      );
+    }
+    lines.push(
+      '# HELP palazzo_song_change_last_gap_seconds The silence at the most recent song change; absent before the first.',
+      '# TYPE palazzo_song_change_last_gap_seconds gauge',
+    );
+    if (this.lastSongChangeGapSeconds !== null)
+      lines.push(
+        `palazzo_song_change_last_gap_seconds ${roundSeconds(this.lastSongChangeGapSeconds)}`,
+      );
+    return lines;
   }
 
   private playoutMetricLines(): string[] {

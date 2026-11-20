@@ -538,3 +538,151 @@ test('reports whether the live input is on the air (gaulatti/palazzo#48)', () =>
   telemetry.apply(older, []);
   assert.deepEqual(telemetry.getState().live, { onAir: false });
 });
+
+// gaulatti/palazzo#49: the silence at each song change, on Liquidsoap's clock, by how the next song came.
+test('measures the gap at each song change by handoff, counting an announced start under the end as no gap', async () => {
+  const telemetry = service();
+  telemetry.setLiquidsoapRunning(true);
+  const event = (sequence, type, id, occurred_at) => ({
+    ...lifecycle(sequence, type),
+    playback_request_id: id,
+    playback_id: id,
+    occurred_at,
+  });
+  const journal = [];
+  const step = (...events) => {
+    journal.push(...events);
+    telemetry.apply(snapshot({ liquidsoap_sequence: journal.length }), [...journal]);
+  };
+  const gaps = async () => {
+    const samples = parseExposition(await telemetry.renderMetrics());
+    assertBoundedLabels(samples);
+    const value = (name, labels = {}) =>
+      samples.find(
+        (s) => s.name === name && Object.entries(labels).every(([k, v]) => s.labels[k] === v),
+      )?.value;
+    return { value };
+  };
+  // Before any change: empty histograms, no last-gap sample.
+  let read = await gaps();
+  assert.equal(read.value('palazzo_song_change_gap_seconds_count', { handoff: 'command' }), 0);
+  assert.equal(read.value('palazzo_song_change_last_gap_seconds'), undefined);
+
+  step(event(1, 'track_started', 'song-a', 1_000));
+  // A song command after the end: 9.2 s of silence (the bumper path of gaulatti/palazzo#49).
+  step(event(2, 'track_ended', 'song-a', 1_200));
+  step(event(3, 'track_started', 'song-b', 1_209.2));
+  read = await gaps();
+  assert.equal(read.value('palazzo_song_change_gap_seconds_count', { handoff: 'command' }), 1);
+  assert.equal(read.value('palazzo_song_change_gap_seconds_sum', { handoff: 'command' }), 9.2);
+  assert.equal(read.value('palazzo_song_change_gap_seconds_bucket', { handoff: 'command', le: '8' }), 0);
+  assert.equal(read.value('palazzo_song_change_gap_seconds_bucket', { handoff: 'command', le: '10' }), 1);
+  assert.equal(read.value('palazzo_song_change_gap_seconds_bucket', { handoff: 'command', le: '+Inf' }), 1);
+  assert.equal(read.value('palazzo_song_change_last_gap_seconds'), 9.2);
+
+  // An announced song that starts under the end of the playing one: no gap.
+  telemetry.reportNextQueued('program-one', 'song-c');
+  step(event(4, 'track_started', 'song-c', 1_400));
+  step(event(5, 'track_ended', 'song-b', 1_401));
+  read = await gaps();
+  assert.equal(read.value('palazzo_song_change_gap_seconds_count', { handoff: 'announced' }), 1);
+  assert.equal(read.value('palazzo_song_change_gap_seconds_bucket', { handoff: 'announced', le: '0' }), 1);
+  assert.equal(read.value('palazzo_song_change_last_gap_seconds'), 0);
+
+  // An announced song that starts just after the end (gate at remaining 0).
+  telemetry.reportNextQueued('program-one', 'song-d');
+  step(event(6, 'track_ended', 'song-c', 1_600));
+  step(event(7, 'track_started', 'song-d', 1_600.1));
+  read = await gaps();
+  assert.equal(read.value('palazzo_song_change_gap_seconds_count', { handoff: 'announced' }), 2);
+  assert.equal(read.value('palazzo_song_change_gap_seconds_bucket', { handoff: 'announced', le: '0.25' }), 2);
+  assert.equal(read.value('palazzo_song_change_last_gap_seconds'), 0.1);
+
+  // A start more than 30 s after the end is not a song change (the filler, a stop): not counted.
+  step(event(8, 'track_ended', 'song-d', 1_800));
+  step(event(9, 'track_started', 'song-e', 1_845));
+  read = await gaps();
+  assert.equal(read.value('palazzo_song_change_gap_seconds_count', { handoff: 'command' }), 1);
+  assert.equal(read.value('palazzo_song_change_gap_seconds_count', { handoff: 'announced' }), 2);
+});
+
+// gaulatti/palazzo#49 (review): a journalled spot between two songs is not silence, an unknown journal event
+// never ends a song, and a song command is never labelled announced.
+test('subtracts journalled spot time from the gap, ignores unknown journal events, and labels a command as a command', async () => {
+  const telemetry = service();
+  telemetry.setLiquidsoapRunning(true);
+  const event = (sequence, type, id, occurred_at) => ({
+    ...lifecycle(sequence, type),
+    playback_request_id: id,
+    playback_id: id,
+    occurred_at,
+  });
+  const journal = [];
+  const step = (...events) => {
+    journal.push(...events);
+    telemetry.apply(snapshot({ liquidsoap_sequence: journal.length }), [...journal]);
+  };
+  const value = async (name, labels = {}) => {
+    const samples = parseExposition(await telemetry.renderMetrics());
+    assertBoundedLabels(samples);
+    return samples.find(
+      (s) => s.name === name && Object.entries(labels).every(([k, v]) => s.labels[k] === v),
+    )?.value;
+  };
+
+  step(event(1, 'track_started', 'song-a', 2_000));
+  // A spot fired by hand during the song is not part of any change.
+  step(event(2, 'instant_started', 'spot-0', 2_010), event(3, 'instant_ended', 'spot-0', 2_015));
+  // The bumper change of today: the song ends, a 5.6 s spot, silence, then the song by command 9.2 s after the end.
+  step(event(4, 'track_ended', 'song-a', 2_100));
+  step(event(5, 'instant_started', 'spot-1', 2_100.3), event(6, 'instant_ended', 'spot-1', 2_105.9));
+  step(event(7, 'track_started', 'song-b', 2_109.2));
+  assert.equal(await value('palazzo_song_change_last_gap_seconds'), 3.6);
+  assert.equal(await value('palazzo_song_change_gap_seconds_sum', { handoff: 'command' }), 3.6);
+
+  // A spot still on air when the next song starts counts up to the start.
+  step(event(8, 'track_ended', 'song-b', 2_300));
+  step(event(9, 'instant_started', 'spot-2', 2_300.1));
+  step(event(10, 'track_started', 'song-c', 2_305.1));
+  assert.equal(await value('palazzo_song_change_last_gap_seconds'), 0.1);
+  step(event(11, 'instant_ended', 'spot-2', 2_306));
+
+  // An event type this Palazzo does not know is ignored: it neither ends the song nor counts as a change.
+  step({ ...event(12, 'some_future_event', 'song-c', 2_350) });
+  assert.equal(telemetry.getState().status, 'playing');
+  assert.equal(await value('palazzo_track_lifecycle_total', { event: 'ended' }), 2);
+
+  // Announced, then a song command carrying the announced playback id: the change is a command.
+  telemetry.reportNextQueued('program-one', 'song-d');
+  telemetry.forgetAnnouncement();
+  step(event(13, 'track_ended', 'song-c', 2_500));
+  step(event(14, 'track_started', 'song-d', 2_501));
+  assert.equal(await value('palazzo_song_change_gap_seconds_count', { handoff: 'announced' }), 0);
+  assert.equal(await value('palazzo_song_change_gap_seconds_count', { handoff: 'command' }), 3);
+
+  // The instant events reach SSE without a URL.
+  const instants = telemetry.replay.filter((e) => e.type.startsWith('instant.'));
+  assert.deepEqual(instants.map((e) => [e.type, e.data.playbackId]), [
+    ['instant.started', 'spot-0'],
+    ['instant.ended', 'spot-0'],
+    ['instant.started', 'spot-1'],
+    ['instant.ended', 'spot-1'],
+    ['instant.started', 'spot-2'],
+    ['instant.ended', 'spot-2'],
+  ]);
+  assert.doesNotMatch(JSON.stringify(instants), /https?:\/\//);
+});
+
+test('relays an instant journalled with only its request id and no program, and an end with no start', () => {
+  const telemetry = service();
+  telemetry.setLiquidsoapRunning(true);
+  telemetry.apply(snapshot({ liquidsoap_sequence: 2 }), [
+    { ...lifecycle(1, 'instant_ended'), playback_request_id: 'spot-x', playback_id: '', program_id: '' },
+    { ...lifecycle(2, 'instant_started'), playback_request_id: 'spot-y', playback_id: '', program_id: '' },
+  ]);
+  const instants = telemetry.replay.filter((e) => e.type.startsWith('instant.'));
+  assert.deepEqual(instants.map((e) => [e.type, e.data.playbackId, e.data.programId]), [
+    ['instant.ended', 'spot-x', null],
+    ['instant.started', 'spot-y', null],
+  ]);
+});

@@ -132,6 +132,37 @@ Useful metrics:
   next-song announcements by outcome; all series exposed from 0.
 - `palazzo_next_withdrawn_total{reason="replaced|withdrawn|flushed|not_ready"}`:
   announced songs dropped before they started; one per `playout.next_withdrawn`.
+- `palazzo_song_change_gap_seconds{handoff="announced|command"}` (histogram,
+  buckets 0, 0.25, 0.5, 1, 1.5, 2, 3, 5, 8, 10, 15, 30 s): the silence at each
+  song change (gaulatti/palazzo#49), from a song's `track_ended` to the next
+  song's `track_started`, both on Liquidsoap's clock. `handoff` says how the
+  next song came:
+  - `announced`: the song accepted through `PUT /playback/next`, started from
+    its deck;
+  - `command`: a song command after the end.
+
+  A spot on air is not silence. The time an instant is on air between the end
+  and the next start comes from Liquidsoap's `instant_started` and
+  `instant_ended` journal entries (see below) and is subtracted, so one number
+  means silence. An instant Liquidsoap does not journal is still counted as
+  silence: until the script journals instants (gaulatti/palazzo#50), a change
+  with a spot includes the spot. A song command or a stop drops any
+  announcement, so a commanded song is labelled `command` even when it carries
+  an announced playback id.
+  An announced song that starts under the end of the previous one is a change
+  with no gap, counted as 0 at that end. A start more than 30 s after the end
+  is not a song change (the filler took the air, or the rotation stopped), so
+  it is not counted. The 1.5 s bucket is the audible-silence line of #49:
+  `sum(rate(palazzo_song_change_gap_seconds_count[1h])) -
+  sum(rate(palazzo_song_change_gap_seconds_bucket{le="1.5"}[1h]))` is the rate
+  of changes with an audible gap.
+- `palazzo_song_change_last_gap_seconds`: the gap at the most recent song
+  change. It is absent until the first change after a restart.
+
+Journal entries `instant_started` and `instant_ended` are relayed on SSE as
+`instant.started` and `instant.ended` with `{ playbackId, programId,
+liquidsoapSequence }` and no URL. A journal entry of a type this Palazzo does
+not know is ignored; it never ends the song on air.
 - `palazzo_song_request_failures_total{reason="timeout|other"}`: song
   requests Liquidsoap could not resolve. `timeout` means the resolution took
   `SONG_REQUEST_TIMEOUT_MS` (see docs/program-playout.md); `other` is any

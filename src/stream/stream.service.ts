@@ -1276,6 +1276,9 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
 
   /** Before a song command or a stop, once announcements were used: back to the single song deck. */
   private async resetDecksIfUsed(): Promise<void> {
+    // A song command or a stop drops any announcement: the song it starts is a command, even when it carries
+    // the playback id of a song that was announced and never started (gaulatti/palazzo#49).
+    this.telemetry.forgetAnnouncement();
     if (this.decksUsed) await this.telnet.send("palazzo.reset_decks");
   }
 
