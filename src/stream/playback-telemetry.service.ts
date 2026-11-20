@@ -67,6 +67,7 @@ export interface LiquidsoapSnapshot {
   intro_peak: number;
   output_rms: number;
   output_peak: number;
+  live_on_air?: boolean;
   icecast_connected: boolean;
   sampled_at: number;
 }
@@ -155,6 +156,10 @@ export interface PlaybackState {
   positionSeconds: number;
   remainingSeconds: number | null;
   levels: AudioLevels;
+  // gaulatti/palazzo#48: whether the live RTMP input is on the air. Always
+  // false when the station has no RTMP_URL. Status stays 'idle' during a live
+  // show, so a reader that acts on 'idle' checks this first.
+  live: { onAir: boolean };
 }
 
 const MAX_REPLAY_EVENTS = 512;
@@ -207,6 +212,7 @@ export class PlaybackTelemetryService {
   private remainingSeconds: number | null = null;
   private levels: AudioLevels = emptyLevels();
   private icecastConnected = false;
+  private liveOnAir = false;
   private readonly replay: PlaybackEvent[] = [];
   private readonly snapshotByEventId = new Map<string, PlaybackState>();
   private readonly live = new Subject<PlaybackEvent>();
@@ -408,6 +414,7 @@ export class PlaybackTelemetryService {
       output: level(snapshot.output_rms, snapshot.output_peak),
     };
     this.icecastConnected = snapshot.icecast_connected === true;
+    this.liveOnAir = snapshot.live_on_air === true;
 
     if (now - this.lastLevelEventAt >= LEVEL_EVENT_INTERVAL_MS) {
       this.lastLevelEventAt = now;
@@ -645,6 +652,7 @@ export class PlaybackTelemetryService {
       positionSeconds: this.positionSeconds,
       remainingSeconds: this.remainingSeconds,
       levels: this.levels,
+      live: { onAir: this.liveOnAir },
     };
   }
 

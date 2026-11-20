@@ -32,6 +32,16 @@ Authoritative program events are `playout.queued`, `preflight.ready`,
 and transition timestamps come from Liquidsoap lifecycle evidence. Command
 acceptance alone never fabricates an audible start.
 
+## Live input on the air
+
+`live.onAir` in the playback state is `true` while the live RTMP input
+(`RTMP_URL`) is delivering audio, and always `false` on a station with no
+`RTMP_URL` (gaulatti/palazzo#48). `status` stays `idle` during a live show
+because `status` reports songs only, so a consumer that acts on `idle`, such as
+Alcantara's rotation watchdog (gaulatti/alcantara#230), checks `live.onAir`
+first. It comes from Liquidsoap's own readiness of the raw input
+(`source.is_ready(live_input)`), the same signal that holds the filler off.
+
 ## Why a track ended
 
 Every song's end carries the reason it actually ended, bound to that playback

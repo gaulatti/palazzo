@@ -41,6 +41,7 @@ live = mksafe(live_input)`
     : "";
   const rtmpSource = options.rtmpUrl ? ", live" : "";
   const livePresence = options.rtmpUrl ? " or source.is_ready(live_input)" : "";
+  const liveOnAir = options.rtmpUrl ? "source.is_ready(live_input)" : "false";
 
   return `#!/usr/bin/liquidsoap
 
@@ -811,6 +812,7 @@ server.register(
       intro_peak=finite_level(get_intro_peak()),
       output_rms=finite_level(get_rms()),
       output_peak=finite_level(get_peak()),
+      live_on_air=${liveOnAir},
       icecast_connected=icecast_connected(),
       sampled_at=time()
     })

@@ -520,3 +520,21 @@ test('exhausted event reservations refuse to emit beyond the durable sequence ce
   assert.equal(telemetry.getState().sequence, telemetry.sequenceCeiling);
   telemetry.shutdown();
 });
+
+test('reports whether the live input is on the air (gaulatti/palazzo#48)', () => {
+  const telemetry = service();
+  telemetry.setLiquidsoapRunning(true);
+  assert.deepEqual(telemetry.getState().live, { onAir: false });
+
+  telemetry.apply(snapshot({ playing: false, live_on_air: true }), []);
+  assert.equal(telemetry.getState().status, 'idle');
+  assert.deepEqual(telemetry.getState().live, { onAir: true });
+
+  telemetry.apply(snapshot({ liquidsoap_sequence: 2, playing: false, live_on_air: false }), []);
+  assert.deepEqual(telemetry.getState().live, { onAir: false });
+
+  // A snapshot without the field (an older script) never reports live.
+  const { live_on_air: _omitted, ...older } = snapshot({ liquidsoap_sequence: 3, playing: false });
+  telemetry.apply(older, []);
+  assert.deepEqual(telemetry.getState().live, { onAir: false });
+});

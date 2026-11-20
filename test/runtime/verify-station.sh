@@ -82,7 +82,7 @@ curl --fail --silent \
   | jq --exit-status \
     '.assets[0].playbackId == "ci-upcoming" and (.assets[0] | has("url") | not)'
 curl --fail --silent "$station_api"/v1/programs/program-ci/playback/state \
-  | jq --exit-status '.status == "idle"'
+  | jq --exit-status '.status == "idle" and .live.onAir == false'
 for removed in 'GET status' 'POST song' 'POST song/stop' 'POST instant' 'POST instant/stop' 'GET mixer' 'PUT mixer' 'GET playback/state' 'GET playback/events'; do
   set -- $removed
   removed_status=$(curl --silent --output /dev/null --write-out '%{http_code} %{redirect_url}' --request "$1" "$station_api/$2")

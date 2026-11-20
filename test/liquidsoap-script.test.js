@@ -72,6 +72,7 @@ test("generates a private authoritative telemetry script", () => {
     /source\.is_ready\(instants_requests\) then\n\s*filler_last_on_air := time\(\)/,
   );
   assert.doesNotMatch(script, /live_input|input\.rtmp/);
+  assert.match(script, /live_on_air=false,/);
   assert.match(script, /interactive\.float\("palazzo_song_volume", 1\.\)/);
   assert.match(script, /interactive\.float\("palazzo_instant_volume", 1\.\)/);
   assert.match(script, /interactive\.float\("palazzo_main_volume", 1\.\)/);
@@ -128,6 +129,7 @@ test("counts a live RTMP input on the air as presence for the filler", () => {
       script.indexOf("filler_last_on_air = ref"),
     "the live input is defined before the presence thread reads it",
   );
+  assert.match(script, /live_on_air=source\.is_ready\(live_input\),/);
   assert.match(
     script,
     /add\(normalize=false, \[program_audio, instants, live\]\)/,
