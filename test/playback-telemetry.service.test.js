@@ -778,3 +778,85 @@ test('counts trimmed and ignored cue edges per edge with bounded labels', async 
   assert.equal(value('palazzo_song_cue_ignored_total', { edge: 'tail', reason: 'bound' }), 1);
   assert.equal(value('palazzo_song_cue_ignored_total', { edge: 'head', reason: 'bound' }), 0);
 });
+
+// gaulatti/palazzo#51: Liquidsoap clears its playing song in an asynchronous end hook, so a snapshot just
+// after a journalled end can still name the ended song. The state never names a track whose end is
+// journalled.
+function lifecycleOf(sequence, event_type, id) {
+  return { ...lifecycle(sequence, event_type), playback_request_id: id, playback_id: id };
+}
+
+test('never reports a track as playing after its end is journalled, in the same poll or a later one', () => {
+  const telemetry = service();
+  telemetry.setLiquidsoapRunning(true);
+  telemetry.apply(
+    snapshot({ liquidsoap_sequence: 2, playback_request_id: 'song-a' }),
+    [lifecycleOf(1, 'track_started', 'song-a'), lifecycleOf(2, 'track_ended', 'song-a')],
+  );
+  let state = telemetry.getState();
+  assert.equal(state.status, 'idle');
+  assert.equal(state.track, null);
+  assert.equal(state.positionSeconds, 0);
+  assert.equal(state.remainingSeconds, null);
+
+  // A later poll whose snapshot still lags behind the end.
+  telemetry.apply(snapshot({ liquidsoap_sequence: 2, playback_request_id: 'song-a' }), []);
+  assert.equal(telemetry.getState().track, null);
+
+  // The next song plays as before.
+  telemetry.apply(
+    snapshot({ liquidsoap_sequence: 3, playback_request_id: 'song-b' }),
+    [lifecycleOf(3, 'track_started', 'song-b')],
+  );
+  state = telemetry.getState();
+  assert.equal(state.status, 'playing');
+  assert.equal(state.track.playbackRequestId, 'song-b');
+});
+
+test('keeps the next song under an overlap when a lagging snapshot still names the ended one', () => {
+  const telemetry = service();
+  telemetry.setLiquidsoapRunning(true);
+  telemetry.apply(
+    snapshot({ liquidsoap_sequence: 1, playback_request_id: 'song-a' }),
+    [lifecycleOf(1, 'track_started', 'song-a')],
+  );
+  // B starts under A's end; A's end is journalled; the snapshot still names A.
+  telemetry.apply(
+    snapshot({ liquidsoap_sequence: 3, playback_request_id: 'song-a' }),
+    [lifecycleOf(2, 'track_started', 'song-b'), lifecycleOf(3, 'track_ended', 'song-a')],
+  );
+  const state = telemetry.getState();
+  assert.equal(state.status, 'playing');
+  assert.equal(state.track.playbackRequestId, 'song-b');
+});
+
+test('a new start of an ended id plays again, and only the most recent ended ids are remembered', () => {
+  const telemetry = service();
+  telemetry.setLiquidsoapRunning(true);
+  telemetry.apply(
+    snapshot({ liquidsoap_sequence: 2, playback_request_id: 'song-a' }),
+    [lifecycleOf(1, 'track_started', 'song-a'), lifecycleOf(2, 'track_ended', 'song-a')],
+  );
+  assert.equal(telemetry.getState().track, null);
+  telemetry.apply(
+    snapshot({ liquidsoap_sequence: 3, playback_request_id: 'song-a' }),
+    [lifecycleOf(3, 'track_started', 'song-a')],
+  );
+  assert.equal(telemetry.getState().track.playbackRequestId, 'song-a');
+
+  // Sixteen more ended songs push song-old out of the bounded set; a snapshot naming it is read as is.
+  let sequence = 3;
+  const ended = (id) => {
+    sequence += 2;
+    telemetry.apply(snapshot({ liquidsoap_sequence: sequence, playing: false }), [
+      lifecycleOf(sequence - 1, 'track_started', id),
+      lifecycleOf(sequence, 'track_ended', id),
+    ]);
+  };
+  ended('song-old');
+  for (let i = 0; i < 16; i += 1) ended(`song-${i}`);
+  telemetry.apply(snapshot({ liquidsoap_sequence: sequence, playback_request_id: 'song-15' }), []);
+  assert.equal(telemetry.getState().track, null);
+  telemetry.apply(snapshot({ liquidsoap_sequence: sequence, playback_request_id: 'song-old' }), []);
+  assert.equal(telemetry.getState().track.playbackRequestId, 'song-old');
+});

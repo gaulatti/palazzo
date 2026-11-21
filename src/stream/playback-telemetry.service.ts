@@ -313,6 +313,13 @@ export class PlaybackTelemetryService {
   private lastEndedTrack: { playbackId: string; occurredAt: number } | null =
     null;
   /**
+   * Playback request ids whose track_ended the journal recorded (gaulatti/palazzo#51). Liquidsoap clears
+   * its playing song in the deck's asynchronous end hook, so a snapshot taken just after the end can still
+   * name the ended song; such a snapshot never makes it the track again. Bounded to ENDED_TRACK_LIMIT,
+   * oldest first; a new start of the same id clears it.
+   */
+  private readonly endedRequestIds = new Set<string>();
+  /**
    * Silence at each song change (gaulatti/palazzo#49): seconds from a song's track_ended to the next
    * song's track_started, both on Liquidsoap's clock, by how the next song came: `announced` (the song
    * announced through PUT /playback/next, started from its deck) or `command` (a song command after the
@@ -471,7 +478,18 @@ export class PlaybackTelemetryService {
       this.instantAudible = true;
     }
 
-    if (snapshot.playing) {
+    const namesEndedTrack =
+      snapshot.playing &&
+      this.endedRequestIds.has(snapshot.playback_request_id);
+    if (namesEndedTrack) {
+      // The journal already ended this song (its track_ended cleared the track): it is not on air, and
+      // its position is not reported. A track a later start set (the next song under an overlap) stays
+      // as it is.
+      if (this.track === null) {
+        this.positionSeconds = 0;
+        this.remainingSeconds = null;
+      }
+    } else if (snapshot.playing) {
       this.track = trackFromSnapshot(snapshot);
       // Liquidsoap's elapsed time on a cut song starts at 0 at the cue-in;
       // report the position relative to the file instead.
@@ -1004,6 +1022,7 @@ export class PlaybackTelemetryService {
     } else if (event.event_type === 'track_started') {
       this.lifecycleStarted += 1;
       this.trackStartedSequence = event.sequence;
+      this.endedRequestIds.delete(event.playback_request_id);
       this.track = {
         playbackRequestId: event.playback_request_id,
         title: event.title || null,
@@ -1082,6 +1101,11 @@ export class PlaybackTelemetryService {
         this.lastStartedTrack = null;
       if (this.track?.playbackRequestId === event.playback_request_id) {
         this.track = null;
+      }
+      this.endedRequestIds.add(event.playback_request_id);
+      if (this.endedRequestIds.size > ENDED_TRACK_LIMIT) {
+        const oldest = this.endedRequestIds.values().next().value as string;
+        this.endedRequestIds.delete(oldest);
       }
       this.emit('track.ended', data, occurredAt);
       const disposition = this.endReasons.get(event.playback_request_id);
@@ -1405,6 +1429,8 @@ function sanitizeValue(value: unknown): unknown {
 const SONG_CUE_IN_ENTRIES = 64;
 /** End reasons held for songs whose end has not been read yet (gaulatti/palazzo#41). */
 const END_REASON_LIMIT = 64;
+/** Ended playback ids remembered so a lagging snapshot never revives one (gaulatti/palazzo#51). */
+const ENDED_TRACK_LIMIT = 16;
 
 export type NextRequestResult =
   | 'queued'

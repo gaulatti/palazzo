@@ -72,6 +72,20 @@ natural end after a command to an idle station read `replacement` or
 `operator`, and the second of two quick cuts, or one deck of an overlap, read
 `natural_end`.
 
+## A journalled end is final (gaulatti/palazzo#51)
+
+The playback state never names a track whose `track_ended` the journal recorded.
+Liquidsoap clears its playing song in the deck's asynchronous end hook, so a
+snapshot taken just after an end can still report that song as playing. Such a
+snapshot is read as not playing for `track`, `status` and the position. A track
+set by a later journalled start, such as the next song under an overlap, stays
+as it is.
+
+Palazzo remembers the last 16 ended playback ids (`ENDED_TRACK_LIMIT`). A new
+start of the same id clears it. Before this, on 2026-11-21 at 00:28Z, a state
+read right after an end still named the ended song, and Alcantara's engine
+adopted it (its half is fixed in gaulatti/alcantara 31df9d6).
+
 ## Cue points and position
 
 For a song played with a cue-in and cue-out (see
