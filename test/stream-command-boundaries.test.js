@@ -146,6 +146,14 @@ test('#56: a journal write that fails after an engine rejection is logged, and t
   assert.match(errors[0], /journal could not be written after an engine rejection \(JournalError\)/);
   assert.doesNotMatch(errors[0], /disk full|private/);
   assert.match(await telemetry.renderMetrics(), /result="rejected",reason="engine_failure"\} 1/);
+
+  // A thrown value that is not an Error is named only by its kind.
+  writes = 0;
+  service.persistPlayoutJournal = async () => { writes += 1; if (writes === 1) return persist(); throw 'disk full /private/path'; };
+  await assert.rejects(service.playProgramSong('station', 'journal-failure-2', { song: { ...song, playbackId: 'song-2' } }), /engine rejected/);
+  assert.equal(errors.length, 2);
+  assert.match(errors[1], /journal could not be written after an engine rejection \(error\)/);
+  assert.doesNotMatch(errors[1], /disk full|private/);
 });
 
 test('#56: the playout journal keeps its named limit and counts what it trims', async (t) => {

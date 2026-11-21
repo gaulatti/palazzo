@@ -266,7 +266,7 @@ export class MediaRelay implements OnModuleInit, OnModuleDestroy {
       }
       // An over-capacity map is nonempty; its first key is the oldest token.
       const evicted = victim ?? this.tokens.keys().next().value!;
-      const kind = this.tokens.get(evicted)?.path ?? "unknown";
+      const kind = this.tokens.get(evicted)!.path;
       this.tokens.delete(evicted);
       this.evictions.set(kind, (this.evictions.get(kind) ?? 0) + 1);
       // #56: a playout read evicted under pressure will answer 404.
