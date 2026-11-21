@@ -183,6 +183,9 @@ export interface PlaybackRequestAccepted {
   introPlaybackId?: string | null;
 }
 
+
+/** Playout commands kept for dedupe across restarts (#56). */
+export const PLAYOUT_JOURNAL_LIMIT = 256;
 @Injectable()
 export class StreamService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(StreamService.name);
@@ -694,11 +697,15 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
       // Reserve the key durably before touching Liquidsoap. A crash can
       // therefore lose a command, but can never replay audible material.
       this.playoutCommands.set(digest, record);
-      if (this.playoutCommands.size > 256) {
+      if (this.playoutCommands.size > PLAYOUT_JOURNAL_LIMIT) {
         const oldest = this.playoutCommands.keys().next().value as
           | string
           | undefined;
-        if (oldest) this.playoutCommands.delete(oldest);
+        if (oldest) {
+          this.playoutCommands.delete(oldest);
+          // #56: the oldest reservation leaves the journal here; count it.
+          this.telemetry.observePlayoutJournal(this.playoutCommands.size, 1);
+        }
       }
       await this.persistPlayoutJournal();
       try {
@@ -732,7 +739,13 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
         await this.telnet.send("intros.flush_and_skip").catch(() => undefined);
         await this.telnet.send("palazzo.arm_intro ").catch(() => undefined);
         this.playoutCommands.delete(digest);
-        await this.persistPlayoutJournal().catch(() => undefined);
+        await this.persistPlayoutJournal().catch((error: unknown) => {
+          // #56: the rejection stands; a journal that could not be written is
+          // an error to see, not to swallow.
+          this.logger.error(
+            `Playout command journal could not be written after an engine rejection (${error instanceof Error ? error.name : "error"})`,
+          );
+        });
         this.telemetry.observePairedCommand("rejected", "engine_failure");
         throw new BadRequestException("playout engine rejected the command");
       }
@@ -1501,7 +1514,7 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
       const records = JSON.parse(
         await readFile(this.playoutJournalPath, "utf8"),
       ) as PlayoutCommandRecord[];
-      for (const record of records.slice(-256)) {
+      for (const record of records.slice(-PLAYOUT_JOURNAL_LIMIT)) {
         if (record?.digest && record?.fingerprint) {
           this.playoutCommands.set(record.digest, record);
         }
@@ -1514,7 +1527,9 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async persistPlayoutJournal(): Promise<void> {
-    const records = [...this.playoutCommands.values()].slice(-256);
+    const all = [...this.playoutCommands.values()];
+    const records = all.slice(-PLAYOUT_JOURNAL_LIMIT);
+    this.telemetry.observePlayoutJournal(records.length, all.length - records.length);
     const directory = dirname(this.playoutJournalPath);
     const temporary = `${this.playoutJournalPath}.tmp`;
     await mkdir(directory, { recursive: true });

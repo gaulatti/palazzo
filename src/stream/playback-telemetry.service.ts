@@ -77,6 +77,7 @@ export interface LiquidsoapSnapshot {
 
 export type PlaybackEventType =
   | 'snapshot'
+  | 'replay.gap'
   | 'telemetry.connected'
   | 'telemetry.disconnected'
   | 'track.started'
@@ -268,6 +269,9 @@ export class PlaybackTelemetryService {
   private levelSamplesCoalesced = 0;
   private replayLevelsDropped = 0;
   private replayOtherDropped = 0;
+  private replayGaps = 0;
+  private playoutJournalRecords = 0;
+  private playoutJournalTrimmed = 0;
   private readonly dependencyResults = new Map<string, number>();
   private readonly pairedCommandResults = new Map<string, number>();
   private readonly introLifecycleResults = new Map<string, number>();
@@ -586,6 +590,12 @@ export class PlaybackTelemetryService {
     this.dependencyResults.set(key, (this.dependencyResults.get(key) ?? 0) + 1);
   }
 
+  /** #56: the persisted journal's size and the records the limit dropped. */
+  observePlayoutJournal(records: number, trimmed: number): void {
+    this.playoutJournalRecords = records;
+    this.playoutJournalTrimmed += Math.max(0, trimmed);
+  }
+
   observePairedCommand(
     result: 'accepted' | 'deduplicated' | 'rejected',
     reason:
@@ -804,10 +814,21 @@ export class PlaybackTelemetryService {
 
   subscribe(lastEventId?: string): Observable<PlaybackEvent> {
     const replay = lastEventId ? this.eventsAfter(lastEventId) : [];
+    // #56: a cursor that is no longer in the replay window (evicted, or from
+    // another boot) cannot be resumed. The client gets the current snapshot and
+    // then an explicit gap marker, so a gap is never mistaken for a quiet stream.
     const replaySnapshot = lastEventId
       ? this.snapshotByEventId.get(lastEventId)
       : undefined;
     const snapshot = replaySnapshot ?? this.getState();
+    // A client already at the current snapshot (including one that reconnects
+    // right after a gap marker, which carries the snapshot's id) has missed
+    // nothing.
+    const gap =
+      !!lastEventId &&
+      lastEventId !== `${snapshot.bootId}:${snapshot.sequence}` &&
+      !this.replay.some((event) => event.id === lastEventId);
+    if (gap) this.replayGaps += 1;
     const initial: PlaybackEvent = {
       schemaVersion: 1,
       id: `${snapshot.bootId}:${snapshot.sequence}`,
@@ -832,7 +853,7 @@ export class PlaybackTelemetryService {
     return new Observable<PlaybackEvent>((subscriber) => {
       this.subscribers += 1;
       const subscription = concat(
-        from([initial, ...replay]),
+        from(gap ? [initial, this.gapEvent(snapshot)] : [initial, ...replay]),
         coalescedLive,
       ).subscribe(subscriber);
       return () => {
@@ -904,6 +925,15 @@ export class PlaybackTelemetryService {
       '# TYPE palazzo_sse_replay_dropped_total counter',
       `palazzo_sse_replay_dropped_total{type="levels"} ${this.replayLevelsDropped}`,
       `palazzo_sse_replay_dropped_total{type="other"} ${this.replayOtherDropped}`,
+      '# HELP palazzo_playout_journal_records Playout commands in the persisted dedupe journal.',
+      '# TYPE palazzo_playout_journal_records gauge',
+      `palazzo_playout_journal_records ${this.playoutJournalRecords}`,
+      '# HELP palazzo_playout_journal_trimmed_total Playout commands dropped from the journal by its limit.',
+      '# TYPE palazzo_playout_journal_trimmed_total counter',
+      `palazzo_playout_journal_trimmed_total ${this.playoutJournalTrimmed}`,
+      '# HELP palazzo_replay_gap_total Reconnects whose last event id was no longer in the replay window.',
+      '# TYPE palazzo_replay_gap_total counter',
+      `palazzo_replay_gap_total ${this.replayGaps}`,
       '# HELP palazzo_sse_subscribers Current playback event subscribers.',
       '# TYPE palazzo_sse_subscribers gauge',
       `palazzo_sse_subscribers ${this.subscribers}`,
@@ -1175,6 +1205,20 @@ export class PlaybackTelemetryService {
       }
     }
     this.live.next(event);
+  }
+
+  private gapEvent(snapshot: { bootId: string; sequence: number; instanceId: string }): PlaybackEvent {
+    return {
+      schemaVersion: 1,
+      // The snapshot's id, so a reconnect resumes from the snapshot.
+      id: `${snapshot.bootId}:${snapshot.sequence}`,
+      instanceId: snapshot.instanceId,
+      bootId: snapshot.bootId,
+      sequence: snapshot.sequence,
+      type: 'replay.gap',
+      occurredAt: new Date().toISOString(),
+      data: { reason: 'cursor_not_in_replay', replayEvents: this.replay.length },
+    };
   }
 
   private eventsAfter(lastEventId: string): PlaybackEvent[] {

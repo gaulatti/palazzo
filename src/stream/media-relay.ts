@@ -1,4 +1,9 @@
-import { Injectable, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
+import {
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  OnModuleInit,
+} from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { randomBytes } from "node:crypto";
 import { lookup as dnsLookup } from "node:dns";
@@ -260,10 +265,21 @@ export class MediaRelay implements OnModuleInit, OnModuleDestroy {
         }
       }
       // An over-capacity map is nonempty; its first key is the oldest token.
-      this.tokens.delete(victim ?? this.tokens.keys().next().value!);
+      const evicted = victim ?? this.tokens.keys().next().value!;
+      const kind = this.tokens.get(evicted)?.path ?? "unknown";
+      this.tokens.delete(evicted);
+      this.evictions.set(kind, (this.evictions.get(kind) ?? 0) + 1);
+      // #56: a playout read evicted under pressure will answer 404.
+      if (kind !== "preflight")
+        this.logger.warn(
+          `Media relay evicted a ${kind} token at its ${MAX_RELAY_TOKENS}-token limit`,
+        );
     }
     return `http://127.0.0.1:${this.port}/m/${token}${extension ? `.${extension[1].toLowerCase()}` : ""}`;
   }
+
+  private readonly logger = new Logger("MediaRelay");
+  private readonly evictions = new Map<string, number>();
 
   renderMetrics(): string {
     const lines = [
@@ -276,6 +292,15 @@ export class MediaRelay implements OnModuleInit, OnModuleDestroy {
           `palazzo_media_fetch_total{path="${path}",result="${result}"} ${this.counts.get(`${path}\u0000${result}`) ?? 0}`,
         );
       }
+    }
+    lines.push(
+      "# HELP palazzo_media_relay_evictions_total Relay tokens evicted at the token limit, by path kind.",
+      "# TYPE palazzo_media_relay_evictions_total counter",
+    );
+    for (const path of MEDIA_FETCH_PATHS) {
+      lines.push(
+        `palazzo_media_relay_evictions_total{path="${path}"} ${this.evictions.get(path) ?? 0}`,
+      );
     }
     return `${lines.join("\n")}\n`;
   }

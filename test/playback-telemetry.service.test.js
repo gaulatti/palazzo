@@ -860,3 +860,49 @@ test('a new start of an ended id plays again, and only the most recent ended ids
   telemetry.apply(snapshot({ liquidsoap_sequence: sequence, playback_request_id: 'song-old' }), []);
   assert.equal(telemetry.getState().track.playbackRequestId, 'song-old');
 });
+
+test('#56: a cursor evicted from the replay window gets a gap marker after the snapshot, and is counted', async () => {
+  const telemetry = service();
+  telemetry.setLiquidsoapRunning(true);
+  telemetry.apply(snapshot(), [lifecycle(1, 'track_started')]);
+  const oldest = telemetry.replay[0].id;
+  for (let index = 2; index <= 600; index += 1) telemetry.apply(snapshot({ liquidsoap_sequence: index }), [lifecycle(index, 'track_started')]);
+  assert.ok(!telemetry.replay.some((event) => event.id === oldest), 'the oldest id was evicted');
+
+  const events = await firstValueFrom(telemetry.subscribe(oldest).pipe(take(2), toArray()));
+
+  assert.equal(events[0].type, 'snapshot');
+  assert.equal(events[1].type, 'replay.gap');
+  assert.deepEqual(events[1].data, { reason: 'cursor_not_in_replay', replayEvents: telemetry.replay.length });
+  const metrics = await telemetry.renderMetrics();
+  assert.match(metrics, /^palazzo_replay_gap_total 1$/m);
+  assertBoundedLabels(parseExposition(metrics));
+});
+
+test('#56: a cursor from another boot is a gap, a cursor still in the window is not', async () => {
+  const telemetry = service();
+  telemetry.apply(snapshot(), [lifecycle(1, 'track_started')]);
+  const kept = telemetry.replay[0].id;
+  telemetry.apply(snapshot({ liquidsoap_sequence: 2 }), [lifecycle(2, 'track_started')]);
+
+  const other = await firstValueFrom(telemetry.subscribe('old-boot:99').pipe(take(2), toArray()));
+  assert.deepEqual(other.map((event) => event.type), ['snapshot', 'replay.gap']);
+  const inWindow = await firstValueFrom(telemetry.subscribe(kept).pipe(take(2), toArray()));
+  assert.notEqual(inWindow[1].type, 'replay.gap');
+  assert.match(await telemetry.renderMetrics(), /^palazzo_replay_gap_total 1$/m);
+
+  // Reconnecting with the gap marker's id resumes from the snapshot: no second gap.
+  const resumed = await firstValueFrom(telemetry.subscribe(other[1].id));
+  assert.equal(other[1].id, other[0].id);
+  assert.equal(resumed.type, 'snapshot');
+  assert.match(await telemetry.renderMetrics(), /^palazzo_replay_gap_total 1$/m);
+});
+
+test('#56: the playout journal size and trims are exposed', async () => {
+  const telemetry = service();
+  telemetry.observePlayoutJournal(256, 2);
+  telemetry.observePlayoutJournal(256, 1);
+  const metrics = await telemetry.renderMetrics();
+  assert.match(metrics, /^palazzo_playout_journal_records 256$/m);
+  assert.match(metrics, /^palazzo_playout_journal_trimmed_total 3$/m);
+});

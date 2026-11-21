@@ -4,7 +4,7 @@ const test = require('node:test');
 const fs = require('node:fs/promises');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
-const { StreamService } = require('../dist/stream/stream.service');
+const { StreamService, PLAYOUT_JOURNAL_LIMIT } = require('../dist/stream/stream.service');
 const { PlaybackTelemetryService } = require('../dist/stream/playback-telemetry.service');
 const { mediaProbeResult } = require('./media-probe-fixture');
 
@@ -14,7 +14,7 @@ async function fixture(t, values = {}) {
   const config = { get: (key) => ({ PLAYOUT_COMMAND_JOURNAL_PATH: path, ...values })[key] };
   const telemetry = new PlaybackTelemetryService(config);
   const service = new StreamService(config, telemetry, { getRuntimeState: () => ({}) }, identityRelay);
-  service.logger = { log() {}, debug() {} };
+  service.logger = { log() {}, debug() {}, warn() {}, error() {} };
   service.assetProbe = async () => mediaProbeResult();
   const commands = [];
   service.telnet = { send: async (command) => { commands.push(command); return 'ok'; }, close() {} };
@@ -130,4 +130,29 @@ test('transport poll failures remain observable and do not erase last-known play
   }
   assert.equal(telemetry.getState().liquidsoap.connected, false);
   assert.match(await telemetry.renderMetrics(), /operation="telemetry_poll",result="failure"\} 2/);
+});
+
+test('#56: a journal write that fails after an engine rejection is logged, and the rejection still stands', async (t) => {
+  const { service, telemetry, song } = await fixture(t);
+  const errors = [];
+  service.logger = { log() {}, debug() {}, warn() {}, error: (message) => errors.push(message) };
+  service.telnet.send = async () => { throw new Error('private engine detail'); };
+  const persist = service.persistPlayoutJournal.bind(service);
+  let writes = 0;
+  // The reservation write succeeds; the write after the rejection fails.
+  service.persistPlayoutJournal = async () => { writes += 1; if (writes === 1) return persist(); throw Object.assign(new Error('disk full /private/path'), { name: 'JournalError' }); };
+  await assert.rejects(service.playProgramSong('station', 'journal-failure', { song }), /engine rejected/);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /journal could not be written after an engine rejection \(JournalError\)/);
+  assert.doesNotMatch(errors[0], /disk full|private/);
+  assert.match(await telemetry.renderMetrics(), /result="rejected",reason="engine_failure"\} 1/);
+});
+
+test('#56: the playout journal keeps its named limit and counts what it trims', async (t) => {
+  const { service, telemetry, path, song } = await fixture(t);
+  for (let index = 0; index < PLAYOUT_JOURNAL_LIMIT + 2; index += 1) await service.playProgramSong('station', `limit-${index}`, { song: { ...song, playbackId: `limit-${index}` } });
+  assert.equal(JSON.parse(await fs.readFile(path, 'utf8')).length, PLAYOUT_JOURNAL_LIMIT);
+  const metrics = await telemetry.renderMetrics();
+  assert.match(metrics, new RegExp(`^palazzo_playout_journal_records ${PLAYOUT_JOURNAL_LIMIT}$`, 'm'));
+  assert.match(metrics, /^palazzo_playout_journal_trimmed_total 2$/m);
 });

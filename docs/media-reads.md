@@ -43,6 +43,13 @@ is `song`, `intro`, `instant`, `next`, `preflight` or `filler`; `result` is
 zero. A sustained rise of `address` or `dns` for a path means media is being
 supplied from a host Palazzo will not read.
 
+The relay holds at most 512 tokens. Preflight tokens are evicted first and
+silently. When a playout token (`song`, `intro`, `instant`, `next`, `filler`)
+has to be evicted, Palazzo logs one warning naming the path kind, never the
+URL, and `palazzo_media_relay_evictions_total{path}` counts every eviction. A
+rising playout count means the station is issuing tokens faster than they are
+used.
+
 ## Local stacks
 
 Local Compose serves media from private addresses, so `compose.yml` sets

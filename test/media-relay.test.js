@@ -319,7 +319,8 @@ test('no token, URL or host appears in the metrics, and every series starts at z
   const { port } = await origin(t, audio());
   const { relay } = await relayFor(t, port, { 'media.example.test': [PUBLIC] });
   const fresh = await counts(relay);
-  assert.equal(fresh.size, 6 * 11);
+  // 6 paths x 11 fetch results, plus one eviction series per path (#56).
+  assert.equal(fresh.size, 6 * 11 + 6);
   assert.ok([...fresh.values()].every((value) => value === 0));
   const url = await relay.issue('https://media.example.test/a.mp3?sig=secret', 'song', 5_000);
   await get(url);
@@ -441,4 +442,22 @@ test('waits for a slow reader instead of buffering the whole answer', async (t) 
     }).on('error', reject);
   });
   assert.equal(received, big.length);
+});
+
+test('#56: evicting a playout token at the limit warns once with the path kind and no URL, and is counted', async (t) => {
+  const { port } = await origin(t, audio());
+  const { relay } = await relayFor(t, port, { 'media.example.test': [PUBLIC] });
+  const warnings = [];
+  relay.logger = { warn: (message) => warnings.push(message), log() {}, error() {}, debug() {} };
+  for (let i = 0; i < MAX_RELAY_TOKENS * 2; i += 1) await relay.issue('https://media.example.test/a.mp3', 'preflight', 60_000);
+  assert.deepEqual(warnings, [], 'preflight eviction is routine and silent');
+  for (let i = 0; i < MAX_RELAY_TOKENS; i += 1) await relay.issue('https://media.example.test/a.mp3', 'song', 60_000);
+  await relay.issue('https://media.example.test/a.mp3', 'next', 60_000);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /evicted a song token at its 512-token limit/);
+  assert.doesNotMatch(warnings[0], /media\.example\.test|https?:/);
+  const samples = parseExposition(relay.renderMetrics());
+  assertBoundedLabels(samples);
+  assert.match(relay.renderMetrics(), /^palazzo_media_relay_evictions_total\{path="song"\} 1$/m);
+  assert.match(relay.renderMetrics(), /^palazzo_media_relay_evictions_total\{path="preflight"\} [1-9]\d*$/m);
 });
