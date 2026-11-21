@@ -44,6 +44,13 @@ export interface ProgramInstantPayload extends InstantPayload {
   playbackId: string;
 }
 
+/**
+ * Seconds a cue point may trim from one edge of a song (gaulatti/palazzo#53;
+ * the same bound as Alcantara's, gaulatti/alcantara#234). Catalog on
+ * 2026-11-21: tail silence max 8.01 s, head max 9.81 s.
+ */
+export const CUE_EDGE_BOUND_SECONDS = 10;
+
 export interface ProgramAsset {
   programId: string;
   playbackId: string;
@@ -1138,7 +1145,8 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
   /**
    * Announces the song that follows the current one (gaulatti/palazzo#40). Palazzo probes it, resolves
    * it in the background within the current song's remaining time (capped by
-   * PLAYOUT_NEXT_RESOLVE_MAX_SECONDS) and starts it itself at the current song's cue-out minus its overlap.
+   * PLAYOUT_NEXT_RESOLVE_MAX_SECONDS) and starts it itself at the current song's end (its cue-out when it
+   * was sent cue points, since Liquidsoap plays a song from cue-in to cue-out) minus its overlap.
    */
   async announceNext(
     programId: string,
@@ -1215,6 +1223,7 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
       const annotations = this.songAnalysisAnnotations(
         song.playbackId,
         data.song,
+        readiness.media?.durationSeconds,
       );
       if (overlap > 0) {
         // Entering under an overlap, the song rises over at least MIN_OVERLAP_FADE_IN_SECONDS so the
@@ -1340,19 +1349,49 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
    * group is dropped and counted; the song is never refused because of it.
    * Without either group this returns nothing, so the request is unchanged.
    */
+  /**
+   * Annotations from a song's analysis. Liquidsoap 2.4's request.create applies
+   * liq_cue_in / liq_cue_out itself (cue_cut is built into request
+   * resolution), so the song plays from cue-in to cue-out and its end, its
+   * remaining time and every position hook are on the trimmed clock
+   * (gaulatti/palazzo#53). Each edge is bounded on its own: an edge that would
+   * trim more than CUE_EDGE_BOUND_SECONDS is not annotated, so that edge plays
+   * untrimmed, and it is counted. The tail is bounded against the file's own
+   * probed length when known (`fileDurationSeconds`, an announcement), else
+   * the payload's duration; with neither, the tail is applied as sent, which
+   * Alcantara bounds before sending (gaulatti/alcantara#234). liq_fade_in and
+   * liq_fade_out are annotated but no operator reads them: no fade is applied.
+   */
   private songAnalysisAnnotations(
     playbackRequestId: string,
     song: ProgramSongPayload["song"],
+    fileDurationSeconds?: number,
   ): Record<string, string> {
     const annotations: Record<string, string> = {};
     if (song.segue !== undefined) {
       const segue = validSongSegue(song.segue, song.duration);
       if (segue) {
-        annotations.liq_cue_in = decimal(segue.cueInSeconds);
-        annotations.liq_cue_out = decimal(segue.cueOutSeconds);
+        const duration = fileDurationSeconds ?? song.duration;
+        const head = segue.cueInSeconds;
+        const tail =
+          duration !== undefined ? duration - segue.cueOutSeconds : undefined;
+        if (head > CUE_EDGE_BOUND_SECONDS) {
+          this.telemetry.observeCueIgnored("head");
+          this.telemetry.rememberSongCueIn(playbackRequestId, 0);
+        } else {
+          annotations.liq_cue_in = decimal(head);
+          this.telemetry.rememberSongCueIn(playbackRequestId, head);
+          if (head > 0) this.telemetry.observeSongTrim("head", head);
+        }
+        if (tail !== undefined && tail > CUE_EDGE_BOUND_SECONDS) {
+          this.telemetry.observeCueIgnored("tail");
+        } else {
+          annotations.liq_cue_out = decimal(segue.cueOutSeconds);
+          if (tail !== undefined && tail > 0)
+            this.telemetry.observeSongTrim("tail", tail);
+        }
         annotations.liq_fade_in = decimal(segue.fadeInSeconds);
         annotations.liq_fade_out = decimal(segue.fadeOutSeconds);
-        this.telemetry.rememberSongCueIn(playbackRequestId, segue.cueInSeconds);
         this.rememberOverlap(playbackRequestId, segue.overlapSeconds);
       } else {
         this.telemetry.observeSongAnalysisDropped("segue");

@@ -205,6 +205,19 @@ const NORMALIZED_ROUTES = new Set([
 ]);
 
 type SongChangePath = 'announced' | 'bumper' | 'command';
+type CueEdge = 'head' | 'tail';
+const SONG_TRIM_BUCKETS = [0.5, 1, 2, 3, 5, 8, 10] as const;
+const emptyTrimHistogram = () => ({
+  buckets: SONG_TRIM_BUCKETS.map(() => 0),
+  sum: 0,
+  count: 0,
+});
+/**
+ * The instants-bus level (rms or peak, linear) above which an instant is
+ * heard: -50 dBFS, the threshold of the silence checks (silencedetect
+ * noise=-50dB) and of Alcantara's analysis.
+ */
+export const AUDIBLE_INSTANT_LEVEL = 10 ** (-50 / 20);
 /** A song started more than this after the previous one ended is not a song change (the filler, a stop). */
 const SONG_CHANGE_WINDOW_MS = 30_000;
 /** Seconds; 1.5 s is the audible-silence line of gaulatti/palazzo#49. */
@@ -263,6 +276,11 @@ export class PlaybackTelemetryService {
     unknown_kind: 0,
   };
   private readonly playoutTransitions = new Map<string, number>();
+  private readonly songTrims: Record<
+    CueEdge,
+    { buckets: number[]; sum: number; count: number }
+  > = { head: emptyTrimHistogram(), tail: emptyTrimHistogram() };
+  private readonly cueIgnored: Record<CueEdge, number> = { head: 0, tail: 0 };
   private readonly songAnalysisDropped: Record<'loudness' | 'segue', number> =
     { loudness: 0, segue: 0 };
   /** Song requests Liquidsoap could not resolve (palazzo#42). */
@@ -315,6 +333,13 @@ export class PlaybackTelemetryService {
    * start, from Liquidsoap's instant_started/instant_ended journal, is subtracted from that change's gap.
    */
   private instantOnAirSinceMs: number | null = null;
+  /**
+   * Whether the instant on air was heard (gaulatti/palazzo#53): a snapshot
+   * during it measured the instants bus above AUDIBLE_INSTANT_LEVEL. Only an
+   * audible instant's time is subtracted from a change's gap, so a spot
+   * journalled as played but silent counts as the silence it is.
+   */
+  private instantAudible = false;
   private spotMsInChange = 0;
   /** The song last accepted through PUT /playback/next, to tell an announced start from a command. */
   private announcedPlaybackId: string | null = null;
@@ -437,6 +462,13 @@ export class PlaybackTelemetryService {
       if (event.sequence <= this.liquidsoapSequence) continue;
       this.liquidsoapSequence = event.sequence;
       this.applyLifecycle(event);
+    }
+    if (
+      this.instantOnAirSinceMs !== null &&
+      (snapshot.instant_rms > AUDIBLE_INSTANT_LEVEL ||
+        snapshot.instant_peak > AUDIBLE_INSTANT_LEVEL)
+    ) {
+      this.instantAudible = true;
     }
 
     if (snapshot.playing) {
@@ -591,6 +623,21 @@ export class PlaybackTelemetryService {
     this.announcedPlaybackId = playbackId;
     this.announcedWithBumper = withBumper;
     this.emit('playout.next_queued', { programId, playbackId });
+  }
+
+  /** A cue edge applied to a song, in seconds trimmed (gaulatti/palazzo#53). */
+  observeSongTrim(edge: CueEdge, seconds: number): void {
+    const histogram = this.songTrims[edge];
+    SONG_TRIM_BUCKETS.forEach((bound, index) => {
+      if (seconds <= bound) histogram.buckets[index] += 1;
+    });
+    histogram.sum += seconds;
+    histogram.count += 1;
+  }
+
+  /** A cue edge not applied because it would trim more than the bound. */
+  observeCueIgnored(edge: CueEdge): void {
+    this.cueIgnored[edge] += 1;
   }
 
   /** Counts an invalid song analysis group dropped from a song command. */
@@ -994,7 +1041,7 @@ export class PlaybackTelemetryService {
         const changeStart = this.lastEndedTrack.occurredAt;
         const spotMs =
           this.spotMsInChange +
-          (this.instantOnAirSinceMs !== null
+          (this.instantOnAirSinceMs !== null && this.instantAudible
             ? startedAt - Math.max(this.instantOnAirSinceMs, changeStart)
             : 0);
         this.observeSongChangeGap(
@@ -1165,8 +1212,9 @@ export class PlaybackTelemetryService {
     const at = event.occurred_at * 1_000;
     if (event.event_type === 'instant_started') {
       this.instantOnAirSinceMs = at;
+      this.instantAudible = false;
     } else if (this.instantOnAirSinceMs !== null) {
-      if (this.lastEndedTrack)
+      if (this.lastEndedTrack && this.instantAudible)
         this.spotMsInChange += Math.max(
           0,
           at - Math.max(this.instantOnAirSinceMs, this.lastEndedTrack.occurredAt),
@@ -1212,6 +1260,29 @@ export class PlaybackTelemetryService {
         `palazzo_song_change_gap_seconds_count{handoff="${path}"} ${histogram.count}`,
       );
     }
+    lines.push(
+      '# HELP palazzo_song_trimmed_seconds Seconds of silence trimmed from a song edge by its cue points (gaulatti/palazzo#53), per song sent with them.',
+      '# TYPE palazzo_song_trimmed_seconds histogram',
+    );
+    for (const edge of ['head', 'tail'] as const) {
+      const histogram = this.songTrims[edge];
+      SONG_TRIM_BUCKETS.forEach((bound, index) => {
+        lines.push(
+          `palazzo_song_trimmed_seconds_bucket{edge="${edge}",le="${bound}"} ${histogram.buckets[index]}`,
+        );
+      });
+      lines.push(
+        `palazzo_song_trimmed_seconds_bucket{edge="${edge}",le="+Inf"} ${histogram.count}`,
+        `palazzo_song_trimmed_seconds_sum{edge="${edge}"} ${roundSeconds(histogram.sum)}`,
+        `palazzo_song_trimmed_seconds_count{edge="${edge}"} ${histogram.count}`,
+      );
+    }
+    lines.push(
+      '# HELP palazzo_song_cue_ignored_total Cue edges not applied because they would trim more than 10 s; the edge plays untrimmed.',
+      '# TYPE palazzo_song_cue_ignored_total counter',
+      `palazzo_song_cue_ignored_total{edge="head",reason="bound"} ${this.cueIgnored.head}`,
+      `palazzo_song_cue_ignored_total{edge="tail",reason="bound"} ${this.cueIgnored.tail}`,
+    );
     lines.push(
       '# HELP palazzo_song_change_last_gap_seconds The silence at the most recent song change; absent before the first.',
       '# TYPE palazzo_song_change_last_gap_seconds gauge',

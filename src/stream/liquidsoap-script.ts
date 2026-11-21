@@ -388,8 +388,10 @@ def drop_bumper() =
   end
 end
 
-# Per deck: loudness gain from liq_amplify (1.0 when absent), the song volume, and fades from
-# liq_fade_in / liq_fade_out (none when absent).
+# Per deck: loudness gain from liq_amplify (1.0 when absent) and the song volume. A song's cue points
+# (liq_cue_in / liq_cue_out) are applied by request resolution itself in Liquidsoap 2.4, so the deck plays
+# from cue-in to cue-out and its remaining time and every position hook below are on that trimmed clock
+# (gaulatti/palazzo#53). No fade is applied: the fade operators below have no duration and no override.
 def song_deck(queue, is_open) =
   gated = switch(track_sensitive=false, [({is_open()}, queue)])
   normalized = amplify(override="liq_amplify", 1., gated)

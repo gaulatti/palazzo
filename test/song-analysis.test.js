@@ -399,3 +399,28 @@ test("keeps cue-ins for a bounded number of recent songs", () => {
   telemetry.apply(snapshot({ playback_request_id: "song-63" }), []);
   assert.equal(telemetry.getState().positionSeconds, 11);
 });
+
+// gaulatti/palazzo#53: Palazzo's own bound. An edge that would trim more than 10 s is not annotated, so that
+// edge plays untrimmed, and it is counted; the other edge is still applied.
+test("a cue edge that would trim more than 10 s is not annotated and is counted", async () => {
+  const { play, telemetry } = await harness();
+  // Head 11 s: not applied; tail 190 - 182.5 = 7.5 s: applied.
+  let push = await play({ segue: { ...SEGUE, cueInSeconds: 11, overlapSeconds: 0 }, duration: 190 });
+  assert.doesNotMatch(push, /liq_cue_in/);
+  assert.match(push, /liq_cue_out="182\.5"/);
+  // Head 3 s applied; tail 200 - 182.5 = 17.5 s: not applied.
+  push = await play({ segue: SEGUE, duration: 200 });
+  assert.match(push, /liq_cue_in="3"/);
+  assert.doesNotMatch(push, /liq_cue_out/);
+  // No known duration: the tail cannot be bounded here and is applied as sent (Alcantara bounds it).
+  push = await play({ segue: SEGUE });
+  assert.match(push, /liq_cue_out="182\.5"/);
+  const samples = parseExposition(await telemetry.renderMetrics());
+  assertBoundedLabels(samples);
+  const value = (name, labels) =>
+    samples.find((s) => s.name === name && Object.entries(labels).every(([k, v]) => s.labels[k] === v))?.value;
+  assert.equal(value('palazzo_song_cue_ignored_total', { edge: 'head', reason: 'bound' }), 1);
+  assert.equal(value('palazzo_song_cue_ignored_total', { edge: 'tail', reason: 'bound' }), 1);
+  assert.equal(value('palazzo_song_trimmed_seconds_count', { edge: 'tail' }), 1);
+  assert.equal(value('palazzo_song_trimmed_seconds_count', { edge: 'head' }), 2);
+});

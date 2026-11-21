@@ -635,7 +635,9 @@ test('subtracts journalled spot time from the gap, ignores unknown journal event
   step(event(2, 'instant_started', 'spot-0', 2_010), event(3, 'instant_ended', 'spot-0', 2_015));
   // The bumper change of today: the song ends, a 5.6 s spot, silence, then the song by command 9.2 s after the end.
   step(event(4, 'track_ended', 'song-a', 2_100));
-  step(event(5, 'instant_started', 'spot-1', 2_100.3), event(6, 'instant_ended', 'spot-1', 2_105.9));
+  // A snapshot while the spot is on air measures it on the instants bus (the default snapshot's level).
+  step(event(5, 'instant_started', 'spot-1', 2_100.3));
+  step(event(6, 'instant_ended', 'spot-1', 2_105.9));
   step(event(7, 'track_started', 'song-b', 2_109.2));
   assert.equal(await value('palazzo_song_change_last_gap_seconds'), 3.6);
   assert.equal(await value('palazzo_song_change_gap_seconds_sum', { handoff: 'command' }), 3.6);
@@ -722,4 +724,57 @@ test('counts bumper results and measures a change after an announced spot withou
   assert.equal(value('palazzo_song_change_gap_seconds_bucket', { handoff: 'bumper', le: '0.25' }), 1);
   telemetry.observeBumper('dropped_unresolved');
   assert.match(await telemetry.renderMetrics(), /palazzo_next_bumper_total\{result="dropped_unresolved"\} 1/);
+});
+
+// gaulatti/palazzo#53: a spot journalled as played but silent on the instants bus is silence, not spot time.
+test('subtracts a spot only when the instants bus measured it above -50 dBFS', async () => {
+  const telemetry = service();
+  telemetry.setLiquidsoapRunning(true);
+  const event = (sequence, type, id, occurred_at) => ({
+    ...lifecycle(sequence, type),
+    playback_request_id: id,
+    playback_id: id,
+    occurred_at,
+  });
+  const journal = [];
+  const step = (levels, ...events) => {
+    journal.push(...events);
+    telemetry.apply(snapshot({ liquidsoap_sequence: journal.length, ...levels }), [...journal]);
+  };
+  const last = async () =>
+    parseExposition(await telemetry.renderMetrics()).find((s) => s.name === 'palazzo_song_change_last_gap_seconds')?.value;
+  const silent = { instant_rms: 0, instant_peak: 0.001 };
+  step(silent, event(1, 'track_started', 'song-a', 4_000));
+  step(silent, event(2, 'track_ended', 'song-a', 4_100));
+  // The spot is on air for 5.6 s but the instants bus never rises above -50 dBFS.
+  step(silent, event(3, 'instant_started', 'spot-1', 4_100.1));
+  step(silent, event(4, 'instant_ended', 'spot-1', 4_105.7));
+  step(silent, event(5, 'track_started', 'song-b', 4_105.8));
+  assert.equal(await last(), 5.8);
+  // The same change with the spot heard: only the 0.2 s around it is silence.
+  step(silent, event(6, 'track_ended', 'song-b', 4_300));
+  step(silent, event(7, 'instant_started', 'spot-2', 4_300.1));
+  step({ instant_rms: 0.17, instant_peak: 0.69 });
+  step(silent, event(8, 'instant_ended', 'spot-2', 4_305.7));
+  step(silent, event(9, 'track_started', 'song-c', 4_305.8));
+  assert.equal(await last(), 0.2);
+});
+
+// gaulatti/palazzo#53: cue edges trimmed, and edges over the bound not applied, are counted per edge.
+test('counts trimmed and ignored cue edges per edge with bounded labels', async () => {
+  const telemetry = service();
+  telemetry.observeSongTrim('tail', 2.4);
+  telemetry.observeSongTrim('head', 0.8);
+  telemetry.observeSongTrim('tail', 9.5);
+  telemetry.observeCueIgnored('tail');
+  const samples = parseExposition(await telemetry.renderMetrics());
+  assertBoundedLabels(samples);
+  const value = (name, labels) =>
+    samples.find((s) => s.name === name && Object.entries(labels).every(([k, v]) => s.labels[k] === v))?.value;
+  assert.equal(value('palazzo_song_trimmed_seconds_count', { edge: 'tail' }), 2);
+  assert.equal(value('palazzo_song_trimmed_seconds_bucket', { edge: 'tail', le: '3' }), 1);
+  assert.equal(value('palazzo_song_trimmed_seconds_bucket', { edge: 'tail', le: '10' }), 2);
+  assert.equal(value('palazzo_song_trimmed_seconds_count', { edge: 'head' }), 1);
+  assert.equal(value('palazzo_song_cue_ignored_total', { edge: 'tail', reason: 'bound' }), 1);
+  assert.equal(value('palazzo_song_cue_ignored_total', { edge: 'head', reason: 'bound' }), 0);
 });

@@ -110,6 +110,7 @@ function assertBoundedLabels(samples) {
     ]),
     reason: new Set([
       "asset_unavailable",
+      "bound",
       "cache_hit",
       "corrupt",
       "decode_failure",
@@ -132,6 +133,8 @@ function assertBoundedLabels(samples) {
       "unsupported_media",
       "withdrawn",
     ]),
+    // palazzo_song_trimmed_seconds, palazzo_song_cue_ignored_total (gaulatti/palazzo#53)
+    edge: new Set(["head", "tail"]),
     // palazzo_song_change_gap_seconds (gaulatti/palazzo#49)
     handoff: new Set(["announced", "bumper", "command"]),
     // palazzo_media_fetch_total (gaulatti/palazzo#45)

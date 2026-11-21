@@ -159,6 +159,23 @@ before, and the added operators are no-ops without their annotations:
 `liq_amplify` defaults to `1.`, and both fades default to a duration of `0.`.
 Intros, instants, filler and mixer volumes are unchanged.
 
+## Cue points (gaulatti/palazzo#53)
+
+A valid `segue` group's `cueInSeconds` and `cueOutSeconds` are annotated as
+`liq_cue_in` and `liq_cue_out`. Liquidsoap 2.4's `request.create` applies them
+itself (`cue_cut` is built into request resolution). So the song plays from
+cue-in to cue-out, and its end, its handoff, its remaining time and every
+position hook (the overlap point, the spot lead, `track_ended`) are on that
+trimmed clock. Measured on 2.4.5: a 16 s file cued 3–13 s reports 9.86 s
+remaining and hands off after 9.95 s.
+
+Each edge is bounded at 10 s (`CUE_EDGE_BOUND_SECONDS`, the same bound as
+Alcantara's). An edge over it is not annotated, so that edge plays untrimmed,
+and it is counted. The tail is bounded against the announcement's probed file
+length, else the payload's `duration`; with neither, the cue-out is applied as
+sent. `liq_fade_in` and `liq_fade_out` are annotated, but no operator reads
+them, so no fade is applied.
+
 ## Announced next song (gapless handoff and overlap)
 
 `PUT /v1/programs/{programId}/playback/next` announces the song that follows the

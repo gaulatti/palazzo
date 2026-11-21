@@ -153,7 +153,10 @@ Useful metrics:
   A spot on air is not silence. The time an instant is on air between the end
   and the next start comes from Liquidsoap's `instant_started` and
   `instant_ended` journal entries (see below) and is subtracted, so one number
-  means silence. An instant Liquidsoap does not journal is still counted as
+  means silence. Since gaulatti/palazzo#53 it is subtracted only when a
+  snapshot taken while the instant was on air measured the instants bus above
+  -50 dBFS (`AUDIBLE_INSTANT_LEVEL`, rms or peak). A spot that is journalled as
+  played but silent on the bus counts as the silence it is. An instant Liquidsoap does not journal is still counted as
   silence: until the script journals instants (gaulatti/palazzo#50), a change
   with a spot includes the spot. A song command or a stop drops any
   announcement, so a commanded song is labelled `command` even when it carries
@@ -171,6 +174,14 @@ Useful metrics:
   series is exposed from 0. A song changed after an announced spot is labelled
   `handoff="bumper"` in `palazzo_song_change_gap_seconds`, with the spot's time
   subtracted.
+- `palazzo_song_trimmed_seconds{edge="head|tail"}` (histogram, buckets 0.5, 1,
+  2, 3, 5, 8, 10 s): the seconds a song's cue points trim from each edge, one
+  observation per applied edge (gaulatti/palazzo#53). The tail is measured
+  against the announcement's probed file length, else the payload duration,
+  and is not observed when neither is known.
+- `palazzo_song_cue_ignored_total{edge="head|tail",reason="bound"}`: cue edges
+  that were not applied because they would trim more than 10 s. That edge
+  plays untrimmed.
 - `palazzo_song_change_last_gap_seconds`: the gap at the most recent song
   change. It is absent until the first change after a restart.
 
