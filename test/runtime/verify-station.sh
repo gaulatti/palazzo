@@ -54,8 +54,14 @@ docker exec "$station_container" ffmpeg -hide_banner -loglevel error -y \
   -f lavfi -i sine=frequency=1000:sample_rate=44100 -t 4 /tmp/song.wav
 docker exec "$station_container" ffmpeg -hide_banner -loglevel error -y \
   -f lavfi -i sine=frequency=2000:sample_rate=44100 -t 2 /tmp/instant.wav
+# Tones for the spot-then-command check below: each song its own frequency.
+for spec in 'spot-a 1000 6' 'spot-b 440 20' 'spot-spot 2000 5' 'spot-c 660 14' 'spot-d 550 8'; do
+  set -- $spec
+  docker exec "$station_container" ffmpeg -hide_banner -loglevel error -y \
+    -f lavfi -i "sine=frequency=$2:sample_rate=44100" -t "$3" "/tmp/$1.wav"
+done
 docker exec --detach "$station_container" node -e \
-  'const fs=require("node:fs");require("node:http").createServer((request,response)=>{const path=new URL(request.url,"http://x").pathname;const name=path==="/song.wav"?"song.wav":path==="/instant.wav"?"instant.wav":"filler.wav";const media="/tmp/"+name;response.setHeader("Content-Type","audio/wav");response.setHeader("Content-Length",fs.statSync(media).size);response.setHeader("Accept-Ranges","bytes");fs.createReadStream(media).pipe(response)}).listen(3200,"127.0.0.1")'
+  'const fs=require("node:fs");require("node:http").createServer((request,response)=>{const path=new URL(request.url,"http://x").pathname;const own=/^\/spot-[a-z]+\.wav$/.test(path)&&fs.existsSync("/tmp"+path);const name=own?path.slice(1):path==="/song.wav"?"song.wav":path==="/instant.wav"?"instant.wav":"filler.wav";const media="/tmp/"+name;response.setHeader("Content-Type","audio/wav");response.setHeader("Content-Length",fs.statSync(media).size);response.setHeader("Accept-Ranges","bytes");fs.createReadStream(media).pipe(response)}).listen(3200,"127.0.0.1")'
 for attempt in $(seq 1 20); do
   if docker exec "$station_container" node -e \
     'fetch("http://127.0.0.1:3200/filler.wav").then(response=>{if(!response.ok)process.exit(1)}).catch(()=>process.exit(1))'; then
@@ -170,6 +176,34 @@ curl --fail --silent \
   | jq --exit-status '.ok == true'
 await_state 'the next song takes the air after the handoff' \
   '.status == "playing" and .track.playbackRequestId == "ci-song-2"'
+# P0 2026-11-21: a song command while an announced spot is on air flushes the announcement, and the spot
+# plays out. A song announced after the command must wait for the commanded song's end; it must never start
+# when that leftover spot ends (it did, and the two decks were summed: two songs on air at once).
+spot_song() {
+  curl --fail --silent --header "Idempotency-Key: $1" --header 'Content-Type: application/json' --request POST \
+    --data "{\"song\":{\"programId\":\"program-ci\",\"playbackId\":\"$1\",\"url\":\"http://127.0.0.1:3200/$2.wav\",\"title\":\"CI\",\"artist\":\"CI\",\"duration\":$3}}" \
+    "$station_api"/v1/programs/program-ci/playback/song | jq --exit-status '.ok == true' >/dev/null
+}
+spot_next() {
+  local bumper=""
+  [ -n "${4:-}" ] && bumper=",\"bumper\":{\"playbackId\":\"$4\",\"url\":\"http://127.0.0.1:3200/spot-spot.wav\"}"
+  curl --fail --silent --header "Idempotency-Key: next-$1" --header 'Content-Type: application/json' --request PUT \
+    --data "{\"song\":{\"programId\":\"program-ci\",\"playbackId\":\"$1\",\"url\":\"http://127.0.0.1:3200/$2.wav\",\"title\":\"CI\",\"artist\":\"CI\",\"duration\":$3}$bumper}" \
+    "$station_api"/v1/programs/program-ci/playback/next | jq --exit-status '.state == "queued"' >/dev/null
+}
+spot_song ci-spot-a spot-a 6
+await_state 'the song before the spot is on air' '.track.playbackRequestId == "ci-spot-a"'
+spot_next ci-spot-b spot-b 20 ci-spot
+await_state 'the spot follows the song' '.track.playbackRequestId != "ci-spot-a"'
+sleep 1
+spot_song ci-spot-c spot-c 14
+await_state 'the song commanded during the spot is on air' '.track.playbackRequestId == "ci-spot-c"'
+spot_next ci-spot-d spot-d 8
+# The spot (5 s) ends within the next 5 s; the commanded song (14 s) is still on air well after.
+sleep 8
+await_state 'a song announced after the command does not start when the leftover spot ends' \
+  '.track.playbackRequestId == "ci-spot-c"'
+await_state 'it starts at the end of the commanded song' '.track.playbackRequestId == "ci-spot-d"'
 curl --fail --silent \
   --header 'Idempotency-Key: ci-stop' \
   --header 'X-Command-Sequence: 2' \

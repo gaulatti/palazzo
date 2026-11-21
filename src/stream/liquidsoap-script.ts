@@ -356,6 +356,10 @@ bumper_on_air = ref(false)
 # plays over the song.
 bumper_rid = ref(-1)
 bumper_dropped_id = ref("")
+# The announcement a spot on air belongs to (its next_generation when the spot started). A song command
+# or a new announcement while the spot plays changes next_generation: the spot then plays out but no
+# longer opens a gate, so a song announced after the command never starts under it (P0 2026-11-21).
+bumper_next_generation = ref(-1)
 
 def remember_bumper_result(result) =
   begin
@@ -516,11 +520,17 @@ def drop_next(reason) =
   end
 end
 
+# Gives the air to the announced song the spot was played for, and only to it.
+def open_gate_after_spot() =
+  if next_state() == "queued" and next_generation() == bumper_next_generation() then open_next_gate() end
+end
+
 # Puts the ready spot on air; the announced song waits for its end. A spot not on air within 1 s, or on
 # air for more than 60 s, gives the air to the song.
 def start_bumper() =
   begin
     bumper_state := "playing"
+    bumper_next_generation := next_generation()
     bumper_on_air := false
     generation = bumper_generation()
     list.iter(fun (r) -> begin bumper_rid := request.id(r) instants_requests.push(r) end, bumper_pending())
@@ -533,7 +543,7 @@ def start_bumper() =
           bumper_dropped_id := bumper_playback_id()
           instants_requests.remove_request_id(bumper_rid())
           remember_bumper_result("dropped_failed")
-          if next_state() == "queued" then open_next_gate() end
+          open_gate_after_spot()
         end
       end
     )
@@ -545,7 +555,7 @@ def start_bumper() =
           bumper_on_air := false
           remember_bumper_result("dropped_late")
           instants_requests.skip()
-          if next_state() == "queued" then open_next_gate() end
+          open_gate_after_spot()
         end
       end
     )
@@ -943,7 +953,7 @@ instants_requests.on_position(
         begin
           bumper_state := "none"
           bumper_on_air := false
-          if next_state() == "queued" then open_next_gate() end
+          open_gate_after_spot()
         end
       end
     end

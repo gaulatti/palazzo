@@ -252,9 +252,16 @@ limit, and sends it to Liquidsoap with `palazzo.prepare_bumper`. Then:
 - Withdrawing or replacing the announcement drops a spot that is not on air
   yet. A song command or a stop does the same, through
   `palazzo.reset_decks` → `drop_next("flushed")`. A song command that arrives
-  while the spot is on air leaves the spot to play out. No gate opens, because
-  the announcement is gone, and the commanded song starts as soon as it loads,
-  over the end of the spot.
+  while the spot is on air leaves the spot to play out, and the commanded song
+  starts as soon as it loads, over the end of the spot.
+- A spot opens only the gate of the announcement it was played for. Its start
+  records the announcement's generation, and its end (or its 1 s or 60 s
+  timeout) opens the gate only if that announcement is still the queued one.
+  A song announced after a command, while the leftover spot still plays, waits
+  for the commanded song's own end. Before this, the spot's end opened that new
+  announcement's gate, and the two decks played summed: two songs on air at
+  once (2026-11-21 08:10–08:14Z, after a backend restart during a spot).
+  `test/runtime/verify-station.sh` checks this case.
 - A spot dropped as not on air within 1 s is also removed from the instants
   queue. If it still comes on air it is skipped at once, so nothing of it plays
   over the song (verified with a spot held behind a 14 s clip fired by hand).
