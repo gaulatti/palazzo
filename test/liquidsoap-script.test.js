@@ -60,7 +60,7 @@ test("generates a private authoritative telemetry script", () => {
   );
   // The filler waits out ordinary handoffs, loads and instants.
   assert.match(script, /instants_requests = request\.queue\(id="instants"\)/);
-  assert.match(script, /instants_queue = mksafe\(instants_requests\)/);
+  assert.match(script, /instants_queue = mksafe\(instants_titled\)/);
   assert.match(
     script,
     /source\.is_ready\(songs\) or source\.is_ready\(intros\) or source\.is_ready\(instants_requests\)/,
@@ -133,5 +133,40 @@ test("counts a live RTMP input on the air as presence for the filler", () => {
   assert.match(
     script,
     /add\(normalize=false, \[program_audio, instants, live\]\)/,
+  );
+});
+
+// gaulatti/palazzo#54: an instant never puts its file's own tags on the stream. With nothing else on air
+// it is titled with the station name; over a song it carries no title. An announced spot, which starts
+// while the song is on air, puts the station name on the stream directly.
+test("instants are titled with the station name, never with their file's tags", () => {
+  const script = buildLiquidsoapScript({
+    telnetPort: 14000,
+    icecastPort: 8000,
+    icecastPassword: "secret",
+    mount: "/stream",
+    streamName: 'Radio "Modo" Italiano',
+    genre: "Various",
+    bitrate: 128,
+    fillerPlaylistPath: "/run/palazzo/active-filler.m3u",
+  });
+  assert.match(
+    script,
+    /instants_titled = metadata\.map\(\n  id="instants_titles",\n  insert_missing=true,\n  strip=true,\n  fun \(_\) ->\n    if source\.is_ready\(songs\) or source\.is_ready\(intros\) then\n      \[\("title", ""\), \("artist", ""\), \("song", ""\)\]\n    else\n      \[\("title", "Radio \\"Modo\\" Italiano"\), \("artist", ""\), \("song", ""\)\]\n    end,\n  instants_requests\n\)\ninstants_queue = mksafe\(instants_titled\)\n/,
+  );
+  // The journal hooks stay on the queue itself.
+  assert.match(script, /instants_requests\.on_track\(/);
+  assert.ok(
+    script.indexOf("station_title = ref(fun () -> ())") <
+      script.indexOf("instants_requests.on_track("),
+  );
+  // Liquidsoap 2.4.5 calls a function held in a ref only once it is bound to a name.
+  assert.match(
+    script,
+    /if metadata_value\("palazzo_spot", meta\) == "true" then\n        put_station_title = station_title\(\)\n        put_station_title\(\)\n      end/,
+  );
+  assert.match(
+    script,
+    /radio = mksafe\(radio\)\nstation_title := fun \(\) -> radio\.insert_metadata\(\[\("title", "Radio \\"Modo\\" Italiano"\)\]\)\n/,
   );
 });

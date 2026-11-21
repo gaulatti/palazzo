@@ -280,6 +280,27 @@ Measured on the real image (local and 20 Mbit/s remote 8.4 MB files): handoff
 silence at or below 20 ms against 280–480 ms with song commands alone; overlap
 2.0 s within ±0.1 s; two full-scale songs overlapped at −1.8 dBTP.
 
+## Stream title during spots and instants (gaulatti/palazzo#54)
+
+The Icecast stream title (`StreamTitle`, from `title` and `artist`) shows what is
+on air:
+- A song shows its own `title` and `artist` from the command, as before.
+- An instant never puts its file's own tags on the stream. Before this, a spot
+  file tagged with a song's title showed that title for the spot's whole length.
+- A spot shows the station name (`STREAM_NAME`). That covers an announced spot
+  (`bumper`), and an instant started with no song or intro on air, such as a spot
+  by command or an instant in a gap. The song after it shows its own title.
+- An instant over a song carries no title, so the song's title stays.
+- The filler shows its own titles while it is actually on air, since that is
+  what is playing.
+
+How: the instants source is mapped (`instants_titles`) to the station name or to
+no title. An announced spot is marked `palazzo_spot="true"` and starts just
+before the song's end, while the song is still on air, so the mix drops its
+metadata; its start hook puts the station name on the stream directly
+(`radio.insert_metadata`). Checked on a real Liquidsoap and Icecast by
+`test/runtime/verify-titles.sh`.
+
 ## Program surface
 
 All routes are confined to the private control network and exact configured program.

@@ -296,7 +296,7 @@ intros_faded = fade.out(
 `) &&
       script.indexOf(`instants_requests = request.queue(id="instants")`) <
         script.indexOf(`deck_a = song_deck(`) &&
-      script.includes(`instants_queue = mksafe(instants_requests)
+      script.includes(`instants_queue = mksafe(instants_titled)
 instant_volume = interactive.float("palazzo_instant_volume", 1.)
 instants_per_item = amplify(1., instants_queue)
 instants_controlled = amplify(override=null, instant_volume, instants_per_item)`),

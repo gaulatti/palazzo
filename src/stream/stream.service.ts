@@ -1277,6 +1277,9 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
               palazzo_request_id: bumper.playbackId,
               palazzo_url: bumper.url,
               palazzo_kind: "instant",
+              // An announced spot starts just before the song's end, while the song is still on air; it
+              // is titled with the station name all the same (gaulatti/palazzo#54).
+              palazzo_spot: "true",
             },
           );
           withBumper =

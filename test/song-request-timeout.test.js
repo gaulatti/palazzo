@@ -62,7 +62,7 @@ test("intros and instants keep Liquidsoap's own request time limit", () => {
   const script = buildLiquidsoapScript({ ...OPTIONS, songRequestTimeoutMs: 60_000 });
   assert.match(script, /^intros_queue = request\.queue\(id="intros", prefetch=1\)$/m);
   assert.match(script, /^instants_requests = request\.queue\(id="instants"\)$/m);
-  assert.match(script, /^instants_queue = mksafe\(instants_requests\)$/m);
+  assert.match(script, /^instants_queue = mksafe\(instants_titled\)$/m);
   assert.doesNotMatch(script, /settings\.request\.timeout/);
 });
 

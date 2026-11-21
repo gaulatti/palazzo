@@ -339,6 +339,8 @@ overlap_limiter_armed = ref(false)
 
 # Instants (spots and clips fired by hand) play from this queue, mixed over the program.
 instants_requests = request.queue(id="instants")
+# Puts the station name on the stream title; set once the mix exists (gaulatti/palazzo#54).
+station_title = ref(fun () -> ())
 # A spot announced with the next song (gaulatti/palazzo#50). It is resolved ahead of time like the song;
 # when the playing song ends it plays on the instants queue, and the song's gate opens at the spot's own
 # end, so the song follows the spot with no gap and no fixed wait. A spot never holds the song: one not
@@ -919,6 +921,11 @@ instants_requests.on_track(
         end
       end
       remember_event("instant_started", meta)
+      # An announced spot starts just before the song's end, while the song is still on air (palazzo#54).
+      if metadata_value("palazzo_spot", meta) == "true" then
+        put_station_title = station_title()
+        put_station_title()
+      end
       if bumper_state() == "playing" and metadata_value("palazzo_request_id", meta) == bumper_playback_id() then
         begin
           bumper_on_air := true
@@ -941,7 +948,25 @@ instants_requests.on_position(
       end
     end
 )
-instants_queue = mksafe(instants_requests)
+# An instant never puts its file's own tags on the stream (gaulatti/palazzo#54): a spot file tagged with
+# a song's title showed that title for the spot's whole length. With no song or intro on air (a spot by
+# command, or an instant in a gap) its title is the station name; over a song it carries no title, so
+# the song's stays. An announced spot starts just before the song's end, while the song is on air, so
+# the mix drops its metadata: the station name is put on the stream for it directly (station_title).
+# The next song's own track start sets its title as before.
+instants_titled = metadata.map(
+  id="instants_titles",
+  insert_missing=true,
+  strip=true,
+  fun (_) ->
+    if source.is_ready(songs) or source.is_ready(intros) then
+      [("title", ""), ("artist", ""), ("song", "")]
+    else
+      [("title", "${liqString(options.streamName)}"), ("artist", ""), ("song", "")]
+    end,
+  instants_requests
+)
+instants_queue = mksafe(instants_titled)
 instant_volume = interactive.float("palazzo_instant_volume", 1.)
 instants_per_item = amplify(1., instants_queue)
 instants_controlled = amplify(override=null, instant_volume, instants_per_item)
@@ -995,6 +1020,7 @@ songs_on_air = switch(
 program_audio = fallback(track_sensitive=false, [songs_on_air, filler])
 radio = add(normalize=false, [program_audio, instants${rtmpSource}])
 radio = mksafe(radio)
+station_title := fun () -> radio.insert_metadata([("title", "${liqString(options.streamName)}")])
 main_volume = interactive.float("palazzo_main_volume", 1.)
 radio = amplify(override=null, main_volume, radio)
 radio_rms = rms(id="radio_rms", duration=0.1, radio)
