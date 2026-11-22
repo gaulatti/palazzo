@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
+const cp = require('node:child_process');
 const test = require('node:test');
 const { identityRelay } = require('./media-relay-stub');
 const { PlaybackTelemetryService } = require('../dist/stream/playback-telemetry.service.js');
@@ -61,4 +62,24 @@ test('shutting down with no Liquidsoap running, or one that already exited, sign
   exited.process = child;
   await exited.onModuleDestroy();
   assert.deepEqual(child.signals, []);
+});
+
+test('a Liquidsoap that exits while the app is closing is not respawned', async (t) => {
+  const stream = service();
+  stream.logger = { log() {}, debug() {}, error() {}, warn() {} };
+  const spawned = [];
+  t.mock.method(cp, 'spawn', () => {
+    const child = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter(), exitCode: null });
+    child.kill = () => { setImmediate(() => { child.exitCode = 0; child.emit('close', 0); }); return true; };
+    spawned.push(child);
+    return child;
+  });
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  stream.startLiquidsoap('/tmp/palazzo/stream.liq');
+  assert.equal(spawned.length, 1);
+  await stream.onModuleDestroy();
+  // The restart backoff is 100 ms to 2 s: far past it, nothing may start again.
+  t.mock.timers.tick(10_000);
+  assert.equal(spawned.length, 1, 'Liquidsoap was respawned during shutdown');
+  assert.equal(stream.process, null);
 });
