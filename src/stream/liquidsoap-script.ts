@@ -853,8 +853,33 @@ server.register(
     end
 )
 
+# The per-item gain of an instant or an intro (gaulatti/palazzo#52): the request's liq_amplify annotation,
+# which the API validates to a finite number in [0, 1]. Anything else (empty text excepted, which is an absent
+# value) reads as 1, so it can neither silence an item nor make it louder than its file, and the item is
+# logged once, with its request id and URL, so the file can be found. The song chain reads its own, computed
+# liq_amplify and is not touched.
+def item_gain(m) =
+  raw = list.assoc(default="", "liq_amplify", m)
+  g = float_of_string(default=-1., raw)
+  if raw == "" then
+    1.
+  elsif g >= 0. and g <= 1. then
+    g
+  else
+    id = list.assoc(default="", "palazzo_request_id", m)
+    url = list.assoc(default="", "palazzo_url", m)
+    log.important(label="item_gain", "ignored an invalid gain for #{id} (#{url}): it is not a number from 0 to 1; the item plays at its own level")
+    1.
+  end
+end
 intros_queue = request.queue(id="intros", prefetch=1)
-intros_per_item = amplify(1., intros_queue)
+intros_gained = metadata.map(
+  id="intros_gain",
+  strip=false,
+  fun (m) -> [("liq_amplify", string(item_gain(m)))],
+  intros_queue
+)
+intros_per_item = amplify(override="liq_amplify", 1., intros_gained)
 intros_faded = fade.in(
   override_duration="palazzo_fade_in",
   duration=0.25,
@@ -968,17 +993,17 @@ instants_titled = metadata.map(
   id="instants_titles",
   insert_missing=true,
   strip=true,
-  fun (_) ->
+  fun (m) ->
     if source.is_ready(songs) or source.is_ready(intros) then
-      [("title", ""), ("artist", ""), ("song", "")]
+      [("title", ""), ("artist", ""), ("song", ""), ("liq_amplify", string(item_gain(m)))]
     else
-      [("title", "${liqString(options.streamName)}"), ("artist", ""), ("song", "")]
+      [("title", "${liqString(options.streamName)}"), ("artist", ""), ("song", ""), ("liq_amplify", string(item_gain(m)))]
     end,
   instants_requests
 )
 instants_queue = mksafe(instants_titled)
 instant_volume = interactive.float("palazzo_instant_volume", 1.)
-instants_per_item = amplify(1., instants_queue)
+instants_per_item = amplify(override="liq_amplify", 1., instants_queue)
 instants_controlled = amplify(override=null, instant_volume, instants_per_item)
 instants_rms = rms(id="instants_rms", duration=0.1, instants_controlled)
 get_instant_rms = instants_rms.rms

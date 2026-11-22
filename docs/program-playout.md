@@ -157,6 +157,20 @@ alone still hands off exactly as before.
 A command without either group pushes exactly the same `songs.push` request as
 before, and the added operators are no-ops without their annotations:
 `liq_amplify` defaults to `1.`, and both fades default to a duration of `0.`.
+An instant's own `volume` and an intro's own `gain` (each a number in [0, 1], validated at the
+API and clamped to that range where Alcantara stores it) reach Liquidsoap as the `liq_amplify`
+annotation and are applied per item by `amplify(override="liq_amplify", ...)` on the instants and
+intros chains; the station instant volume multiplies on top for instants. The value is validated
+in the script before it is read (`item_gain`): a finite number in [0, 1], else 1. An absent value
+(spots announced with the next song carry no volume) is 1 and silent; any other value that is not a
+finite number in [0, 1], whatever its source (the request or the item's own metadata), leaves the
+item at its file's level instead of silencing it or making it louder, and is logged once with a
+line naming the item's request id and URL (`item_gain: ignored an invalid gain for <id> (<url>)`),
+so the file can be found. The song chain's `liq_amplify` is its computed loudness gain and is not
+affected. `test/runtime/verify-item-gain.sh` checks this on the real image (0.5 against 1 is about
+6 dB for both queues, invalid values read as 1 with one log line each, and a song's level is
+unchanged by an instant over it).
+
 Intros, instants, filler and mixer volumes are unchanged.
 
 ## Cue points (gaulatti/palazzo#53)
