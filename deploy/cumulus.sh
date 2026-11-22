@@ -102,13 +102,16 @@ fi
 unset icecast_source_password
 
 deployed_ready=false
-for _ in $(seq 1 45); do
+# Polled every 0.5 s (was 2 s) so READY follows the transport by about a
+# second at most; 120 checks keep the ceiling near the old ~110 s (each check
+# also costs its own docker exec).
+for _ in $(seq 1 120); do
   if docker exec palazzo node -e 'fetch("http://127.0.0.1:3100/v1/programs/"+encodeURIComponent(process.env.PROGRAM_ID)+"/playback/state").then(async response=>{const state=await response.json();if(!response.ok||state.liquidsoap?.running!==true||state.liquidsoap?.connected!==true||state.icecast?.connected!==true)throw new Error("transport not ready")}).catch(error=>{console.error(error.message);process.exit(1)})'; then
     deployed_ready=true
     echo "PALAZZO_READY $(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)"
     break
   fi
-  sleep 2
+  sleep 0.5
 done
 if [ "$deployed_ready" != true ]; then
   echo 'Palazzo deployment failed its transport and lifecycle checks; rolling back'

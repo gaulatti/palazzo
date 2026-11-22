@@ -14,6 +14,7 @@ import {
   NestFastifyApplication,
 } from '@nestjs/platform-fastify';
 import { AppModule } from './app.module';
+import { installShutdownHandlers } from './shutdown';
 
 /**
  * Creates and starts the NestJS application.
@@ -35,6 +36,11 @@ async function bootstrap(): Promise<void> {
     AppModule,
     new FastifyAdapter(),
   );
+
+  // Node is PID 1 in the container: without a handler SIGTERM is ignored and
+  // `docker stop` waits its whole grace period. Installed before listen so a
+  // signal during start-up also ends the process promptly.
+  installShutdownHandlers(app);
 
   const allowedOrigins = (process.env.ALLOWED_ORIGINS ?? '')
     .split(',')
