@@ -273,10 +273,31 @@ deck_b = song_deck(next_queue, deck_b_open)
       script.includes(`songs_mixed = add(normalize=false, [deck_a, deck_b])
 `),
   );
-  // Intros, instants, filler and mixer are as before.
+  // Filler and mixer are as before. Intros and instants (gaulatti/palazzo#52) read their own validated
+  // per-item gain: a finite number in [0, 1] from the liq_amplify annotation, otherwise 1.
   assert.ok(
-    script.includes(`intros_queue = request.queue(id="intros", prefetch=1)
-intros_per_item = amplify(1., intros_queue)
+    script.includes(`def item_gain(m) =
+  raw = list.assoc(default="", "liq_amplify", m)
+  g = float_of_string(default=-1., raw)
+  if raw == "" then
+    1.
+  elsif g >= 0. and g <= 1. then
+    g
+  else
+    id = list.assoc(default="", "palazzo_request_id", m)
+    url = list.assoc(default="", "palazzo_url", m)
+    log.important(label="item_gain", "ignored an invalid gain for #{id} (#{url}): it is not a number from 0 to 1; the item plays at its own level")
+    1.
+  end
+end
+intros_queue = request.queue(id="intros", prefetch=1)
+intros_gained = metadata.map(
+  id="intros_gain",
+  strip=false,
+  fun (m) -> [("liq_amplify", string(item_gain(m)))],
+  intros_queue
+)
+intros_per_item = amplify(override="liq_amplify", 1., intros_gained)
 intros_faded = fade.in(
   override_duration="palazzo_fade_in",
   duration=0.25,
@@ -298,7 +319,7 @@ intros_faded = fade.out(
         script.indexOf(`deck_a = song_deck(`) &&
       script.includes(`instants_queue = mksafe(instants_titled)
 instant_volume = interactive.float("palazzo_instant_volume", 1.)
-instants_per_item = amplify(1., instants_queue)
+instants_per_item = amplify(override="liq_amplify", 1., instants_queue)
 instants_controlled = amplify(override=null, instant_volume, instants_per_item)`),
   );
   // #230: the filler is gated by its hold-off, still mksafe'd underneath.
@@ -309,7 +330,8 @@ radio = amplify(override=null, main_volume, radio)`),
   );
   assert.equal(script.match(/fade\.in\(/g).length, 2);
   assert.equal(script.match(/fade\.out\(/g).length, 2);
-  assert.equal(script.match(/override="liq_amplify"/g).length, 1);
+  // The song deck, the intro chain and the instants chain each read liq_amplify, and only those.
+  assert.equal(script.match(/override="liq_amplify"/g).length, 3);
 });
 
 function snapshot(overrides = {}) {

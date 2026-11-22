@@ -76,8 +76,38 @@ test("generates a private authoritative telemetry script", () => {
   assert.match(script, /interactive\.float\("palazzo_song_volume", 1\.\)/);
   assert.match(script, /interactive\.float\("palazzo_instant_volume", 1\.\)/);
   assert.match(script, /interactive\.float\("palazzo_main_volume", 1\.\)/);
-  assert.match(script, /instants_per_item = amplify\(1\., instants_queue\)/);
+  // gaulatti/palazzo#52: the instants chain applies an instant's own gain, and the station instant volume
+  // multiplies on top of it.
+  assert.match(script, /instants_per_item = amplify\(override="liq_amplify", 1\., instants_queue\)/);
+  assert.match(script, /instants_controlled = amplify\(override=null, instant_volume, instants_per_item\)/);
   assert.doesNotMatch(script, /server\.telnet\.bind_addr := "0\.0\.0\.0"/);
+});
+
+test("instants and intros read a validated per-item gain and spots without one stay at 1", () => {
+  const script = buildLiquidsoapScript({
+    telnetPort: 14000,
+    icecastPort: 8000,
+    icecastPassword: "password",
+    mount: "/stream",
+    streamName: "Name",
+    genre: "Various",
+    bitrate: 128,
+    fillerPlaylistPath: "/run/palazzo/active-filler.m3u",
+  });
+  // Both queues read liq_amplify.
+  assert.match(script, /intros_per_item = amplify\(override="liq_amplify", 1\., intros_gained\)/);
+  assert.match(script, /instants_per_item = amplify\(override="liq_amplify", 1\., instants_queue\)/);
+  // The annotation is validated before it is read: finite and within [0, 1], else 1 (nan, inf, text,
+  // negative and above 1 all fail the comparison and read as 1).
+  assert.match(script, /def item_gain\(m\) =\n  raw = list\.assoc\(default="", "liq_amplify", m\)\n  g = float_of_string\(default=-1\., raw\)\n  if raw == "" then\n    1\.\n  elsif g >= 0\. and g <= 1\. then\n    g\n  else\n    id = list\.assoc\(default="", "palazzo_request_id", m\)\n    url = list\.assoc\(default="", "palazzo_url", m\)\n    log\.important\(label="item_gain"/);
+  // An ignored value is logged once per item with its request id and URL, never the value itself.
+  assert.match(script, /ignored an invalid gain for #\{id\} \(#\{url\}\)/);
+  assert.doesNotMatch(script, /ignored an invalid gain[^\n]*#\{raw\}/);
+  // The instants mapper keeps stripping the file's own tags (palazzo#54) and re-emits the validated gain on
+  // both branches, so a file tag called liq_amplify cannot reach the amplify.
+  assert.equal(script.match(/\("liq_amplify", string\(item_gain\(m\)\)\)/g).length, 3);
+  // The intro mapper must not strip: the fades and events read the intro's other annotations.
+  assert.match(script, /id="intros_gain",\n  strip=false,/);
 });
 
 test("escapes user-controlled Liquidsoap string values", () => {
@@ -152,7 +182,7 @@ test("instants are titled with the station name, never with their file's tags", 
   });
   assert.match(
     script,
-    /instants_titled = metadata\.map\(\n  id="instants_titles",\n  insert_missing=true,\n  strip=true,\n  fun \(_\) ->\n    if source\.is_ready\(songs\) or source\.is_ready\(intros\) then\n      \[\("title", ""\), \("artist", ""\), \("song", ""\)\]\n    else\n      \[\("title", "Radio \\"Modo\\" Italiano"\), \("artist", ""\), \("song", ""\)\]\n    end,\n  instants_requests\n\)\ninstants_queue = mksafe\(instants_titled\)\n/,
+    /instants_titled = metadata\.map\(\n  id="instants_titles",\n  insert_missing=true,\n  strip=true,\n  fun \(m\) ->\n    if source\.is_ready\(songs\) or source\.is_ready\(intros\) then\n      \[\("title", ""\), \("artist", ""\), \("song", ""\), \("liq_amplify", string\(item_gain\(m\)\)\)\]\n    else\n      \[\("title", "Radio \\"Modo\\" Italiano"\), \("artist", ""\), \("song", ""\), \("liq_amplify", string\(item_gain\(m\)\)\)\]\n    end,\n  instants_requests\n\)\ninstants_queue = mksafe\(instants_titled\)\n/,
   );
   // The journal hooks stay on the queue itself.
   assert.match(script, /instants_requests\.on_track\(/);
