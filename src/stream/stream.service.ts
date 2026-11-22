@@ -23,6 +23,9 @@ import {
   PlaybackTelemetryService,
 } from "./playback-telemetry.service";
 
+/** Longest the app waits for Liquidsoap to exit after SIGTERM when shutting down. */
+const LIQUIDSOAP_STOP_WAIT_MS = 3_000;
+
 const execFileAsync = promisify(execFile);
 
 export interface SongPayload {
@@ -392,7 +395,7 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
     this.logger.log(`Liquidsoap started, mount=${mount}`);
   }
 
-  onModuleDestroy(): void {
+  async onModuleDestroy(): Promise<void> {
     this.shuttingDown = true;
     if (this.pollTimer) clearInterval(this.pollTimer);
     if (this.restartTimer) clearTimeout(this.restartTimer);
@@ -400,7 +403,33 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
     this.telnet.close();
     this.telemetry.shutdown();
     this.telemetry.setLiquidsoapRunning(false);
-    this.process?.kill();
+    await this.stopLiquidsoap();
+  }
+
+  /**
+   * Asks Liquidsoap to stop (SIGTERM) and waits for it to exit, so it closes
+   * its connection to Icecast itself and listeners get an end of stream
+   * rather than a reset. If it has not exited within the wait it is killed.
+   */
+  private async stopLiquidsoap(): Promise<void> {
+    const child = this.process;
+    if (!child || child.exitCode !== null) return;
+    const exited = new Promise<void>((resolve) =>
+      child.once("close", () => resolve()),
+    );
+    child.kill("SIGTERM");
+    let timer: NodeJS.Timeout | undefined;
+    const timedOut = new Promise<boolean>((resolve) => {
+      timer = setTimeout(() => resolve(true), LIQUIDSOAP_STOP_WAIT_MS);
+    });
+    const late = await Promise.race([exited.then(() => false), timedOut]);
+    if (timer) clearTimeout(timer);
+    if (late) {
+      this.logger.warn(
+        `Liquidsoap did not exit within ${LIQUIDSOAP_STOP_WAIT_MS} ms of SIGTERM; killing it`,
+      );
+      child.kill("SIGKILL");
+    }
   }
 
   getStatus() {

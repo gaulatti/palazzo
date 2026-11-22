@@ -77,3 +77,15 @@ test('every Cumulus production and candidate container runs with NODE_ENV=produc
     }
   }
 });
+
+// The off-air window ends at READY, so the production readiness check polls
+// every 0.5 s instead of every 2 s (the candidate's check is not off air).
+test('the production readiness check polls every half second within a comparable ceiling', async () => {
+  const script = await readFile(join(process.cwd(), 'deploy', 'cumulus.sh'), 'utf8');
+  const production = script.slice(script.indexOf('deployed_ready=false'), script.indexOf('if [ "$deployed_ready"'));
+  assert.match(production, /seq 1 120/);
+  assert.match(production, /sleep 0\.5\n/);
+  assert.doesNotMatch(production, /sleep 2\n/);
+  const candidate = script.slice(script.indexOf('candidate_ready=false'), script.indexOf('if [ "$candidate_ready"'));
+  assert.match(candidate, /sleep 2\n/);
+});

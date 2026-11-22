@@ -81,6 +81,18 @@ three 10 MB files per container. Operators can inspect them with
 `docker logs --tail 200 palazzo`; Palazzo does not send application logs to
 CloudWatch.
 
+Stopping the container ends the stream quickly and cleanly. Node is PID 1
+(the entrypoint `exec`s it), and a PID 1 without a handler ignores SIGTERM, which
+once made `docker stop` wait its whole ten second grace period before a SIGKILL.
+`src/shutdown.ts` now handles SIGTERM and SIGINT: it closes the application,
+which stops Liquidsoap with SIGTERM and waits up to three seconds for it to exit
+so it closes its connection to Icecast itself (a listener sees the stream end),
+then exits 0. A close that has not finished after six seconds exits 1, so a hung
+shutdown cannot outlast Docker's grace. `deploy/cumulus.sh` prints `PALAZZO_STOP`
+before it stops the old container and `PALAZZO_READY` when the new one passes its
+transport check (polled every 0.5 s); the difference is the window in which the
+stream is down, and it is in the deploy job's log.
+
 For a failed Cumulus deployment, the GitHub Actions job shows SSM remote stdout
 and stderr as separate lines and annotates the remote exit code. A missing
 deployment token is reported by name without showing its value.
