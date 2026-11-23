@@ -1577,8 +1577,8 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
         const cue = cueOutSeconds(await this.trailingSilenceProbe(target, ITEM_TRIM_MEASURE_TIMEOUT_MS));
         this.itemCueOuts.delete(key);
         if (this.itemCueOuts.size >= ITEM_CUE_CACHE_ENTRIES) {
-          const oldest = this.itemCueOuts.keys().next().value;
-          if (oldest !== undefined) this.itemCueOuts.delete(oldest);
+          // The map is full, so it has a first key: the oldest measurement goes.
+          this.itemCueOuts.delete(this.itemCueOuts.keys().next().value as string);
         }
         this.itemCueOuts.set(key, { cue, at: Date.now() });
       } catch (error) {
