@@ -349,8 +349,9 @@ A spot or an instant file can end in digital silence its operator never meant to
 - **Measurement:** `ffmpeg silencedetect=noise=-85dB:d=0.05` over the item's loopback relay address (`src/stream/trailing-silence.ts`). A silence counts as trailing when it runs to the end of the file. The duration is ffmpeg's `Duration:` line, else the last progress `time=` (a file read over HTTP can carry no duration header).
 - **Cap:** the cue-out trims at most 1 s, so a long silent tail never cuts content. A trailing silence under 50 ms is not trimmed.
 - **Annotation:** `liq_cue_in=""` and `liq_cue_out="<seconds>"`, or `liq_cue_out=""` (plays whole).
-- **Failure:** a measurement that fails or times out (instants wait 1.5 s, spots their remaining time limit) plays the item whole, logs `item.trim.measure_failed` and counts `failed`. It never blocks or fails the play. Failures are not cached; successful measurements are cached per source (256 entries, oldest evicted).
-- **Metric:** `palazzo_item_trim_total{kind="spot|instant",result="trimmed|whole|failed"}`.
+- **Never on the air path:** a play never waits for a measurement. A measured item (cached 10 minutes, 256 entries, oldest evicted) is cued out; an item not measured yet plays whole and is measured in the background (one at a time per item, a second relay fetch plus an ffmpeg decode, 20 s limit) for its next play. The cache key is the item's address without its query, so a signed address of the same object reuses it; a file replaced at the same address is measured again after the 10 minutes. A content key (an asset id or version from the sender) would be exact and is a follow-up.
+- **Failure:** a failed measurement logs `item.trim.measure_failed`, counts `failed`, caches nothing, and the item keeps playing whole; the next play tries again.
+- **Metric:** `palazzo_item_trim_total{kind="spot|instant",result="trimmed|whole|unmeasured|failed"}` (`unmeasured`: played whole while its first measurement runs).
 - **Tests:** `test/trailing-silence.test.js` (parser and cap), `test/trailing-silence.ffmpeg.test.js` (real ffmpeg on a tone with 0.4 s of trailing silence; skipped without ffmpeg), `test/stream.service.test.js`, and `test/runtime/verify-spot-gap.sh` for the end-to-end gap.
 
 ## Program surface

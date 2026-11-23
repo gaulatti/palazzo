@@ -205,8 +205,11 @@ export const PLAYOUT_JOURNAL_LIMIT = 256;
 // the whole clip. The song chain is not touched.
 export const NO_FILE_CUE = { liq_cue_in: "", liq_cue_out: "" } as const;
 /** The longest a manual instant waits for its trailing silence to be measured before it plays whole. */
-const INSTANT_TRIM_TIMEOUT_MS = 1_500;
+// The background measurement of a spot or an instant (never on the air path): the relay fetch plus the decode.
+const ITEM_TRIM_MEASURE_TIMEOUT_MS = 20_000;
 const ITEM_CUE_CACHE_ENTRIES = 256;
+// How long a measurement stands: a file replaced at the same address is measured again after this.
+const ITEM_CUE_TTL_MS = 10 * 60_000;
 
 @Injectable()
 export class StreamService implements OnModuleInit, OnModuleDestroy {
@@ -298,7 +301,8 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
     return parseTrailingSilence(stderr);
   };
   /** The cue-out measured for a source URL (null: play whole), bounded and oldest first out. */
-  private readonly itemCueOuts = new Map<string, number | null>();
+  private readonly itemCueOuts = new Map<string, { cue: number | null; at: number }>();
+  private readonly itemCueMeasuring = new Map<string, Promise<void>>();
   private mixerState: MixerState = {
     mainVolume: 1,
     songVolume: 1,
@@ -866,7 +870,7 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
         palazzo_request_id: playbackRequestId,
         palazzo_url: data.url,
         palazzo_kind: "instant",
-        ...(await this.itemCue("instant", data.url, INSTANT_TRIM_TIMEOUT_MS)),
+        ...this.itemCue("instant", data.url),
         ...(data.volume === undefined
           ? {}
           : { liq_amplify: String(this.normalizeGain(data.volume, "volume")) }),
@@ -1367,7 +1371,7 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
               palazzo_request_id: bumper.playbackId,
               palazzo_url: bumper.url,
               palazzo_kind: "instant",
-              ...(await this.itemCue("spot", bumper.url, limit * 1000)),
+              ...this.itemCue("spot", bumper.url),
               // An announced spot starts just before the song's end, while the song is still on air; it
               // is titled with the station name all the same (gaulatti/palazzo#54).
               palazzo_spot: "true",
@@ -1534,26 +1538,49 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
 
   /**
    * The cue annotations of a spot or an instant (gaulatti/palazzo#55): the file's own cue tags are ignored
-   * (empty cue-in, gaulatti/palazzo#60) and the item is cued out at its last audio, the trailing digital silence
-   * measured here, at most MAX_TRIM_SECONDS of it. A measurement that fails or runs past `timeoutMs` leaves the
-   * item whole: it still plays, it is counted as failed, and the result is not cached.
+   * (empty cue-in, gaulatti/palazzo#60) and the item is cued out at its last audio, the trailing digital silence,
+   * at most MAX_TRIM_SECONDS of it. Nothing here waits: a measured item (cached for ITEM_CUE_TTL_MS) is cued out;
+   * an item not measured yet plays whole and is measured in the background for its next play, so no play and
+   * no queued stream operation ever waits for the relay or for ffmpeg.
    */
-  private async itemCue(
-    kind: "spot" | "instant",
-    sourceUrl: string,
-    timeoutMs: number,
-  ): Promise<Record<string, string>> {
-    const key = sourceUrl.trim();
-    let cue = this.itemCueOuts.get(key);
-    if (cue === undefined) {
+  private itemCue(kind: "spot" | "instant", sourceUrl: string): Record<string, string> {
+    const key = this.itemCueKey(sourceUrl);
+    const known = this.itemCueOuts.get(key);
+    if (known && Date.now() - known.at < ITEM_CUE_TTL_MS) {
+      this.telemetry.observeItemTrim(kind, known.cue === null ? "whole" : "trimmed");
+      return { liq_cue_in: "", liq_cue_out: known.cue === null ? "" : String(known.cue) };
+    }
+    this.telemetry.observeItemTrim(kind, "unmeasured");
+    void this.measureItemCue(kind, sourceUrl);
+    return { ...NO_FILE_CUE };
+  }
+
+  // The item's address without its query: a signed address changes on every request, the object does not.
+  private itemCueKey(sourceUrl: string): string {
+    const url = sourceUrl.trim();
+    try {
+      const parsed = new URL(url);
+      return `${parsed.origin}${parsed.pathname}`;
+    } catch {
+      return url;
+    }
+  }
+
+  /** Measures one item once at a time; resolves when done (and never rejects). */
+  private measureItemCue(kind: "spot" | "instant", sourceUrl: string): Promise<void> {
+    const key = this.itemCueKey(sourceUrl);
+    const running = this.itemCueMeasuring.get(key);
+    if (running) return running;
+    const task = (async () => {
       try {
-        const target = await this.relayed(key, "instant", timeoutMs + 5_000);
-        cue = cueOutSeconds(await this.trailingSilenceProbe(target, timeoutMs));
+        const target = await this.relayed(sourceUrl.trim(), "instant", ITEM_TRIM_MEASURE_TIMEOUT_MS);
+        const cue = cueOutSeconds(await this.trailingSilenceProbe(target, ITEM_TRIM_MEASURE_TIMEOUT_MS));
+        this.itemCueOuts.delete(key);
         if (this.itemCueOuts.size >= ITEM_CUE_CACHE_ENTRIES) {
           const oldest = this.itemCueOuts.keys().next().value;
           if (oldest !== undefined) this.itemCueOuts.delete(oldest);
         }
-        this.itemCueOuts.set(key, cue);
+        this.itemCueOuts.set(key, { cue, at: Date.now() });
       } catch (error) {
         this.telemetry.observeItemTrim(kind, "failed");
         this.logger.warn({
@@ -1561,11 +1588,12 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
           kind,
           error: error instanceof Error ? error.name : "unknown",
         });
-        return { ...NO_FILE_CUE };
+      } finally {
+        this.itemCueMeasuring.delete(key);
       }
-    }
-    this.telemetry.observeItemTrim(kind, cue === null ? "whole" : "trimmed");
-    return { liq_cue_in: "", liq_cue_out: cue === null ? "" : String(cue) };
+    })();
+    this.itemCueMeasuring.set(key, task);
+    return task;
   }
 
   private annotatedUri(url: string, metadata: Record<string, string>): string {

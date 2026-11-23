@@ -358,8 +358,8 @@ export class PlaybackTelemetryService {
   private announcedWithBumper = false;
   /** Spots and instants cued out at their last audio, by kind and result (gaulatti/palazzo#55). */
   private readonly itemTrims: Record<ItemTrimKind, Record<ItemTrimResult, number>> = {
-    spot: { trimmed: 0, whole: 0, failed: 0 },
-    instant: { trimmed: 0, whole: 0, failed: 0 },
+    spot: { trimmed: 0, whole: 0, unmeasured: 0, failed: 0 },
+    instant: { trimmed: 0, whole: 0, unmeasured: 0, failed: 0 },
   };
   private readonly bumperResults: Record<BumperResult, number> = {
     played: 0,
@@ -642,7 +642,7 @@ export class PlaybackTelemetryService {
     this.announcedWithBumper = false;
   }
 
-  /** Counts a measured spot or instant: cued out at its last audio (trimmed), played whole, or not measured (failed). */
+  /** Counts a measured spot or instant: cued out at its last audio (trimmed), played whole, played whole because it is not measured yet (unmeasured), or its measurement failed (failed). */
   observeItemTrim(kind: ItemTrimKind, result: ItemTrimResult): void {
     this.itemTrims[kind][result] += 1;
   }
@@ -1503,7 +1503,7 @@ export type NextRequestResult =
   | 'no_current_song';
 type NextWithdrawnReason = 'replaced' | 'withdrawn' | 'flushed' | 'not_ready';
 export type ItemTrimKind = 'spot' | 'instant';
-export type ItemTrimResult = 'trimmed' | 'whole' | 'failed';
+export type ItemTrimResult = 'trimmed' | 'whole' | 'unmeasured' | 'failed';
 /** What became of a spot announced with the next song (gaulatti/palazzo#50). */
 export type BumperResult =
   | 'played'
