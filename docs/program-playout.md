@@ -171,6 +171,26 @@ affected. `test/runtime/verify-item-gain.sh` checks this on the real image (0.5 
 6 dB for both queues, invalid values read as 1 with one log line each, and a song's level is
 unchanged by an instant over it).
 
+An instant, a spot and an intro never take cue points or tags from their audio file
+(gaulatti/palazzo#60). Liquidsoap applies the `liq_cue_in` and `liq_cue_out` values it finds in an item's
+metadata when it resolves the request, and a file can carry them in its own tags; Palazzo sets cue points only
+for songs (from their analysis), so on these three any cue value is the file's. They are therefore
+**ignored, not clamped**: the request is annotated with `liq_cue_in=""` and `liq_cue_out=""`
+(`NO_FILE_CUE` in `stream.service.ts`), which overrides the file's tag, and the item plays whole. Measured
+on Liquidsoap 2.4.5 with a 4 s clip: a file cue-out of 0.5 played 0.5 s and a cue-in of 2.5 played 1.5 s
+without the annotation, and the whole clip with it. A clamp would still let a file shorten an item that Palazzo
+never asked to shorten. The song chain is untouched (its cue annotations come from the analysis only; a unit
+test pins that a song request carries none of these keys without it).
+`test/runtime/verify-item-cue.sh` checks it on the real image: an instant and an intro each play about 4 s of a
+4 s tone whether the file carries a cue-out, a cue-in or nothing.
+
+**An intro's own title and artist.** Assessed on the real image with an intro file tagged `title`/`artist`:
+they did not reach the Icecast stream title (the stream showed the song's title throughout), but they did
+reach the playback events (`intro_started`, `intro_ended` and the other lifecycle events that carry the
+item's `title` and `artist`), which Alcantara consumes. The intros mapper therefore blanks `title`, `artist` and
+`song` as the instants mapper does (Palazzo annotates none for an intro), so an intro's events carry no
+tags from its file. `verify-item-cue.sh` fails if the file's tags appear on the stream or on the events.
+
 Intros, instants, filler and mixer volumes are unchanged.
 
 ## Cue points (gaulatti/palazzo#53)

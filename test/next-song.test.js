@@ -488,7 +488,7 @@ const SPOT = { playbackId: "spot-1", url: "https://example.test/spot.mp3" };
 // gaulatti/palazzo#54: the announced spot is marked palazzo_spot, so the script titles it with the station
 // name even though the song is still on air when it starts.
 const SPOT_URI =
-  'annotate:palazzo_request_id="spot-1",palazzo_url="https://example.test/spot.mp3",palazzo_kind="instant",palazzo_spot="true":https://example.test/spot.mp3';
+  'annotate:palazzo_request_id="spot-1",palazzo_url="https://example.test/spot.mp3",palazzo_kind="instant",liq_cue_in="",liq_cue_out="",palazzo_spot="true":https://example.test/spot.mp3';
 
 test("an announcement with a spot resolves the spot after the song, and the state advertises it", async () => {
   const { service, telemetry, commands, onAir, announce } = await harness();

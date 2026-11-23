@@ -55,6 +55,52 @@ test("generates and returns an ID for backward-compatible callers", async () => 
   assert.match(commands[0], new RegExp(accepted.playbackRequestId));
 });
 
+// gaulatti/palazzo#60: Palazzo sets cue points only for songs, so an instant, a spot or an intro must
+// not take cue values from the audio file's own tags: both are annotated empty, which overrides the file
+// (measured on Liquidsoap 2.4.5, test/runtime/verify-item-cue.sh) and plays the item whole.
+test("annotates an instant with empty cue values so its file's own cue tags are ignored", async () => {
+  const { service, commands } = streamService();
+  await service.playInstant({ url: "https://example.test/instant.mp3" });
+  assert.match(commands[0], /^instants\.push annotate:/);
+  assert.match(commands[0], /liq_cue_in=""/);
+  assert.match(commands[0], /liq_cue_out=""/);
+  commands.length = 0;
+  await service.playInstant({
+    url: "https://example.test/instant.mp3",
+    volume: 0.5,
+  });
+  assert.match(commands[0], /liq_cue_in="",liq_cue_out="",liq_amplify="0.5"/);
+});
+
+test("annotates an intro with empty cue values and leaves the song's annotations without any", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "palazzo-playout-"));
+  const { service, commands } = streamService();
+  service.playoutJournalPath = join(directory, "commands.json");
+  service.assetProbe = async () => mediaProbeResult();
+  await service.playProgramSong("program-one", "command-60", {
+    song: {
+      title: "Song",
+      url: "https://example.test/song.mp3",
+      playbackId: "song-60",
+      programId: "program-one",
+    },
+    intro: {
+      url: "https://example.test/intro.mp3",
+      playbackId: "intro-60",
+      programId: "program-one",
+      gain: 0.7,
+      duckGain: 0.25,
+      fadeInSeconds: 0.1,
+      fadeOutSeconds: 0.2,
+    },
+  });
+  const intro = commands.find((command) => command.startsWith("intros.push"));
+  assert.match(intro, /liq_cue_in=""/);
+  assert.match(intro, /liq_cue_out=""/);
+  const song = commands.find((command) => command.startsWith("songs.push"));
+  assert.doesNotMatch(song, /liq_cue/);
+});
+
 test("applies per-instant volume metadata for bumpers and manual instants", async () => {
   const { service, commands } = streamService();
   await service.playInstant({

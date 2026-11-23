@@ -291,10 +291,13 @@ deck_b = song_deck(next_queue, deck_b_open)
   end
 end
 intros_queue = request.queue(id="intros", prefetch=1)
+# An intro never puts its file's own tags on the events either (gaulatti/palazzo#60): Palazzo annotates no
+# title or artist for an intro, so the ones in its file (intro_started and intro_ended carry them) are
+# blanked, as the instants chain does. The song's own title is set by its own track start.
 intros_gained = metadata.map(
   id="intros_gain",
   strip=false,
-  fun (m) -> [("liq_amplify", string(item_gain(m)))],
+  fun (m) -> [("liq_amplify", string(item_gain(m))), ("title", ""), ("artist", ""), ("song", "")],
   intros_queue
 )
 intros_per_item = amplify(override="liq_amplify", 1., intros_gained)

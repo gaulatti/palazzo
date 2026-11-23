@@ -189,6 +189,15 @@ export interface PlaybackRequestAccepted {
 
 /** Playout commands kept for dedupe across restarts (#56). */
 export const PLAYOUT_JOURNAL_LIMIT = 256;
+// Liquidsoap applies the cue-in and cue-out values it finds in an item's metadata, and an audio file can
+// carry them in its own tags. Palazzo sets cue points only for songs (from their analysis), never for an
+// instant, a spot or an intro, so any cue value on those comes from the file, not from Palazzo or the
+// operator (gaulatti/palazzo#60). An annotation overrides the file's tag and an empty one is ignored, so
+// annotating both empty makes the item play whole. Measured on Liquidsoap 2.4.5: a cue-out of 0.5 in the
+// file played 0.5 s and a cue-in of 2.5 played 1.5 s of a 4 s clip; with the empty annotations both played
+// the whole clip. The song chain is not touched.
+export const NO_FILE_CUE = { liq_cue_in: "", liq_cue_out: "" } as const;
+
 @Injectable()
 export class StreamService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(StreamService.name);
@@ -755,6 +764,7 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
             palazzo_program_id: programId,
             palazzo_url: playableIntro.url,
             palazzo_kind: "intro",
+            ...NO_FILE_CUE,
             liq_amplify: String(introGain),
             palazzo_fade_in: String(fadeIn),
             palazzo_fade_out: String(fadeOut),
@@ -819,6 +829,7 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
         palazzo_request_id: playbackRequestId,
         palazzo_url: data.url,
         palazzo_kind: "instant",
+        ...NO_FILE_CUE,
         ...(data.volume === undefined
           ? {}
           : { liq_amplify: String(this.normalizeGain(data.volume, "volume")) }),
@@ -1319,6 +1330,7 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
               palazzo_request_id: bumper.playbackId,
               palazzo_url: bumper.url,
               palazzo_kind: "instant",
+              ...NO_FILE_CUE,
               // An announced spot starts just before the song's end, while the song is still on air; it
               // is titled with the station name all the same (gaulatti/palazzo#54).
               palazzo_spot: "true",
