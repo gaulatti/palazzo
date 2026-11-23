@@ -108,6 +108,11 @@ test("instants and intros read a validated per-item gain and spots without one s
   assert.equal(script.match(/\("liq_amplify", string\(item_gain\(m\)\)\)/g).length, 3);
   // The intro mapper must not strip: the fades and events read the intro's other annotations.
   assert.match(script, /id="intros_gain",\n  strip=false,/);
+  // gaulatti/palazzo#60: an intro's own file tags never reach the playback events.
+  assert.match(
+    script,
+    /intros_gained = metadata\.map\([^)]*fun \(m\) -> \[\("liq_amplify", string\(item_gain\(m\)\)\), \("title", ""\), \("artist", ""\), \("song", ""\)\]/s,
+  );
 });
 
 test("escapes user-controlled Liquidsoap string values", () => {
