@@ -18,6 +18,7 @@ function streamService() {
     activePlaylistPath: "/run/palazzo/active-filler.m3u",
   }, identityRelay);
   const commands = [];
+  service.trailingSilenceProbe = async () => ({ durationSeconds: 3, trailingSilenceSeconds: 0 });
   service.telnet = {
     send: async (command) => {
       commands.push(command);
@@ -77,6 +78,7 @@ test("annotates an intro with empty cue values and leaves the song's annotations
   const { service, commands } = streamService();
   service.playoutJournalPath = join(directory, "commands.json");
   service.assetProbe = async () => mediaProbeResult();
+  service.trailingSilenceProbe = async () => ({ durationSeconds: 3, trailingSilenceSeconds: 0 });
   await service.playProgramSong("program-one", "command-60", {
     song: {
       title: "Song",
@@ -182,6 +184,7 @@ test("prepares an intro before replacing the song and deduplicates retries", asy
   const { service, commands } = streamService();
   service.playoutJournalPath = join(directory, "commands.json");
   service.assetProbe = async () => mediaProbeResult();
+  service.trailingSilenceProbe = async () => ({ durationSeconds: 3, trailingSilenceSeconds: 0 });
   const payload = {
     song: {
       programId: "program-one",
@@ -424,6 +427,7 @@ test("rejects an invalid song before queue mutation and records a bounded prefli
 test("rejects cross-program assets before touching Liquidsoap", async () => {
   const { service, commands } = streamService();
   service.assetProbe = async () => mediaProbeResult();
+  service.trailingSilenceProbe = async () => ({ durationSeconds: 3, trailingSilenceSeconds: 0 });
   await assert.rejects(
     service.playProgramSong("program-one", "command", {
       song: {
@@ -475,4 +479,110 @@ test("records successful and malformed Liquidsoap telemetry poll outcomes", asyn
     metrics,
     /operation="telemetry_poll",result="parse_failure"\} 1/,
   );
+});
+
+test("an instant not measured yet plays whole at once and is cued out at its last audio on the next play", async () => {
+  const { service, commands, telemetry } = streamService();
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  service.trailingSilenceProbe = async () => { await gate; return { durationSeconds: 2.6, trailingSilenceSeconds: 0.596 }; };
+  // The play does not wait for the measurement, which is still held here.
+  await service.playInstant({ url: "https://example.test/instant.mp3?sig=a" });
+  assert.match(commands[0], /liq_cue_in="",liq_cue_out=""/);
+  release();
+  await service.itemCueMeasuring.get("https://example.test/instant.mp3");
+  commands.length = 0;
+  // Another signed address of the same object reuses the measurement.
+  await service.playInstant({ url: "https://example.test/instant.mp3?sig=b" });
+  assert.match(commands[0], /liq_cue_in="",liq_cue_out="2.004"/);
+  const metrics = await telemetry.renderMetrics();
+  assert.match(metrics, /palazzo_item_trim_total\{kind="instant",result="unmeasured"\} 1/);
+  assert.match(metrics, /palazzo_item_trim_total\{kind="instant",result="trimmed"\} 1/);
+});
+
+test("caps the trim at one second", async () => {
+  const { service, commands } = streamService();
+  service.trailingSilenceProbe = async () => ({ durationSeconds: 10, trailingSilenceSeconds: 4 });
+  await service.playInstant({ url: "https://example.test/long.mp3" });
+  await service.itemCueMeasuring.get("https://example.test/long.mp3");
+  commands.length = 0;
+  await service.playInstant({ url: "https://example.test/long.mp3" });
+  assert.match(commands[0], /liq_cue_out="9"/);
+});
+
+test("a measurement that fails leaves the item whole, is counted, and is tried again", async () => {
+  const { service, commands, telemetry } = streamService();
+  let probes = 0;
+  service.trailingSilenceProbe = async () => { probes += 1; throw new Error("ffmpeg failed"); };
+  await service.playInstant({ url: "https://example.test/bad.mp3" });
+  await service.itemCueMeasuring.get("https://example.test/bad.mp3");
+  commands.length = 0;
+  await service.playInstant({ url: "https://example.test/bad.mp3" });
+  await service.itemCueMeasuring.get("https://example.test/bad.mp3");
+  assert.match(commands[0], /liq_cue_in="",liq_cue_out=""/);
+  assert.equal(probes, 2);
+  assert.match(await telemetry.renderMetrics(), /palazzo_item_trim_total\{kind="instant",result="failed"\} 2/);
+});
+
+test("a measured item is not measured again within its lifetime", async () => {
+  const { service } = streamService();
+  let probes = 0;
+  service.trailingSilenceProbe = async () => { probes += 1; return { durationSeconds: 3, trailingSilenceSeconds: 0.3 }; };
+  await service.playInstant({ url: "https://example.test/once.mp3" });
+  await service.itemCueMeasuring.get("https://example.test/once.mp3");
+  await service.playInstant({ url: "https://example.test/once.mp3" });
+  await service.playInstant({ url: "https://example.test/once.mp3" });
+  assert.equal(probes, 1);
+});
+
+test("keys an address that is not a URL by its text, and measures it like any other", async () => {
+  const { service, commands } = streamService();
+  let probes = 0;
+  service.trailingSilenceProbe = async () => { probes += 1; return { durationSeconds: 3, trailingSilenceSeconds: 0.5 }; };
+  await service.playInstant({ url: "not-a-url" });
+  await service.itemCueMeasuring.get("not-a-url");
+  commands.length = 0;
+  await service.playInstant({ url: "not-a-url" });
+  assert.match(commands[0], /liq_cue_out="2.5"/);
+  assert.equal(probes, 1);
+});
+
+test("keeps at most 256 measurements, the oldest going first", async () => {
+  const { service } = streamService();
+  const probed = [];
+  service.trailingSilenceProbe = async (url) => { probed.push(url); return { durationSeconds: 3, trailingSilenceSeconds: 0.5 }; };
+  for (let index = 0; index < 257; index += 1) {
+    const url = `https://example.test/cache/${index}.mp3`;
+    await service.playInstant({ url });
+    await service.itemCueMeasuring.get(`https://example.test/cache/${index}.mp3`);
+  }
+  assert.equal(service.itemCueOuts.size, 256);
+  assert.equal(service.itemCueOuts.has("https://example.test/cache/0.mp3"), false);
+  assert.equal(service.itemCueOuts.has("https://example.test/cache/256.mp3"), true);
+  // The evicted one is measured again on its next play.
+  const before = probed.length;
+  await service.playInstant({ url: "https://example.test/cache/0.mp3" });
+  await service.itemCueMeasuring.get("https://example.test/cache/0.mp3");
+  assert.equal(probed.length, before + 1);
+});
+
+test("a second play while the first measurement runs does not start another", async () => {
+  const { service } = streamService();
+  let probes = 0;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  service.trailingSilenceProbe = async () => { probes += 1; await gate; return { durationSeconds: 3, trailingSilenceSeconds: 0.5 }; };
+  await service.playInstant({ url: "https://example.test/slow.mp3?sig=1" });
+  await service.playInstant({ url: "https://example.test/slow.mp3?sig=2" });
+  release();
+  await service.itemCueMeasuring.get("https://example.test/slow.mp3");
+  assert.equal(probes, 1);
+});
+
+test("a measurement that throws something that is not an Error is counted failed too", async () => {
+  const { service, telemetry } = streamService();
+  service.trailingSilenceProbe = async () => { throw "plain text"; };
+  await service.playInstant({ url: "https://example.test/odd.mp3" });
+  await service.itemCueMeasuring.get("https://example.test/odd.mp3");
+  assert.match(await telemetry.renderMetrics(), /palazzo_item_trim_total\{kind="instant",result="failed"\} 1/);
 });

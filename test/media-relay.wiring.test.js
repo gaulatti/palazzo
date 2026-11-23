@@ -56,6 +56,7 @@ function streamService(relay, root, extra = {}) {
   const telemetry = new PlaybackTelemetryService(config);
   const service = new StreamService(config, telemetry, { getRuntimeState: () => ({}) }, relay);
   const commands = [];
+  service.trailingSilenceProbe = async () => ({ durationSeconds: 3, trailingSilenceSeconds: 0 });
   service.telnet = { send: async (command) => { commands.push(command); return 'ok'; }, close: () => {} };
   return { service, telemetry, commands };
 }

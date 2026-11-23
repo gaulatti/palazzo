@@ -342,6 +342,18 @@ metadata; its start hook puts the station name on the stream directly
 (`radio.insert_metadata`). Checked on a real Liquidsoap and Icecast by
 `test/runtime/verify-titles.sh`.
 
+## Trailing-silence cue-out (gaulatti/palazzo#55)
+
+A spot or an instant file can end in digital silence its operator never meant to air (production spots measured 0.57, 0.32, 0.25 and 0.16 s), which opens a gap before the announced song. When Palazzo prepares a spot or an instant it measures that silence and cues the item out at its last audio. The file is never changed, and the file's own cue tags stay ignored (gaulatti/palazzo#60): the cue comes only from this measurement.
+
+- **Measurement:** `ffmpeg silencedetect=noise=-85dB:d=0.05` over the item's loopback relay address (`src/stream/trailing-silence.ts`). A silence counts as trailing when it runs to the end of the file. The duration is ffmpeg's `Duration:` line, else the last progress `time=` (a file read over HTTP can carry no duration header).
+- **Cap:** the cue-out trims at most 1 s, so a long silent tail never cuts content. A trailing silence under 50 ms is not trimmed.
+- **Annotation:** `liq_cue_in=""` and `liq_cue_out="<seconds>"`, or `liq_cue_out=""` (plays whole).
+- **Never on the air path:** a play never waits for a measurement. A measured item (cached 10 minutes, 256 entries, oldest evicted) is cued out; an item not measured yet plays whole and is measured in the background (one at a time per item, a second relay fetch plus an ffmpeg decode, 20 s limit) for its next play. The cache key is the item's address without its query, so a signed address of the same object reuses it; a file replaced at the same address is measured again after the 10 minutes. A content key (an asset id or version from the sender) would be exact and is a follow-up.
+- **Failure:** a failed measurement logs `item.trim.measure_failed`, counts `failed`, caches nothing, and the item keeps playing whole; the next play tries again.
+- **Metric:** `palazzo_item_trim_total{kind="spot|instant",result="trimmed|whole|unmeasured|failed"}` (`unmeasured`: played whole while its first measurement runs).
+- **Tests:** `test/trailing-silence.test.js` (parser and cap), `test/trailing-silence.ffmpeg.test.js` (real ffmpeg on a tone with 0.4 s of trailing silence; skipped without ffmpeg), `test/stream.service.test.js`, and `test/runtime/verify-spot-gap.sh` for the end-to-end gap.
+
 ## Program surface
 
 All routes are confined to the private control network and exact configured program.

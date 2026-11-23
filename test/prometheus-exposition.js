@@ -72,6 +72,9 @@ function assertBoundedLabels(samples) {
     ]),
     outcome: new Set(["conflict", "failure", "success"]),
     result: new Set([
+      "trimmed",
+      "whole",
+      "unmeasured",
       "opened",
       "closed",
       "aborted",
