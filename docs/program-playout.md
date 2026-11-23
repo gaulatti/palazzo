@@ -342,6 +342,17 @@ metadata; its start hook puts the station name on the stream directly
 (`radio.insert_metadata`). Checked on a real Liquidsoap and Icecast by
 `test/runtime/verify-titles.sh`.
 
+## Trailing-silence cue-out (gaulatti/palazzo#55)
+
+A spot or an instant file can end in digital silence its operator never meant to air (production spots measured 0.57, 0.32, 0.25 and 0.16 s), which opens a gap before the announced song. When Palazzo prepares a spot or an instant it measures that silence and cues the item out at its last audio. The file is never changed, and the file's own cue tags stay ignored (gaulatti/palazzo#60): the cue comes only from this measurement.
+
+- **Measurement:** `ffmpeg silencedetect=noise=-85dB:d=0.05` over the item's loopback relay address (`src/stream/trailing-silence.ts`). A silence counts as trailing when it runs to the end of the file. The duration is ffmpeg's `Duration:` line, else the last progress `time=` (a file read over HTTP can carry no duration header).
+- **Cap:** the cue-out trims at most 1 s, so a long silent tail never cuts content. A trailing silence under 50 ms is not trimmed.
+- **Annotation:** `liq_cue_in=""` and `liq_cue_out="<seconds>"`, or `liq_cue_out=""` (plays whole).
+- **Failure:** a measurement that fails or times out (instants wait 1.5 s, spots their remaining time limit) plays the item whole, logs `item.trim.measure_failed` and counts `failed`. It never blocks or fails the play. Failures are not cached; successful measurements are cached per source (256 entries, oldest evicted).
+- **Metric:** `palazzo_item_trim_total{kind="spot|instant",result="trimmed|whole|failed"}`.
+- **Tests:** `test/trailing-silence.test.js` (parser and cap), `test/trailing-silence.ffmpeg.test.js` (real ffmpeg on a tone with 0.4 s of trailing silence; skipped without ffmpeg), `test/stream.service.test.js`, and `test/runtime/verify-spot-gap.sh` for the end-to-end gap.
+
 ## Program surface
 
 All routes are confined to the private control network and exact configured program.

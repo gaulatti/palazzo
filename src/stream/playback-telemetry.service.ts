@@ -356,6 +356,11 @@ export class PlaybackTelemetryService {
   private announcedPlaybackId: string | null = null;
   /** Whether the announced song was announced with a spot before it (gaulatti/palazzo#50). */
   private announcedWithBumper = false;
+  /** Spots and instants cued out at their last audio, by kind and result (gaulatti/palazzo#55). */
+  private readonly itemTrims: Record<ItemTrimKind, Record<ItemTrimResult, number>> = {
+    spot: { trimmed: 0, whole: 0, failed: 0 },
+    instant: { trimmed: 0, whole: 0, failed: 0 },
+  };
   private readonly bumperResults: Record<BumperResult, number> = {
     played: 0,
     dropped_unresolved: 0,
@@ -635,6 +640,11 @@ export class PlaybackTelemetryService {
   forgetAnnouncement(): void {
     this.announcedPlaybackId = null;
     this.announcedWithBumper = false;
+  }
+
+  /** Counts a measured spot or instant: cued out at its last audio (trimmed), played whole, or not measured (failed). */
+  observeItemTrim(kind: ItemTrimKind, result: ItemTrimResult): void {
+    this.itemTrims[kind][result] += 1;
   }
 
   /** Counts what became of an announced spot that Palazzo itself decided before Liquidsoap had it. */
@@ -1392,6 +1402,15 @@ export class PlaybackTelemetryService {
     for (const [result, count] of Object.entries(this.bumperResults)) {
       lines.push(`palazzo_next_bumper_total{result="${result}"} ${count}`);
     }
+    lines.push(
+      '# HELP palazzo_item_trim_total Spots and instants measured for trailing digital silence before they play, by kind and result: trimmed (cued out at the last audio, at most 1 s), whole (no silence over 50 ms) or failed (not measured in time; the item plays whole).',
+      '# TYPE palazzo_item_trim_total counter',
+    );
+    for (const [kind, results] of Object.entries(this.itemTrims)) {
+      for (const [result, count] of Object.entries(results)) {
+        lines.push(`palazzo_item_trim_total{kind="${kind}",result="${result}"} ${count}`);
+      }
+    }
     for (const [reason, count] of Object.entries(this.preflightSkipped)) {
       lines.push(
         `palazzo_media_preflight_skipped_total{reason="${reason}"} ${count}`,
@@ -1483,6 +1502,8 @@ export type NextRequestResult =
   | 'invalid'
   | 'no_current_song';
 type NextWithdrawnReason = 'replaced' | 'withdrawn' | 'flushed' | 'not_ready';
+export type ItemTrimKind = 'spot' | 'instant';
+export type ItemTrimResult = 'trimmed' | 'whole' | 'failed';
 /** What became of a spot announced with the next song (gaulatti/palazzo#50). */
 export type BumperResult =
   | 'played'

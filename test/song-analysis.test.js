@@ -36,6 +36,7 @@ async function harness(settings = {}) {
   const directory = await mkdtemp(join(tmpdir(), "palazzo-analysis-"));
   service.playoutJournalPath = join(directory, "commands.json");
   service.assetProbe = async () => mediaProbeResult();
+  service.trailingSilenceProbe = async () => ({ durationSeconds: 3, trailingSilenceSeconds: 0 });
   let key = 0;
   const play = async (song, intro) => {
     await service.playProgramSong("program-one", `command-${(key += 1)}`, {

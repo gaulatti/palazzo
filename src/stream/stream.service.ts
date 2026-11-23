@@ -14,6 +14,13 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { buildLiquidsoapScript } from "./liquidsoap-script";
+import {
+  SILENCE_MIN_SECONDS,
+  SILENCE_NOISE_DB,
+  cueOutSeconds,
+  parseTrailingSilence,
+  type TrailingSilence,
+} from "./trailing-silence";
 import { FillerStoreService } from "./filler-store.service";
 import { MediaRelay, type MediaFetchPath } from "./media-relay";
 import { LiquidsoapTelnetClient } from "./liquidsoap-telnet.client";
@@ -197,6 +204,9 @@ export const PLAYOUT_JOURNAL_LIMIT = 256;
 // file played 0.5 s and a cue-in of 2.5 played 1.5 s of a 4 s clip; with the empty annotations both played
 // the whole clip. The song chain is not touched.
 export const NO_FILE_CUE = { liq_cue_in: "", liq_cue_out: "" } as const;
+/** The longest a manual instant waits for its trailing silence to be measured before it plays whole. */
+const INSTANT_TRIM_TIMEOUT_MS = 1_500;
+const ITEM_CUE_CACHE_ENTRIES = 256;
 
 @Injectable()
 export class StreamService implements OnModuleInit, OnModuleDestroy {
@@ -262,6 +272,33 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
     );
     return parseProbeOutput(stdout);
   };
+  /** Trailing digital silence of an item file, measured through the loopback relay (gaulatti/palazzo#55). */
+  private trailingSilenceProbe = async (
+    url: string,
+    timeoutMs: number,
+  ): Promise<TrailingSilence> => {
+    const { stderr } = await execFileAsync(
+      "ffmpeg",
+      [
+        "-hide_banner",
+        // The only address ffmpeg opens is Palazzo's loopback media relay.
+        "-protocol_whitelist",
+        "http,tcp",
+        "-i",
+        url,
+        "-vn",
+        "-af",
+        `silencedetect=noise=${SILENCE_NOISE_DB}dB:d=${SILENCE_MIN_SECONDS}`,
+        "-f",
+        "null",
+        "-",
+      ],
+      { timeout: timeoutMs, maxBuffer: 256 * 1024 },
+    );
+    return parseTrailingSilence(stderr);
+  };
+  /** The cue-out measured for a source URL (null: play whole), bounded and oldest first out. */
+  private readonly itemCueOuts = new Map<string, number | null>();
   private mixerState: MixerState = {
     mainVolume: 1,
     songVolume: 1,
@@ -829,7 +866,7 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
         palazzo_request_id: playbackRequestId,
         palazzo_url: data.url,
         palazzo_kind: "instant",
-        ...NO_FILE_CUE,
+        ...(await this.itemCue("instant", data.url, INSTANT_TRIM_TIMEOUT_MS)),
         ...(data.volume === undefined
           ? {}
           : { liq_amplify: String(this.normalizeGain(data.volume, "volume")) }),
@@ -1330,7 +1367,7 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
               palazzo_request_id: bumper.playbackId,
               palazzo_url: bumper.url,
               palazzo_kind: "instant",
-              ...NO_FILE_CUE,
+              ...(await this.itemCue("spot", bumper.url, limit * 1000)),
               // An announced spot starts just before the song's end, while the song is still on air; it
               // is titled with the station name all the same (gaulatti/palazzo#54).
               palazzo_spot: "true",
@@ -1493,6 +1530,42 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
     if (/\r|\n/.test(url)) {
       throw new BadRequestException("Audio URL cannot contain newlines");
     }
+  }
+
+  /**
+   * The cue annotations of a spot or an instant (gaulatti/palazzo#55): the file's own cue tags are ignored
+   * (empty cue-in, gaulatti/palazzo#60) and the item is cued out at its last audio, the trailing digital silence
+   * measured here, at most MAX_TRIM_SECONDS of it. A measurement that fails or runs past `timeoutMs` leaves the
+   * item whole: it still plays, it is counted as failed, and the result is not cached.
+   */
+  private async itemCue(
+    kind: "spot" | "instant",
+    sourceUrl: string,
+    timeoutMs: number,
+  ): Promise<Record<string, string>> {
+    const key = sourceUrl.trim();
+    let cue = this.itemCueOuts.get(key);
+    if (cue === undefined) {
+      try {
+        const target = await this.relayed(key, "instant", timeoutMs + 5_000);
+        cue = cueOutSeconds(await this.trailingSilenceProbe(target, timeoutMs));
+        if (this.itemCueOuts.size >= ITEM_CUE_CACHE_ENTRIES) {
+          const oldest = this.itemCueOuts.keys().next().value;
+          if (oldest !== undefined) this.itemCueOuts.delete(oldest);
+        }
+        this.itemCueOuts.set(key, cue);
+      } catch (error) {
+        this.telemetry.observeItemTrim(kind, "failed");
+        this.logger.warn({
+          event: "item.trim.measure_failed",
+          kind,
+          error: error instanceof Error ? error.name : "unknown",
+        });
+        return { ...NO_FILE_CUE };
+      }
+    }
+    this.telemetry.observeItemTrim(kind, cue === null ? "whole" : "trimmed");
+    return { liq_cue_in: "", liq_cue_out: cue === null ? "" : String(cue) };
   }
 
   private annotatedUri(url: string, metadata: Record<string, string>): string {

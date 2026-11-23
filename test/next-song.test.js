@@ -78,6 +78,7 @@ async function harness(settings = {}, answers = {}) {
   const directory = await mkdtemp(join(tmpdir(), "palazzo-next-"));
   service.playoutJournalPath = join(directory, "commands.json");
   service.assetProbe = async () => mediaProbeResult();
+  service.trailingSilenceProbe = async () => ({ durationSeconds: 3, trailingSilenceSeconds: 0 });
   const onAir = (overrides) => telemetry.apply(snapshot(overrides), []);
   const announce = (song = {}, key = "next-b", extra = {}) =>
     service.announceNext("program-one", key, {
