@@ -188,6 +188,13 @@ Useful metrics:
   series is exposed from 0. A song changed after an announced spot is labelled
   `handoff="bumper"` in `palazzo_song_change_gap_seconds`, with the spot's time
   subtracted.
+- `palazzo_song_command_prepare_total{result="ready|fallback|failed"}`: how each
+  song command's preparation ended (gaulatti/palazzo#66, see
+  [program-playout.md](program-playout.md#a-song-command-prepares-its-song-gaulattipalazzo66)):
+  `ready` (the song was resolved before the cut), `fallback` (not ready within
+  the 3 s limit, cut anyway) or `failed` (not resolvable, cut at once). Every
+  series is exposed from 0; a rising `fallback` share means commanded songs are
+  slow to fetch.
 - `palazzo_song_trimmed_seconds{edge="head|tail"}` (histogram, buckets 0.5, 1,
   2, 3, 5, 8, 10 s): the seconds a song's cue points trim from each edge, one
   observation per applied edge (gaulatti/palazzo#53). The tail is measured

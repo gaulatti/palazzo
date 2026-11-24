@@ -110,7 +110,8 @@ function assertBoundedLabels(samples) {
       "dropped_unresolved",
       "dropped_late",
       "dropped_failed",
-    ]),
+          "fallback",
+]),
     reason: new Set([
       "asset_unavailable",
       "bound",

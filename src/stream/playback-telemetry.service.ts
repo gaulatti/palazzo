@@ -27,7 +27,8 @@ export interface LiquidsoapLifecycleEvent {
     | 'track_skipped'
     | 'instant_started'
     | 'instant_ended'
-    | 'bumper_result';
+    | 'bumper_result'
+    | 'command_prepare';
   playback_request_id: string;
   playback_id: string;
   parent_playback_id: string;
@@ -360,6 +361,12 @@ export class PlaybackTelemetryService {
   private readonly itemTrims: Record<ItemTrimKind, Record<ItemTrimResult, number>> = {
     spot: { trimmed: 0, whole: 0, unmeasured: 0, failed: 0 },
     instant: { trimmed: 0, whole: 0, unmeasured: 0, failed: 0 },
+  };
+  /** How each song command's preparation ended (gaulatti/palazzo#66). */
+  private readonly commandPrepares: Record<CommandPrepareResult, number> = {
+    ready: 0,
+    fallback: 0,
+    failed: 0,
   };
   private readonly bumperResults: Record<BumperResult, number> = {
     played: 0,
@@ -991,6 +998,11 @@ export class PlaybackTelemetryService {
       if (result) this.bumperResults[result] += 1;
       return;
     }
+    if (event.event_type === 'command_prepare') {
+      const result = COMMAND_PREPARE_RESULTS.find((r) => r === event.reason);
+      if (result) this.commandPrepares[result] += 1;
+      return;
+    }
     if (
       event.event_type === 'instant_started' ||
       event.event_type === 'instant_ended'
@@ -1403,6 +1415,14 @@ export class PlaybackTelemetryService {
       lines.push(`palazzo_next_bumper_total{result="${result}"} ${count}`);
     }
     lines.push(
+      '# HELP palazzo_song_command_prepare_total How a song command\'s preparation ended (gaulatti/palazzo#66): ready (resolved before the cut), fallback (not ready within the limit, cut anyway) or failed (not resolvable, cut anyway).',
+      '# TYPE palazzo_song_command_prepare_total counter',
+      ...COMMAND_PREPARE_RESULTS.map(
+        (result) =>
+          `palazzo_song_command_prepare_total{result="${result}"} ${this.commandPrepares[result]}`,
+      ),
+    );
+    lines.push(
       '# HELP palazzo_item_trim_total Spots and instants measured for trailing digital silence before they play, by kind and result: trimmed (cued out at the last audio, at most 1 s), whole (no silence over 50 ms) or failed (not measured in time; the item plays whole).',
       '# TYPE palazzo_item_trim_total counter',
     );
@@ -1510,6 +1530,9 @@ export type BumperResult =
   | 'dropped_unresolved'
   | 'dropped_late'
   | 'dropped_failed';
+/** How a song command's preparation ended (gaulatti/palazzo#66). */
+export type CommandPrepareResult = 'ready' | 'fallback' | 'failed';
+const COMMAND_PREPARE_RESULTS: CommandPrepareResult[] = ['ready', 'fallback', 'failed'];
 const BUMPER_RESULTS: BumperResult[] = [
   'played',
   'dropped_unresolved',
