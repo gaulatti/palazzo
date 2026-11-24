@@ -889,9 +889,17 @@ def cut_to_command(r, result) =
   end
 end
 
+# How a command's song resolution ended, by generation (gaulatti/palazzo#66). The resolver thread only records it;
+# the command's own poll decides and cuts, so every cut is made by one thread and a command cuts once.
+command_cut_generation = ref(-1)
+command_ready_generation = ref(-1)
+command_ready_requests = ref([])
+command_failed_generation = ref(-1)
+
 # palazzo.command_song <prepare limit seconds> <annotated uri> (gaulatti/palazzo#66): resolves the commanded song
-# while the song on air keeps playing, then cuts to it. Not resolved within the limit, or not resolvable, it cuts
-# anyway with the song still to resolve, so a command always acts within the limit.
+# while the song on air keeps playing, then cuts to it. The poll cuts at the limit whatever the resolution is doing
+# (request.resolve does not stop a slow fetch on time), with the song still to resolve, so a command always acts
+# within the limit; a song that cannot be resolved cuts at once; a newer command, stop or clear ends the poll.
 server.register(
   namespace="palazzo",
   usage="command_song <prepare limit seconds> <uri>",
@@ -908,26 +916,53 @@ server.register(
           uri = string.concat(separator=" ", list.tl(parts))
           command_generation := command_generation() + 1
           generation = command_generation()
+          started = time()
           thread.run(fun () ->
             begin
               r = request.create(uri)
-              since = time()
-              ok = request.resolve(timeout=limit, r)
-              if command_generation() == generation then
-                if ok then
-                  cut_to_command(r, "ready")
-                else
+              if request.resolve(timeout=limit, r) then
+                if command_generation() == generation and command_cut_generation() != generation then
                   begin
-                    request.destroy(r)
-                    cut_to_command(
-                      request.create(uri),
-                      if time() - since >= limit - 0.5 then "fallback" else "failed" end
-                    )
+                    list.iter(fun (old) -> request.destroy(old), command_ready_requests())
+                    command_ready_requests := [r]
+                    command_ready_generation := generation
                   end
+                else
+                  request.destroy(r)
                 end
               else
-                request.destroy(r)
+                begin
+                  request.destroy(r)
+                  command_failed_generation := generation
+                end
               end
+            end
+          )
+          thread.run.recurrent(delay=0.05, fun () ->
+            if command_generation() != generation then
+              -1.
+            elsif command_ready_generation() == generation and command_ready_requests() != [] then
+              begin
+                command_cut_generation := generation
+                r = list.hd(command_ready_requests())
+                command_ready_requests := []
+                cut_to_command(r, "ready")
+                -1.
+              end
+            elsif command_failed_generation() == generation then
+              begin
+                command_cut_generation := generation
+                cut_to_command(request.create(uri), "failed")
+                -1.
+              end
+            elsif time() - started >= limit then
+              begin
+                command_cut_generation := generation
+                cut_to_command(request.create(uri), "fallback")
+                -1.
+              end
+            else
+              0.05
             end
           )
           "ok"

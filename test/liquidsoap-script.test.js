@@ -225,9 +225,13 @@ test("prepares a commanded song before cutting the song on air", () => {
     script,
     /"flush_and_skip",\n    fun \(_\) ->\n      try\n        command_generation := command_generation\(\) \+ 1/,
   );
-  assert.match(script, /ok = request\.resolve\(timeout=limit, r\)\n              if command_generation\(\) == generation then/);
+  // One poll per command decides and cuts (request.resolve does not stop a slow fetch on time): ready, failed, or
+  // the limit; a newer command ends it. The resolver only records how the resolution ended.
+  assert.match(script, /thread\.run\.recurrent\(delay=0\.05, fun \(\) ->\n            if command_generation\(\) != generation then\n              -1\./);
   assert.match(script, /cut_to_command\(r, "ready"\)/);
-  assert.match(script, /if time\(\) - since >= limit - 0\.5 then "fallback" else "failed" end/);
+  assert.match(script, /cut_to_command\(request\.create\(uri\), "failed"\)/);
+  assert.match(script, /elsif time\(\) - started >= limit then\n              begin\n                command_cut_generation := generation\n                cut_to_command\(request\.create\(uri\), "fallback"\)/);
+  assert.match(script, /if command_generation\(\) == generation and command_cut_generation\(\) != generation then/);
   assert.match(script, /songs_queue\.set_queue\(\[\]\)\n    songs_queue\.skip\(\)\n    songs_queue\.push\(r\)/);
   assert.match(script, /event_type="command_prepare"/);
 });

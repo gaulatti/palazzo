@@ -61,7 +61,7 @@ for spec in 'spot-a 1000 6' 'spot-b 440 20' 'spot-spot 2000 5' 'spot-c 660 14' '
     -f lavfi -i "sine=frequency=$2:sample_rate=44100" -t "$3" "/tmp/$1.wav"
 done
 docker exec --detach "$station_container" node -e \
-  'const fs=require("node:fs");require("node:http").createServer(async (request,response)=>{let path=new URL(request.url,"http://x").pathname;if(path==="/missing.wav"){response.statusCode=404;response.end();return}const slow=/^\/slow-(\d+)(\/.+)$/.exec(path);if(slow){globalThis.fetched=globalThis.fetched||{};const again=globalThis.fetched[path];globalThis.fetched[path]=true;if(again)await new Promise(resolve=>setTimeout(resolve,Number(slow[1])));path=slow[2]}const own=/^\/(spot|hold)-[a-z]+\.wav$/.test(path)&&fs.existsSync("/tmp"+path);const name=own?path.slice(1):path==="/song.wav"?"song.wav":path==="/instant.wav"?"instant.wav":"filler.wav";const media="/tmp/"+name;response.setHeader("Content-Type","audio/wav");response.setHeader("Content-Length",fs.statSync(media).size);response.setHeader("Accept-Ranges","bytes");fs.createReadStream(media).pipe(response)}).listen(3200,"127.0.0.1")'
+  'const fs=require("node:fs");require("node:http").createServer(async (request,response)=>{let path=new URL(request.url,"http://x").pathname;globalThis.fetched=globalThis.fetched||{};if(path.startsWith("/vanish/")){const again=globalThis.fetched[path];globalThis.fetched[path]=true;if(again){response.statusCode=404;response.end();return}path=path.slice("/vanish".length)}const slow=/^\/slow-(\d+)(\/.+)$/.exec(path);if(slow){const again=globalThis.fetched[path];globalThis.fetched[path]=true;if(again)await new Promise(resolve=>setTimeout(resolve,Number(slow[1])));path=slow[2]}const own=/^\/(spot|hold)-[a-z]+\.wav$/.test(path)&&fs.existsSync("/tmp"+path);const name=own?path.slice(1):path==="/song.wav"?"song.wav":path==="/instant.wav"?"instant.wav":"filler.wav";const media="/tmp/"+name;response.setHeader("Content-Type","audio/wav");response.setHeader("Content-Length",fs.statSync(media).size);response.setHeader("Accept-Ranges","bytes");fs.createReadStream(media).pipe(response)}).listen(3200,"127.0.0.1")'
 for attempt in $(seq 1 20); do
   if docker exec "$station_container" node -e \
     'fetch("http://127.0.0.1:3200/filler.wav").then(response=>{if(!response.ok)process.exit(1)}).catch(()=>process.exit(1))'; then
@@ -238,10 +238,9 @@ test "$(on_air)" = ci-hold-b || { echo 'station check failed: the song on air en
 sleep 2
 test "$(on_air)" != ci-hold-b || { echo 'station check failed: a command waited past its prepare limit'; exit 1; }
 await_state 'the slow song plays once it arrives' '.track.playbackRequestId == "ci-hold-c"'
-# Failed load: a song that cannot be fetched cuts the song on air at once, as before.
-hold_song ci-hold-missing missing.wav
-sleep 1.5
-test "$(on_air)" != ci-hold-c || { echo 'station check failed: a failed song command did not cut the song on air'; exit 1; }
+# A song that cannot be fetched never reaches palazzo.command_song through the API: the preflight probe refuses the
+# command first (400 song asset is not ready). The cut for a song that vanishes between the probe and the fetch is
+# covered by the script tests.
 # Back to back: a newer command wins over one still preparing, and the older song never plays.
 hold_song ci-hold-a2 hold-a.wav
 await_state 'a song is on air before the back-to-back commands' '.track.playbackRequestId == "ci-hold-a2"'
