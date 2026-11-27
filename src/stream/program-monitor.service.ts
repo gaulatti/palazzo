@@ -4,7 +4,14 @@ import { request } from "node:http";
 import { Readable } from "node:stream";
 import { Counter, Gauge, Registry } from "prom-client";
 
-/** Relays this appliance's configured Icecast output over its private API. */
+/** The channels with a pre-fade listen tap, by the name the API takes. */
+export const PFL_CHANNELS = ["song", "instant"] as const;
+export type PflChannel = (typeof PFL_CHANNELS)[number];
+
+/**
+ * Relays this appliance's audio over its private API: the configured Icecast output, or a channel's
+ * pre-fade listen tap from Liquidsoap's loopback port.
+ */
 @Injectable()
 export class ProgramMonitorService {
   private readonly registry = new Registry();
@@ -22,13 +29,20 @@ export class ProgramMonitorService {
 
   constructor(private readonly config: ConfigService) {}
 
-  open(signal: AbortSignal): Promise<{ stream: Readable; type: string }> {
+  open(
+    signal: AbortSignal,
+    pfl?: PflChannel,
+  ): Promise<{ stream: Readable; type: string }> {
     return new Promise((resolve, reject) => {
       let responded = false;
       const upstream = request({
         hostname: "127.0.0.1",
-        port: Number(this.config.get("ICECAST_PORT") ?? 8000),
-        path: this.config.get<string>("ICECAST_MOUNT") ?? "/stream",
+        port: pfl
+          ? Number(this.config.get("PFL_PORT") ?? 8010)
+          : Number(this.config.get("ICECAST_PORT") ?? 8000),
+        path: pfl
+          ? `/pfl/${pfl}`
+          : (this.config.get<string>("ICECAST_MOUNT") ?? "/stream"),
         method: "GET",
         headers: { Accept: "audio/mpeg", "Icy-MetaData": "0" },
         signal,

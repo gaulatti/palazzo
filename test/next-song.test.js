@@ -493,7 +493,7 @@ const SPOT_URI =
 
 test("an announcement with a spot resolves the spot after the song, and the state advertises it", async () => {
   const { service, telemetry, commands, onAir, announce } = await harness();
-  assert.deepEqual(service.telemetry.getState().capabilities, ["next.bumper"]);
+  assert.deepEqual(service.telemetry.getState().capabilities, ["next.bumper", "monitor.pfl"]);
   onAir();
   const response = await announce({}, "next-b", { bumper: SPOT });
   assert.equal(response.state, "queued");

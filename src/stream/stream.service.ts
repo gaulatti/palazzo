@@ -403,8 +403,10 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
     const genre = this.config.get<string>("STREAM_GENRE") ?? "Various";
     const bitrate = Number(this.config.get<string>("BITRATE") ?? 128);
     const rtmpUrl = this.config.get<string>("RTMP_URL") || undefined;
+    const pflPort = Number(this.config.get<string>("PFL_PORT") ?? 8010);
 
     const script = buildLiquidsoapScript({
+      pflPort,
       telnetPort: this.telnetPort,
       icecastPort: port,
       icecastPassword: password,

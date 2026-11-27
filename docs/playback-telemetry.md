@@ -46,8 +46,17 @@ first. It comes from Liquidsoap's own readiness of the raw input
 
 `capabilities` in the playback state lists what this Palazzo supports beyond
 the base contract. A client relies on a capability only when it is listed.
-Today the list is `["next.bumper"]`: a spot announced with the next song
-(gaulatti/palazzo#50, see [program-playout.md](program-playout.md)).
+Today the list is `["next.bumper", "monitor.pfl"]`:
+
+- `next.bumper`: a spot announced with the next song (gaulatti/palazzo#50, see
+  [program-playout.md](program-playout.md)).
+- `monitor.pfl`: pre-fade listen (gaulatti/alcantara#835).
+  `GET /v1/programs/:programId/output/pfl/:channel` (`song` or `instant`)
+  streams that channel as it enters its fader, stereo MP3 at 96 kb/s, so a muted
+  or pulled-down channel is still heard. Listening changes nothing on air. The
+  taps are served by Liquidsoap on a loopback port inside the container
+  (`PFL_PORT`, default 8010) and are not Icecast mounts, so the public stream
+  proxy cannot reach them. They are encoded whether or not anyone listens.
 
 ## Why a track ended
 

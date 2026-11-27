@@ -258,3 +258,29 @@ test('header timeouts terminate the real HTTP request and default configuration 
   await assert.rejects(pending, /unavailable/);
   assert.match(await service.renderMetrics(), /result="failure"\} 1/);
 });
+
+test("relays a channel's pre-fade tap from its own loopback port, and refuses an unknown channel", async () => {
+  const seen = [];
+  const server = createServer((req, res) => {
+    seen.push(req.url);
+    res.writeHead(200, { "Content-Type": "audio/mpeg" });
+    res.end(Buffer.from([255, 251, 144, 0]));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = server.address().port;
+  // Icecast's port is never asked: nothing listens there.
+  const service = new ProgramMonitorService({
+    get: (key) => ({ PFL_PORT: port, ICECAST_PORT: 1 })[key],
+  });
+  const controller = new StreamController({}, { assertProgram() {} }, {}, service);
+  const reply = { raw: new EventEmitter() };
+  for (const channel of ["song", "instant"]) {
+    const file = await controller.channelAudio("program-ci", channel, reply);
+    for await (const _ of file.getStream()) void _;
+  }
+  assert.deepEqual(seen, ["/pfl/song", "/pfl/instant"]);
+  await assert.rejects(() => controller.channelAudio("program-ci", "../stream", reply), { status: 404 });
+  assert.equal(seen.length, 2);
+  server.closeAllConnections();
+  await new Promise((resolve) => server.close(resolve));
+});

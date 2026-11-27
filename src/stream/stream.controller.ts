@@ -7,6 +7,7 @@ import {
   Header,
   Headers,
   MessageEvent,
+  NotFoundException,
   Param,
   Post,
   Put,
@@ -24,7 +25,11 @@ import {
   type ProgramPreflightRequest,
 } from "./stream.service";
 import { BroadcastLifecycleService } from "./broadcast-lifecycle.service";
-import { ProgramMonitorService } from './program-monitor.service';
+import {
+  PFL_CHANNELS,
+  type PflChannel,
+  ProgramMonitorService,
+} from './program-monitor.service';
 import type { ServerResponse } from 'node:http';
 import {
   FillerStoreService,
@@ -58,15 +63,39 @@ export class StreamController {
     @Res({ passthrough: true }) reply: { raw: ServerResponse },
   ): Promise<StreamableFile> {
     this.lifecycle.assertProgram(programId);
+    return this.relay(reply);
+  }
+
+  /** Pre-fade listen: one channel as it enters its fader. Listening changes nothing on air. */
+  @Get("v1/programs/:programId/output/pfl/:channel")
+  @Header("Cache-Control", "no-store")
+  @Header("X-Accel-Buffering", "no")
+  async channelAudio(
+    @Param("programId") programId: string,
+    @Param("channel") channel: string,
+    @Res({ passthrough: true }) reply: { raw: ServerResponse },
+  ): Promise<StreamableFile> {
+    this.lifecycle.assertProgram(programId);
+    const pfl = PFL_CHANNELS.find((name) => name === channel);
+    if (!pfl) throw new NotFoundException("Unknown channel");
+    return this.relay(reply, pfl);
+  }
+
+  private async relay(
+    reply: { raw: ServerResponse },
+    pfl?: PflChannel,
+  ): Promise<StreamableFile> {
     const abort = new AbortController();
     const close = () => abort.abort();
-    reply.raw.once('close', close);
+    reply.raw.once("close", close);
     try {
-      const output = await this.monitor.open(abort.signal);
-      output.stream.once('close', () => reply.raw.removeListener('close', close));
+      const output = await this.monitor.open(abort.signal, pfl);
+      output.stream.once("close", () =>
+        reply.raw.removeListener("close", close),
+      );
       return new StreamableFile(output.stream, { type: output.type });
     } catch (error) {
-      reply.raw.removeListener('close', close);
+      reply.raw.removeListener("close", close);
       throw error;
     }
   }

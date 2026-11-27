@@ -205,3 +205,28 @@ test("instants are titled with the station name, never with their file's tags", 
     /radio = mksafe\(radio\)\nstation_title := fun \(\) -> radio\.insert_metadata\(\[\("title", "Radio \\"Modo\\" Italiano"\)\]\)\n/,
   );
 });
+
+test("serves each channel's pre-fade tap on loopback harbor, on the program's clock and off Icecast", () => {
+  const script = buildLiquidsoapScript({
+    telnetPort: 14000,
+    icecastPort: 8000,
+    icecastPassword: "password",
+    mount: "/stream",
+    streamName: "Name",
+    genre: "Various",
+    bitrate: 128,
+    fillerPlaylistPath: "/run/palazzo/active-filler.m3u",
+    pflPort: 8010,
+  });
+  assert.match(script, /settings\.harbor\.bind_addrs := \["127\.0\.0\.1"\]/);
+  // Before the fader: the deck's signal ahead of song_volume, the spot queue's ahead of instant_volume.
+  assert.match(script, /normalized = amplify\(override="liq_amplify", 1\., gated\)\n  song_pre_fader := \[normalized, \.\.\.song_pre_fader\(\)\]/);
+  assert.match(script, /pfl_songs = add\(normalize=false, song_pre_fader\(\)\)/);
+  assert.match(script, /pfl_output\(id="pfl_song", mount="pfl\/song", pfl_songs\)/);
+  assert.ok(script.indexOf('clock.assign_new(id="program", [radio, pfl_songs, instants_per_item])') < script.indexOf('pfl_output(id="pfl_song"'));
+  assert.match(script, /pfl_output\(id="pfl_instant", mount="pfl\/instant", instants_per_item\)/);
+  // No clock of its own: that raced at start-up and left the public output unstarted.
+  assert.doesNotMatch(script, /buffer\(/);
+  assert.equal(script.match(/output\.icecast\(/g).length, 1);
+  assert.match(script, /port=8010,/);
+});

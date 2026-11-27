@@ -10,6 +10,8 @@ export interface LiquidsoapScriptOptions {
   rtmpUrl?: string;
   /** How long Liquidsoap may take to resolve (download) one song request. */
   songRequestTimeoutMs: number;
+  /** The loopback port the pre-fade listen taps are served on, inside the container. */
+  pflPort: number;
 }
 
 function liqString(value: string): string {
@@ -56,6 +58,8 @@ settings.server.telnet := true
 settings.server.telnet.bind_addr := "127.0.0.1"
 settings.server.telnet.port := ${options.telnetPort}
 settings.log.level := 3
+# Only the pre-fade listen taps use harbor, and only this appliance's API may reach them.
+settings.harbor.bind_addrs := ["127.0.0.1"]
 
 events = ref([])
 event_sequence = ref(0)
@@ -398,9 +402,11 @@ end
 # (liq_cue_in / liq_cue_out) are applied by request resolution itself in Liquidsoap 2.4, so the deck plays
 # from cue-in to cue-out and its remaining time and every position hook below are on that trimmed clock
 # (gaulatti/palazzo#53). No fade is applied: the fade operators below have no duration and no override.
+song_pre_fader = ref([])
 def song_deck(queue, is_open) =
   gated = switch(track_sensitive=false, [({is_open()}, queue)])
   normalized = amplify(override="liq_amplify", 1., gated)
+  song_pre_fader := [normalized, ...song_pre_fader()]
   controlled = amplify(override=null, song_volume, normalized)
   faded = fade.in(duration=0., track_sensitive=true, controlled)
   fade.out(duration=0., track_sensitive=true, faded)
@@ -1113,6 +1119,28 @@ server.register(
   "events",
   fun (_) -> "[" ^ string.concat(separator=",", list.rev(events())) ^ "]"
 )
+# Pre-fade listen (gaulatti/alcantara#835): each channel as it enters its fader, for an operator's headphones.
+# Taps only read the sources the program already plays, on the program's clock: a clock of their own (a
+# buffer each) raced the program's clock at start-up and left the public output unstarted. Harbor queues
+# each listener's audio and drops a listener that stalls, so none holds the program. None is on Icecast,
+# whose port the public stream is proxied from.
+def pfl_output(~id, ~mount, tapped) =
+  output.harbor(
+    id=id,
+    %mp3(bitrate=96),
+    port=${options.pflPort},
+    mount=mount,
+    burst=0,
+    mksafe(tapped)
+  )
+end
+pfl_songs = add(normalize=false, song_pre_fader())
+# One clock, assigned before any output starts: left to be inferred, each output started a clock of its own
+# and joining them raced, so about one start in four never connected the public output.
+clock.assign_new(id="program", [radio, pfl_songs, instants_per_item])
+pfl_output(id="pfl_song", mount="pfl/song", pfl_songs)
+pfl_output(id="pfl_instant", mount="pfl/instant", instants_per_item)
+
 icecast_output = output.icecast(
   id="icecast_output",
   %mp3(bitrate=${options.bitrate}),

@@ -172,7 +172,7 @@ export interface PlaybackState {
 }
 
 /** Capabilities a client may rely on only when listed in the playback state. */
-export const PALAZZO_CAPABILITIES = ['next.bumper'] as const;
+export const PALAZZO_CAPABILITIES = ['next.bumper', 'monitor.pfl'] as const;
 
 const MAX_REPLAY_EVENTS = 512;
 const SEQUENCE_RESERVATION_SIZE = 1_000_000_000;
@@ -189,6 +189,7 @@ const NORMALIZED_METHODS = new Set([
 ]);
 const NORMALIZED_ROUTES = new Set([
   '/v1/programs/:programId/output/audio',
+  '/v1/programs/:programId/output/pfl/:channel',
   '/metrics',
   '/proxy-audio',
   '/v1/programs/:programId/automation',

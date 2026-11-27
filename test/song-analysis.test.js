@@ -264,6 +264,7 @@ test("the script applies song gain and fades on the song chain only", () => {
       script.includes(`def song_deck(queue, is_open) =
   gated = switch(track_sensitive=false, [({is_open()}, queue)])
   normalized = amplify(override="liq_amplify", 1., gated)
+  song_pre_fader := [normalized, ...song_pre_fader()]
   controlled = amplify(override=null, song_volume, normalized)
   faded = fade.in(duration=0., track_sensitive=true, controlled)
   fade.out(duration=0., track_sensitive=true, faded)
