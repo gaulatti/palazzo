@@ -316,6 +316,21 @@ limit, and sends it to Liquidsoap with `palazzo.prepare_bumper`. Then:
   announced song waits resolved on the idle deck behind a closed gate and starts
   when the gate opens. A deck still finishing an overlapped song is never
   paused: the next song waits for it.
+- A second track mark on a deck is not the song's end (gaulatti/palazzo#75). A
+  deck's gate switch can select its queue twice within milliseconds
+  (production, 2026-11-27: `Switch to songs_next` twice, 4 ms apart). Each
+  selection starts a track, and the deck's end hooks (`allow_partial=true`)
+  read the end of the partial first track as the song's end: `track_ended` was
+  journalled 22 ms after `track_started` and the deck released. A mark counts
+  as a duplicate only while the deck's queue still plays the request that
+  "ended" and the remaining time Liquidsoap hands the hook is above the hook's
+  own point. Then the deck's hooks do nothing, no `track_ended` is journalled,
+  the second `track_started` for the same request is not journalled either,
+  and a line is logged (`deck_a` / `deck_b`: "duplicate track mark" or "second
+  track mark"). A natural end, a cue-out, a truncated file, a skip and a stop
+  all leave 0 remaining or another request current, so they end as before.
+  `test/runtime/verify-deck-marks.sh` forces the double selection on the
+  station's own script and checks all of these.
 
 Measured on the real image (local and 20 Mbit/s remote 8.4 MB files): handoff
 silence at or below 20 ms against 280–480 ms with song commands alone; overlap
