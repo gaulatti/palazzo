@@ -48,6 +48,7 @@ docker run -d --name palazzo-candidate \
   -e PROGRAM_ID="$program_id" \
   -e ICECAST_PORT=8000 \
   -e ICECAST_SOURCE_PASSWORD="$icecast_source_password" \
+  -e RTMP_URL=rtmp://0.0.0.0:1935/live/contribution \
   "$image"
 
 candidate_ready=false
@@ -87,6 +88,7 @@ if ! docker run -d --name palazzo \
   -e PROGRAM_ID="$program_id" \
   -e ICECAST_PORT=8000 \
   -e ICECAST_SOURCE_PASSWORD="$icecast_source_password" \
+  -e RTMP_URL=rtmp://0.0.0.0:1935/live/contribution \
   --restart=always \
   --log-driver=local \
   --log-opt max-size=10m \
