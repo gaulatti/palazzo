@@ -205,3 +205,43 @@ test("instants are titled with the station name, never with their file's tags", 
     /radio = mksafe\(radio\)\nstation_title := fun \(\) -> radio\.insert_metadata\(\[\("title", "Radio \\"Modo\\" Italiano"\)\]\)\n/,
   );
 });
+
+// gaulatti/palazzo#75: a second track mark on a song deck (its gate switch selecting the queue twice) is the
+// same song going on. Behaviour on the real Liquidsoap: test/runtime/verify-deck-marks.sh.
+test("a duplicate track mark on a song deck neither ends the song nor starts it again", () => {
+  const script = buildLiquidsoapScript({
+    telnetPort: 14000,
+    icecastPort: 8000,
+    icecastPassword: "password",
+    mount: "/stream",
+    streamName: "Name",
+    genre: "Various",
+    bitrate: 128,
+    fillerPlaylistPath: "/run/palazzo/active-filler.m3u",
+    songRequestTimeoutMs: 10000,
+  });
+  // A mark is a duplicate only while the deck's queue still plays the request that "ended" and the remaining
+  // time handed to the hook is above the hook's own point; a missing rid is never a duplicate.
+  assert.match(
+    script,
+    /def deck_mark_is_duplicate\(name, pos, point, meta\) =\n  rid = metadata_value\("rid", meta\)\n  current = deck_queue\(name\)\.current\(\)\n  if rid == "" or pos <= point \+ 0\.5 or not null\.defined\(current\) then\n    false\n  else\n    string\(request\.id\(null\.get\(current\)\)\) == rid\n  end\nend/,
+  );
+  const watch = script.slice(script.indexOf("def watch_deck(name, deck) ="), script.indexOf('watch_deck("a", deck_a)'));
+  // Every allow_partial hook of the deck checks the mark against its own point before acting.
+  const hooks = watch.match(/allow_partial=true/g).length;
+  assert.equal(hooks, 5);
+  for (const point of ["next_overlap\\(\\) \\+ 0\\.1", "next_overlap\\(\\)", "0\\.12", "0\\."]) {
+    assert.match(watch, new RegExp(`deck_mark_is_duplicate\\(name, pos, ${point}, meta\\)`));
+  }
+  assert.equal(watch.match(/deck_mark_is_duplicate\(/g).length, hooks);
+  // The end hook journals nothing for a duplicate; track_ended stays in the branch for a real end.
+  assert.match(
+    watch,
+    /if deck_mark_is_duplicate\(name, pos, 0\., meta\) then\n        log\.important\([^\n]*duplicate track mark[^\n]*\n      else\n      begin\n        set_deck_playing\(name, false\)[\s\S]*remember_event\("track_ended", meta\)/,
+  );
+  // A start on the request already started on the deck is not journalled again.
+  assert.match(
+    watch,
+    /if rid != "" and rid == deck_started_rid\(name\) then\n        log\.important\([^\n]*second track mark[^\n]*\n      else\n      begin\n        set_deck_started_rid\(name, rid\)[\s\S]*remember_event\("track_started", meta\)/,
+  );
+});

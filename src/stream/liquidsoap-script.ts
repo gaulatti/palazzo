@@ -334,6 +334,9 @@ deck_b_playing = ref(false)
 # Request id of the song each deck has on air, for the end reasons of a command (gaulatti/palazzo#41).
 deck_a_request = ref("")
 deck_b_request = ref("")
+# Liquidsoap request id (rid) of the last track each deck journalled as started (gaulatti/palazzo#75).
+deck_a_started_rid = ref("")
+deck_b_started_rid = ref("")
 # Armed 0.1 s before an overlap starts, so the limiter is already engaged on its first frame.
 overlap_limiter_armed = ref(false)
 
@@ -453,6 +456,32 @@ def set_deck_request(name, value) =
   if name == "b" then deck_b_request := value else deck_a_request := value end
 end
 
+def deck_started_rid(name) =
+  if name == "b" then deck_b_started_rid() else deck_a_started_rid() end
+end
+
+def set_deck_started_rid(name, value) =
+  if name == "b" then deck_b_started_rid := value else deck_a_started_rid := value end
+end
+
+# gaulatti/palazzo#75: a deck's gate switch can select its queue a second time a few milliseconds after the
+# first (production, 2026-11-27: "Switch to songs_next" twice, 4 ms apart). Each selection starts a track,
+# so the song gets a second track mark while the same request goes on playing. The allow_partial hooks below
+# would read the end of that partial first track as the song's end: track_ended was journalled 22 ms after
+# track_started and the deck released. Such a mark is not an end: the deck's queue is still playing the
+# request that "ended", and the remaining time Liquidsoap hands the hook (pos) is still above the hook's
+# point. A real end (natural, cue-out, a truncated file), a skip or a stop leaves 0 remaining, or another
+# request current, so it is never taken for a duplicate. Measured on Liquidsoap 2.4.5.
+def deck_mark_is_duplicate(name, pos, point, meta) =
+  rid = metadata_value("rid", meta)
+  current = deck_queue(name).current()
+  if rid == "" or pos <= point + 0.5 or not null.defined(current) then
+    false
+  else
+    string(request.id(null.get(current))) == rid
+  end
+end
+
 # Opens the announced song's gate: it starts on the next frame, marked on air in this same frame so the
 # overlap limiter is engaged from its start.
 def open_next_gate() =
@@ -567,6 +596,14 @@ def watch_deck(name, deck) =
     synchronous=false,
     fun (meta) ->
       begin
+      rid = metadata_value("rid", meta)
+      # A second track mark on the request already started on this deck is the same song going on
+      # (gaulatti/palazzo#75): it is not journalled again, and its start time and state are kept.
+      if rid != "" and rid == deck_started_rid(name) then
+        log.important(label="deck_#{name}", "request #{rid} got a second track mark: the same song goes on, not a new start")
+      else
+      begin
+        set_deck_started_rid(name, rid)
         active_deck := name
         set_deck_playing(name, true)
         set_deck_request(name, metadata_value("palazzo_request_id", meta))
@@ -582,12 +619,14 @@ def watch_deck(name, deck) =
         current_started_at := time()
         remember_event("track_started", meta)
       end
+      end
+      end
   )
   # Arms the overlap limiter just before an overlap.
   deck.on_position(
     position={next_overlap() + 0.1}, remaining=true, allow_partial=true, synchronous=true,
-    fun (_, _) ->
-      if next_state() == "queued" and next_deck() != name and active_deck() == name and next_overlap() > 0. and bumper_state() == "none" then
+    fun (pos, meta) ->
+      if not deck_mark_is_duplicate(name, pos, next_overlap() + 0.1, meta) and next_state() == "queued" and next_deck() != name and active_deck() == name and next_overlap() > 0. and bumper_state() == "none" then
         overlap_limiter_armed := true
       end
   )
@@ -595,8 +634,8 @@ def watch_deck(name, deck) =
   # announced there is no overlap: the spot plays first (below).
   deck.on_position(
     position={next_overlap()}, remaining=true, allow_partial=true, synchronous=true,
-    fun (_, _) ->
-      if next_state() == "queued" and next_deck() != name and active_deck() == name and bumper_state() == "none" then
+    fun (pos, meta) ->
+      if not deck_mark_is_duplicate(name, pos, next_overlap(), meta) and next_state() == "queued" and next_deck() != name and active_deck() == name and bumper_state() == "none" then
         open_next_gate()
       end
   )
@@ -607,15 +646,15 @@ def watch_deck(name, deck) =
   # point).
   deck.on_position(
     position={${BUMPER_LEAD_SECONDS}}, remaining=true, allow_partial=true, synchronous=true,
-    fun (_, _) ->
-      if next_state() == "queued" and next_deck() != name and active_deck() == name and bumper_state() == "ready" then
+    fun (pos, meta) ->
+      if not deck_mark_is_duplicate(name, pos, ${BUMPER_LEAD_SECONDS}, meta) and next_state() == "queued" and next_deck() != name and active_deck() == name and bumper_state() == "ready" then
           start_bumper()
       end
   )
   deck.on_position(
     position={0.}, remaining=true, allow_partial=true, synchronous=true,
-    fun (_, _) ->
-      if next_state() == "queued" and next_deck() != name and active_deck() == name then
+    fun (pos, meta) ->
+      if not deck_mark_is_duplicate(name, pos, 0., meta) and next_state() == "queued" and next_deck() != name and active_deck() == name then
         if bumper_state() == "resolving" then
           begin
             drop_bumper()
@@ -632,7 +671,15 @@ def watch_deck(name, deck) =
   )
   deck.on_position(
     position={0.}, remaining=true, allow_partial=true, synchronous=false,
-    fun (_, meta) ->
+    fun (pos, meta) ->
+      # The end of the partial track before a duplicate mark is not the song's end (gaulatti/palazzo#75):
+      # nothing is journalled and the deck keeps its song. pos is the remaining time when the mark came, so
+      # this holds however late the callback runs.
+      begin
+      rid = metadata_value("rid", meta)
+      if deck_mark_is_duplicate(name, pos, 0., meta) then
+        log.important(label="deck_#{name}", "ignored a track end on request #{rid} with #{pos} s still to play: a duplicate track mark, not the song's end")
+      else
       begin
         set_deck_playing(name, false)
         overlap_limiter_armed := false
@@ -657,6 +704,8 @@ def watch_deck(name, deck) =
         if metadata_value("palazzo_request_id", meta) == current_request_id() then
           current_playing := false
         end
+      end
+      end
       end
   )
 end

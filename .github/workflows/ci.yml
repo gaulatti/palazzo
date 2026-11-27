@@ -192,6 +192,9 @@ jobs:
       - name: Start and verify pinned runtime
         run: bash test/runtime/verify-station.sh
 
+      - name: Verify a duplicate track mark does not end a song
+        run: bash test/runtime/verify-deck-marks.sh
+
   assess-intent:
     if: &review-event >-
       (github.event_name == 'pull_request_target' && !github.event.pull_request.draft) ||
