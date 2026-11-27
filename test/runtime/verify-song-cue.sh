@@ -24,6 +24,7 @@ for attempt in $(seq 1 60); do
   sleep 1
 done
 state | jq --exit-status '.liquidsoap.connected == true and .icecast.connected == true' >/dev/null
+docker cp "$(dirname "$0")/live-recorder.cjs" "$c":/tmp/live-recorder.cjs >/dev/null
 
 # The song: 16 s at 440 Hz. The filler (6 kHz, outside the measured band) keeps the station running between items.
 docker exec "$c" ffmpeg -hide_banner -loglevel error -y -f lavfi -i "sine=frequency=440:sample_rate=44100" -t 16 /tmp/song.wav
@@ -42,7 +43,8 @@ sleep 4
 
 n=0
 id() { n=$((n + 1)); echo "s$n-${RANDOM}"; }
-record() { docker exec --detach "$c" sh -c "rm -f /tmp/$2.done; ffmpeg -hide_banner -nostats -y -t $1 -i http://127.0.0.1:8000/stream -c:a pcm_s16le /tmp/$2.wav 2>/dev/null; touch /tmp/$2.done"; }
+# Records from the live point, past the Icecast burst (live-recorder.cjs, #72).
+record() { docker exec --detach "$c" sh -c "rm -f /tmp/$2.done; node /tmp/live-recorder.cjs $1 /tmp/$2.wav 2>/dev/null; touch /tmp/$2.done"; }
 fail() { echo "FAIL: $1"; exit 1; }
 recorded() { for attempt in $(seq 1 90); do docker exec "$c" test -e "/tmp/$1.done" && return 0; sleep 1; done; fail "the recording $1 did not finish"; }
 # The audible span in the 440 Hz band of /tmp/$1.wav: first to last 8 kHz mono sample above a threshold well
@@ -69,7 +71,7 @@ song() {
 at_least() { awk -v a="$1" -v b="$2" 'BEGIN { exit !(a >= b) }'; }
 at_most() { awk -v a="$1" -v b="$2" 'BEGIN { exit !(a <= b) }'; }
 
-# The Icecast output lags the item by 4 to 7 s, so the recording runs past the song and is read whole.
+# The recording starts at the live point and runs well past the song, so the song is read whole.
 # Cued: cue-in 2 s and cue-out 6 s, both within CUE_EDGE_BOUND_SECONDS (10 s), so both are annotated.
 idle; record 28 "cued"; sleep 2
 song cued '{"cueInSeconds":2,"cueOutSeconds":6,"fadeInSeconds":0,"fadeOutSeconds":0,"overlapSeconds":0}'

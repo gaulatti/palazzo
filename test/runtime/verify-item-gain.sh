@@ -28,6 +28,7 @@ for attempt in $(seq 1 60); do
   sleep 1
 done
 state | jq --exit-status '.liquidsoap.connected == true and .icecast.connected == true' >/dev/null
+docker cp "$(dirname "$0")/live-recorder.cjs" "$c":/tmp/live-recorder.cjs >/dev/null
 
 # Tones: an instant or intro at 2 kHz (3 s), a song at 440 Hz (16 s), both at the same source level.
 docker exec "$c" ffmpeg -hide_banner -loglevel error -y -f lavfi -i "sine=frequency=2000:sample_rate=44100" -t 3 /tmp/item.wav
@@ -48,9 +49,10 @@ sleep 4
 
 n=0
 id() { n=$((n + 1)); echo "g$n-${RANDOM}"; }
-# Records the Icecast output for $1 seconds into /tmp/$2.wav (in the background).
+# Records the Icecast output for $1 seconds into /tmp/$2.wav (in the background), from the live point: the
+# Icecast burst (about 16 s of past audio, which can hold the previous item) is dropped (live-recorder.cjs, #72).
 record() {
-  docker exec --detach "$c" sh -c "ffmpeg -hide_banner -nostats -y -t $1 -i http://127.0.0.1:8000/stream -c:a pcm_s16le /tmp/$2.wav 2>/dev/null"
+  docker exec --detach "$c" sh -c "node /tmp/live-recorder.cjs $1 /tmp/$2.wav 2>/dev/null"
 }
 # Peak level (dB) of /tmp/$1.wav in the band around $2 Hz.
 peak() {
