@@ -39,7 +39,7 @@ test('canonical fingerprints retain nested arrays and reject same-key playout su
   assert.equal((await service.playProgramSong('station', 'command', first)).introPlaybackId, null);
   assert.equal((await service.playProgramSong('station', 'command', { extension: [{ a: 1, b: 2 }, null], song })).duplicate, true);
   await assert.rejects(service.playProgramSong('station', 'command', { song: { ...song, url: song.url + '?changed' } }), /already used/);
-  assert.equal(commands.filter((command) => command.startsWith('songs.push')).length, 1);
+  assert.equal(commands.filter((command) => command.startsWith('palazzo.command_song ')).length, 1);
   assert.ok(commands.includes('var.set palazzo_intro_duck_gain = 1'));
 });
 

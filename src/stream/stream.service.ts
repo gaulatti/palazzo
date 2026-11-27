@@ -211,6 +211,13 @@ const ITEM_CUE_CACHE_ENTRIES = 256;
 // How long a measurement stands: a file replaced at the same address is measured again after this.
 const ITEM_CUE_TTL_MS = 10 * 60_000;
 
+/**
+ * How long a song command waits for its song to be ready before it cuts the song on air anyway
+ * (gaulatti/palazzo#66). Measured cold fetch-and-decode at a command: 1.0 to 1.4 s (2026-11-21), so 3 s covers it
+ * with room, and an operator's play-now or skip never waits longer.
+ */
+export const COMMAND_PREPARE_LIMIT_SECONDS = 3;
+
 @Injectable()
 export class StreamService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(StreamService.name);
@@ -789,7 +796,9 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
       await this.persistPlayoutJournal();
       try {
         await this.markEnding("replacement");
-        await this.resetDecksIfUsed();
+        // The decks are reset at the cut, inside palazzo.command_song, once the new song is ready
+        // (gaulatti/palazzo#66): resetting them here would end an announced song on air before it.
+        this.telemetry.forgetAnnouncement();
         await this.telnet.send("intros.flush_and_skip");
         await this.telnet.send(
           `var.set palazzo_intro_duck_gain = ${playableIntro ? duckGain : 1}`,
@@ -812,8 +821,14 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
           });
           await this.telnet.send(`intros.push ${introUri}`);
         }
-        await this.telnet.send("songs.flush_and_skip");
-        await this.telnet.send(`songs.push ${songUri}`);
+        // The song on air keeps playing while the commanded song is resolved; the cut follows, at most
+        // COMMAND_PREPARE_LIMIT_SECONDS later (gaulatti/palazzo#66).
+        const prepared = await this.telnet.send(
+          `palazzo.command_song ${decimal(COMMAND_PREPARE_LIMIT_SECONDS)} ${songUri}`,
+        );
+        if (prepared.trim() !== "ok") {
+          throw new Error("palazzo.command_song refused the command");
+        }
       } catch {
         await this.cancelEnding();
         await this.telnet.send("intros.flush_and_skip").catch(() => undefined);

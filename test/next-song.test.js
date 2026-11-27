@@ -334,8 +334,11 @@ test("song commands and stops send exactly today's commands until a next song wa
   await announce();
   commands.length = 0;
   await command("after");
-  // Each command first journals why the songs on air end (palazzo#41).
-  assert.deepEqual(commands.slice(0, 3), ["palazzo.mark_ending replacement", "palazzo.reset_decks", "intros.flush_and_skip"]);
+  // Each command first journals why the songs on air end (palazzo#41). The decks are reset at the cut, inside
+  // palazzo.command_song, once the new song is ready (palazzo#66), not before it.
+  assert.deepEqual(commands.slice(0, 2), ["palazzo.mark_ending replacement", "intros.flush_and_skip"]);
+  assert.equal(commands.includes("palazzo.reset_decks"), false);
+  assert.ok(commands.some((sent) => sent.startsWith("palazzo.command_song 3 ")));
   commands.length = 0;
   await service.stopSong();
   assert.deepEqual(commands, ["palazzo.mark_ending operator", "palazzo.reset_decks", "songs.flush_and_skip"]);

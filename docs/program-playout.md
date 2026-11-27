@@ -238,11 +238,12 @@ at a time; a new announcement replaces the previous one.
   is on air: a new announcement is refused with 422 `not_ready`, and `DELETE`
   answers `withdrawn:false`. A song command or a stop ends it like any song.
 - A song command or a stop flushes the announced song (`flushed`): it never
-  plays unless it is the one chosen. Before the first announcement these
-  commands send the telnet commands they always did, after
-  `palazzo.mark_ending` (see [why a track ended](playback-telemetry.md#why-a-track-ended));
-  after it they also send `palazzo.reset_decks` before cutting. The songs both
-  decks have on air at that moment are reported with the command's reason.
+  plays unless it is the one chosen. Both first journal why the songs on air end,
+  with `palazzo.mark_ending` (see [why a track ended](playback-telemetry.md#why-a-track-ended)).
+  A stop then sends `palazzo.reset_decks` (once announcements were used) and
+  `songs.flush_and_skip`. A song command sends `palazzo.command_song` (see
+  [a song command prepares its song](#a-song-command-prepares-its-song-gaulattipalazzo66)),
+  which resets the decks at the cut, once the new song is ready.
 - Events: `playout.next_queued {programId, playbackId}` and
   `playout.next_withdrawn {programId, playbackId, reason}` with reason
   `replaced`, `withdrawn`, `flushed` or `not_ready`. Without overlap the order is
@@ -307,8 +308,8 @@ limit, and sends it to Liquidsoap with `palazzo.prepare_bumper`. Then:
   spot's real play from these events.
 - The bumper interval and the choice of spot stay with the client (Alcantara,
   gaulatti/alcantara#232).
-- Out of scope: cold song changes without a spot are tracked in
-  gaulatti/alcantara#232.
+- Cold song changes (a song command) prepare their song before the cut: see the
+  next section (gaulatti/palazzo#66).
 - Headroom: while both songs are on air a limiter holds the sum under the
   true-peak ceiling, and a song entering under an overlap rises over at least
   0.25 s. With one song the limiter is dry (bit-identical output).
@@ -320,6 +321,39 @@ limit, and sends it to Liquidsoap with `palazzo.prepare_bumper`. Then:
 Measured on the real image (local and 20 Mbit/s remote 8.4 MB files): handoff
 silence at or below 20 ms against 280–480 ms with song commands alone; overlap
 2.0 s within ±0.1 s; two full-scale songs overlapped at −1.8 dBTP.
+
+## A song command prepares its song (gaulatti/palazzo#66)
+
+A song command (`POST /v1/programs/:programId/playback/song`) used to cut the
+song on air first (`songs.flush_and_skip`) and push the new song after, so the
+new file was fetched from the media origin and decoded while the air was quiet:
+1.0 to 1.4 s of digital silence on the cold changes measured on 2026-11-21. An
+announced song never had this gap, because it waits resolved on the idle deck.
+
+Now the command sends `palazzo.command_song <limit> <uri>` with a limit of
+`COMMAND_PREPARE_LIMIT_SECONDS` (3 s). Liquidsoap resolves the song while the
+song on air keeps playing, then cuts: the decks go back to the single song deck
+(as `palazzo.reset_decks`), the song on air is skipped, and the resolved song is
+pushed, so it starts on the next frame. The outgoing song plays up to the fetch
+time longer instead of leaving that time silent.
+
+- **Not ready within the limit:** the command cuts anyway, with the song still to
+  resolve, as before. A command always acts within 3 s: an operator's play-now
+  or skip never waits longer.
+- **Not resolvable** (the fetch fails): the command cuts at once, as before, and
+  the song queue journals the failure (`song_request_failed`).
+- **A newer command, a stop or a clear** while a command is still preparing: the
+  newest wins. Every command and every flush of the song queue takes a new
+  generation, and a preparation that finishes for an older one is dropped, so the
+  older song never plays and no deck is left holding it.
+- **Metric:** `palazzo_song_command_prepare_total{result="ready|fallback|failed"}`
+  counts how each preparation ended; `palazzo_song_change_gap_seconds{handoff="command"}`
+  measures the handoff it leaves.
+
+`test/runtime/verify-station.sh` checks the four paths on the real image: a
+command whose song takes 1.5 s to fetch leaves no digital silence in the Icecast
+output; a 5 s fetch cuts at the 3 s limit; a missing file cuts at once; and of
+two back-to-back commands the newer one plays.
 
 ## Stream title during spots and instants (gaulatti/palazzo#54)
 

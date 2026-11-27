@@ -100,6 +100,12 @@ def remember_event(event_type, meta) =
   end
 end
 
+# A song command prepares its song before it cuts the one on air (gaulatti/palazzo#66). Each command, and every
+# flush of the song queue (a stop, a clear, a command sent the old way), takes a new generation: a preparation that
+# finishes for an older generation is dropped, so the newest command wins and a stop cancels a command still
+# preparing.
+command_generation = ref(0)
+
 # Song request queue (palazzo#42). A faithful copy of Liquidsoap 2.4.5's
 # request.queue (src/libs/request.liq, non-native branch) whose next()
 # resolves each popped request itself, with the explicit time limit, so a
@@ -251,6 +257,7 @@ def palazzo_song_queue(~id, ~timeout) =
     "flush_and_skip",
     fun (_) ->
       try
+        command_generation := command_generation() + 1
         s.set_queue([])
         s.skip()
         "Done."
@@ -832,6 +839,135 @@ server.register(
       active_deck := "a"
       next_overlap := 0.
       "ok"
+    end
+)
+
+# How a song command's preparation ended (gaulatti/palazzo#66): ready (the song was resolved before the cut),
+# fallback (not ready within the limit: cut as before, the song still resolving) or failed (it could not be
+# resolved: cut as before, and the song queue journals the failure).
+def remember_command_prepare(result) =
+  begin
+    event_sequence := event_sequence() + 1
+    body = json.stringify(compact=true, {
+      sequence=event_sequence(),
+      event_type="command_prepare",
+      playback_request_id="",
+      playback_id="",
+      parent_playback_id="",
+      program_id="",
+      title="",
+      artist="",
+      cover_url="",
+      url="",
+      reason=result,
+      occurred_at=time()
+    })
+    events := [body, ...list.prefix(127, events())]
+  end
+end
+
+# The cut of a song command: back to the single song deck (as palazzo.reset_decks), the song on air skipped, and
+# the commanded request pushed. A resolved request starts on the next frame; an unresolved one resolves first,
+# as every song command did before #66.
+def cut_to_command(r, result) =
+  begin
+    ignore(drop_next("flushed"))
+    list.iter(fun (q) -> next_queue.remove(q), next_queue.queue())
+    if active_deck() == "b" or deck_b_playing() then
+      next_queue.skip()
+    else
+      deck_b_open := false
+    end
+    overlap_limiter_armed := false
+    deck_a_open := true
+    active_deck := "a"
+    next_overlap := 0.
+    songs_queue.set_queue([])
+    songs_queue.skip()
+    songs_queue.push(r)
+    remember_command_prepare(result)
+  end
+end
+
+# How a command's song resolution ended, by generation (gaulatti/palazzo#66). The resolver thread only records it;
+# the command's own poll decides and cuts, so every cut is made by one thread and a command cuts once.
+command_cut_generation = ref(-1)
+command_ready_generation = ref(-1)
+command_ready_requests = ref([])
+command_failed_generation = ref(-1)
+
+# palazzo.command_song <prepare limit seconds> <annotated uri> (gaulatti/palazzo#66): resolves the commanded song
+# while the song on air keeps playing, then cuts to it. The poll cuts at the limit whatever the resolution is doing
+# (request.resolve does not stop a slow fetch on time), with the song still to resolve, so a command always acts
+# within the limit; a song that cannot be resolved cuts at once; a newer command, stop or clear ends the poll.
+server.register(
+  namespace="palazzo",
+  usage="command_song <prepare limit seconds> <uri>",
+  description="Prepare a commanded song, then cut the song on air to it",
+  "command_song",
+  fun (arg) ->
+    begin
+      parts = string.split(separator=" ", arg)
+      if list.length(parts) < 2 then
+        "invalid"
+      else
+        begin
+          limit = float_of_string(default=0., list.nth(parts, 0))
+          uri = string.concat(separator=" ", list.tl(parts))
+          command_generation := command_generation() + 1
+          generation = command_generation()
+          started = time()
+          thread.run(fun () ->
+            begin
+              r = request.create(uri)
+              if request.resolve(timeout=limit, r) then
+                if command_generation() == generation and command_cut_generation() != generation then
+                  begin
+                    list.iter(fun (old) -> request.destroy(old), command_ready_requests())
+                    command_ready_requests := [r]
+                    command_ready_generation := generation
+                  end
+                else
+                  request.destroy(r)
+                end
+              else
+                begin
+                  request.destroy(r)
+                  command_failed_generation := generation
+                end
+              end
+            end
+          )
+          thread.run.recurrent(delay=0.05, fun () ->
+            if command_generation() != generation then
+              -1.
+            elsif command_ready_generation() == generation and command_ready_requests() != [] then
+              begin
+                command_cut_generation := generation
+                r = list.hd(command_ready_requests())
+                command_ready_requests := []
+                cut_to_command(r, "ready")
+                -1.
+              end
+            elsif command_failed_generation() == generation then
+              begin
+                command_cut_generation := generation
+                cut_to_command(request.create(uri), "failed")
+                -1.
+              end
+            elsif time() - started >= limit then
+              begin
+                command_cut_generation := generation
+                cut_to_command(request.create(uri), "fallback")
+                -1.
+              end
+            else
+              0.05
+            end
+          )
+          "ok"
+        end
+      end
     end
 )
 

@@ -205,3 +205,33 @@ test("instants are titled with the station name, never with their file's tags", 
     /radio = mksafe\(radio\)\nstation_title := fun \(\) -> radio\.insert_metadata\(\[\("title", "Radio \\"Modo\\" Italiano"\)\]\)\n/,
   );
 });
+
+// gaulatti/palazzo#66: a song command prepares its song while the song on air keeps playing, then cuts to it; a
+// queue flush (a stop, a clear) cancels a command still preparing, and a newer command wins over an older one.
+test("prepares a commanded song before cutting the song on air", () => {
+  const script = buildLiquidsoapScript({
+    telnetPort: 14000,
+    icecastPort: 8000,
+    icecastPassword: "fixture-password",
+    mount: "/stream",
+    streamName: "Palazzo",
+    genre: "Various",
+    bitrate: 128,
+    fillerPlaylistPath: "/run/palazzo/active-filler.m3u",
+  });
+  assert.match(script, /usage="command_song <prepare limit seconds> <uri>"/);
+  assert.match(script, /command_generation = ref\(0\)/);
+  assert.match(
+    script,
+    /"flush_and_skip",\n    fun \(_\) ->\n      try\n        command_generation := command_generation\(\) \+ 1/,
+  );
+  // One poll per command decides and cuts (request.resolve does not stop a slow fetch on time): ready, failed, or
+  // the limit; a newer command ends it. The resolver only records how the resolution ended.
+  assert.match(script, /thread\.run\.recurrent\(delay=0\.05, fun \(\) ->\n            if command_generation\(\) != generation then\n              -1\./);
+  assert.match(script, /cut_to_command\(r, "ready"\)/);
+  assert.match(script, /cut_to_command\(request\.create\(uri\), "failed"\)/);
+  assert.match(script, /elsif time\(\) - started >= limit then\n              begin\n                command_cut_generation := generation\n                cut_to_command\(request\.create\(uri\), "fallback"\)/);
+  assert.match(script, /if command_generation\(\) == generation and command_cut_generation\(\) != generation then/);
+  assert.match(script, /songs_queue\.set_queue\(\[\]\)\n    songs_queue\.skip\(\)\n    songs_queue\.push\(r\)/);
+  assert.match(script, /event_type="command_prepare"/);
+});

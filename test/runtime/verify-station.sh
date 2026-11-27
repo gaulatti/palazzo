@@ -55,13 +55,13 @@ docker exec "$station_container" ffmpeg -hide_banner -loglevel error -y \
 docker exec "$station_container" ffmpeg -hide_banner -loglevel error -y \
   -f lavfi -i sine=frequency=2000:sample_rate=44100 -t 2 /tmp/instant.wav
 # Tones for the spot-then-command check below: each song its own frequency.
-for spec in 'spot-a 1000 6' 'spot-b 440 20' 'spot-spot 2000 5' 'spot-c 660 14' 'spot-d 550 8'; do
+for spec in 'spot-a 1000 6' 'spot-b 440 20' 'spot-spot 2000 5' 'spot-c 660 14' 'spot-d 550 8' 'hold-a 440 30' 'hold-b 660 30' 'hold-c 880 30'; do
   set -- $spec
   docker exec "$station_container" ffmpeg -hide_banner -loglevel error -y \
     -f lavfi -i "sine=frequency=$2:sample_rate=44100" -t "$3" "/tmp/$1.wav"
 done
 docker exec --detach "$station_container" node -e \
-  'const fs=require("node:fs");require("node:http").createServer((request,response)=>{const path=new URL(request.url,"http://x").pathname;const own=/^\/spot-[a-z]+\.wav$/.test(path)&&fs.existsSync("/tmp"+path);const name=own?path.slice(1):path==="/song.wav"?"song.wav":path==="/instant.wav"?"instant.wav":"filler.wav";const media="/tmp/"+name;response.setHeader("Content-Type","audio/wav");response.setHeader("Content-Length",fs.statSync(media).size);response.setHeader("Accept-Ranges","bytes");fs.createReadStream(media).pipe(response)}).listen(3200,"127.0.0.1")'
+  'const fs=require("node:fs");require("node:http").createServer(async (request,response)=>{let path=new URL(request.url,"http://x").pathname;globalThis.fetched=globalThis.fetched||{};if(path.startsWith("/vanish/")){const again=globalThis.fetched[path];globalThis.fetched[path]=true;if(again){response.statusCode=404;response.end();return}path=path.slice("/vanish".length)}const slow=/^\/slow-(\d+)(\/.+)$/.exec(path);if(slow){const again=globalThis.fetched[path];globalThis.fetched[path]=true;if(again)await new Promise(resolve=>setTimeout(resolve,Number(slow[1])));path=slow[2]}const own=/^\/(spot|hold)-[a-z]+\.wav$/.test(path)&&fs.existsSync("/tmp"+path);const name=own?path.slice(1):path==="/song.wav"?"song.wav":path==="/instant.wav"?"instant.wav":"filler.wav";const media="/tmp/"+name;response.setHeader("Content-Type","audio/wav");response.setHeader("Content-Length",fs.statSync(media).size);response.setHeader("Accept-Ranges","bytes");fs.createReadStream(media).pipe(response)}).listen(3200,"127.0.0.1")'
 for attempt in $(seq 1 20); do
   if docker exec "$station_container" node -e \
     'fetch("http://127.0.0.1:3200/filler.wav").then(response=>{if(!response.ok)process.exit(1)}).catch(()=>process.exit(1))'; then
@@ -204,6 +204,51 @@ sleep 8
 await_state 'a song announced after the command does not start when the leftover spot ends' \
   '.track.playbackRequestId == "ci-spot-c"'
 await_state 'it starts at the end of the commanded song' '.track.playbackRequestId == "ci-spot-d"'
+# gaulatti/palazzo#66: a song command prepares its song while the song on air keeps playing, then cuts to it.
+# The /slow-<ms>/ media route answers its first request at once (the API's preflight probe) and every later one
+# after <ms>, the way Liquidsoap's own fetch from the media origin is slow at a cold command.
+hold_song() {
+  curl --fail --silent --header "Idempotency-Key: $1" --header 'Content-Type: application/json' --request POST \
+    --data "{\"song\":{\"programId\":\"program-ci\",\"playbackId\":\"$1\",\"url\":\"http://127.0.0.1:3200/$2\",\"title\":\"CI\",\"artist\":\"CI\",\"duration\":30}}" \
+    "$station_api"/v1/programs/program-ci/playback/song | jq --exit-status '.ok == true' >/dev/null
+}
+on_air() {
+  curl --fail --silent "$station_api"/v1/programs/program-ci/playback/state | jq --raw-output '.track.playbackRequestId'
+}
+hold_song ci-hold-a hold-a.wav
+await_state 'the song before the commands is on air' '.track.playbackRequestId == "ci-hold-a" and .levels.output.rms > 0.01'
+sleep 2
+# Ready path: a song that takes 1.5 s to fetch replaces the one on air with no digital silence in the Icecast output.
+docker exec --detach "$station_container" sh -c \
+  'ffmpeg -hide_banner -nostats -i http://127.0.0.1:8000/stream -t 9 -af silencedetect=noise=-60dB:d=0.25 -f null - 2>/tmp/handoff-silence.log'
+sleep 1
+hold_song ci-hold-b slow-1500/hold-b.wav
+test "$(on_air)" = ci-hold-a || { echo 'station check failed: a command cut the song on air before its song was ready'; exit 1; }
+await_state 'the prepared song takes the air' '.track.playbackRequestId == "ci-hold-b"'
+sleep 7
+if docker exec "$station_container" grep -q silence_start /tmp/handoff-silence.log; then
+  echo 'station check failed: a song command left digital silence on air'
+  docker exec "$station_container" grep silence_ /tmp/handoff-silence.log
+  exit 1
+fi
+# Fallback: a song not ready within the 3 s limit cuts the song on air anyway, so a command always acts.
+hold_song ci-hold-c slow-5000/hold-c.wav
+sleep 2
+test "$(on_air)" = ci-hold-b || { echo 'station check failed: the song on air ended before the prepare limit'; exit 1; }
+sleep 2
+test "$(on_air)" != ci-hold-b || { echo 'station check failed: a command waited past its prepare limit'; exit 1; }
+await_state 'the slow song plays once it arrives' '.track.playbackRequestId == "ci-hold-c"'
+# A song that cannot be fetched never reaches palazzo.command_song through the API: the preflight probe refuses the
+# command first (400 song asset is not ready). The cut for a song that vanishes between the probe and the fetch is
+# covered by the script tests.
+# Back to back: a newer command wins over one still preparing, and the older song never plays.
+hold_song ci-hold-a2 hold-a.wav
+await_state 'a song is on air before the back-to-back commands' '.track.playbackRequestId == "ci-hold-a2"'
+hold_song ci-hold-old slow-1500/hold-b.wav
+hold_song ci-hold-new hold-c.wav
+await_state 'the newer command is on air' '.track.playbackRequestId == "ci-hold-new"'
+sleep 3
+test "$(on_air)" = ci-hold-new || { echo 'station check failed: an older command still preparing replaced the newer one'; exit 1; }
 curl --fail --silent \
   --header 'Idempotency-Key: ci-stop' \
   --header 'X-Command-Sequence: 2' \

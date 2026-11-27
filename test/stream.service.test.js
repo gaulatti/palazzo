@@ -99,7 +99,7 @@ test("annotates an intro with empty cue values and leaves the song's annotations
   const intro = commands.find((command) => command.startsWith("intros.push"));
   assert.match(intro, /liq_cue_in=""/);
   assert.match(intro, /liq_cue_out=""/);
-  const song = commands.find((command) => command.startsWith("songs.push"));
+  const song = commands.find((command) => command.startsWith("palazzo.command_song "));
   assert.doesNotMatch(song, /liq_cue/);
 });
 
@@ -235,12 +235,13 @@ test("prepares an intro before replacing the song and deduplicates retries", asy
   assert.equal(duplicate.duplicate, true);
   assert.equal(reordered.duplicate, true);
   assert.equal(
-    commands.filter((command) => command.startsWith("songs.push")).length,
+    commands.filter((command) => command.startsWith("palazzo.command_song ")).length,
     1,
   );
+  // The intro is prepared before the song command, which cuts the song on air once the new song is ready.
   assert.ok(
     commands.indexOf("intros.flush_and_skip") <
-      commands.findIndex((command) => command.startsWith("songs.flush")),
+      commands.findIndex((command) => command.startsWith("palazzo.command_song ")),
   );
   assert.match(
     commands.find((command) => command.startsWith("intros.push")),
@@ -286,7 +287,7 @@ test("intro readiness failure degrades to song-only playout", async () => {
     false,
   );
   assert.equal(
-    commands.some((command) => command.startsWith("songs.push")),
+    commands.some((command) => command.startsWith("palazzo.command_song ")),
     true,
   );
   assert.equal(telemetry.getState().intro.status, "failed");
@@ -585,4 +586,39 @@ test("a measurement that throws something that is not an Error is counted failed
   await service.playInstant({ url: "https://example.test/odd.mp3" });
   await service.itemCueMeasuring.get("https://example.test/odd.mp3");
   assert.match(await telemetry.renderMetrics(), /palazzo_item_trim_total\{kind="instant",result="failed"\} 1/);
+});
+
+// gaulatti/palazzo#66: a song command asks Liquidsoap to prepare the song (3 s limit) and cut once it is ready,
+// instead of flushing the song on air first; a refusal rejects the command and cancels the ending journal.
+test("a song command prepares its song before the cut, within the 3 s limit", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "palazzo-playout-"));
+  const { service, commands } = streamService();
+  service.playoutJournalPath = join(directory, "commands.json");
+  service.assetProbe = async () => mediaProbeResult();
+  await service.playProgramSong("program-one", "command-66", {
+    song: { programId: "program-one", playbackId: "song-66", url: "https://example.test/song.mp3", title: "Song" },
+  });
+  const command = commands.find((sent) => sent.startsWith("palazzo.command_song "));
+  assert.match(command, /^palazzo\.command_song 3 annotate:palazzo_request_id="song-66"/);
+  assert.match(command, /:https:\/\/example\.test\/song\.mp3$/);
+  assert.equal(commands.includes("songs.flush_and_skip"), false);
+  assert.equal(commands.some((sent) => sent.startsWith("songs.push")), false);
+});
+
+test("a song command Liquidsoap refuses to prepare is rejected, and the ending journal is cancelled", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "palazzo-playout-"));
+  const { service, commands } = streamService();
+  service.playoutJournalPath = join(directory, "commands.json");
+  service.assetProbe = async () => mediaProbeResult();
+  service.telnet.send = async (command) => {
+    commands.push(command);
+    return command.startsWith("palazzo.command_song ") ? "invalid" : "ok";
+  };
+  await assert.rejects(
+    service.playProgramSong("program-one", "command-67", {
+      song: { programId: "program-one", playbackId: "song-67", url: "https://example.test/song.mp3" },
+    }),
+    /playout engine rejected the command/,
+  );
+  assert.ok(commands.includes("palazzo.mark_ending cancel"));
 });

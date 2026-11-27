@@ -49,9 +49,14 @@ async function harness(settings = {}) {
       },
       ...(intro ? { intro } : {}),
     });
-    const pushes = commands.filter((command) =>
-      command.startsWith("songs.push"),
-    );
+    // A song command now goes as palazzo.command_song <limit> <uri> (gaulatti/palazzo#66); its song request is
+    // the same annotated URI that songs.push carried.
+    const pushes = commands
+      .filter((command) => command.startsWith("palazzo.command_song "))
+      .map(
+        (command) =>
+          `songs.push ${command.slice("palazzo.command_song ".length).replace(/^\S+ /, "")}`,
+      );
     return pushes[pushes.length - 1];
   };
   const dropped = async () => {

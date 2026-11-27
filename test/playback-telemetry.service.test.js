@@ -906,3 +906,34 @@ test('#56: the playout journal size and trims are exposed', async () => {
   assert.match(metrics, /^palazzo_playout_journal_records 256$/m);
   assert.match(metrics, /^palazzo_playout_journal_trimmed_total 3$/m);
 });
+
+// gaulatti/palazzo#66: how each song command's preparation ended is counted from Liquidsoap's journal, with
+// bounded labels: ready, fallback (not ready within the limit) and failed (not resolvable); anything else is ignored.
+test('counts how song command preparations ended, with bounded labels', async () => {
+  const telemetry = service();
+  telemetry.setLiquidsoapRunning(true);
+  const prepared = (sequence, reason) => ({
+    ...lifecycle(sequence, 'command_prepare'),
+    playback_request_id: '',
+    playback_id: '',
+    occurred_at: 4_000 + sequence,
+    reason,
+  });
+  const before = parseExposition(await telemetry.renderMetrics());
+  for (const result of ['ready', 'fallback', 'failed']) {
+    assert.equal(
+      before.find((s) => s.name === 'palazzo_song_command_prepare_total' && s.labels.result === result)?.value,
+      0,
+    );
+  }
+  const journal = [prepared(1, 'ready'), prepared(2, 'ready'), prepared(3, 'fallback'), prepared(4, 'failed'), prepared(5, 'surprise')];
+  telemetry.apply(snapshot({ liquidsoap_sequence: journal.length }), journal);
+  const samples = parseExposition(await telemetry.renderMetrics());
+  assertBoundedLabels(samples);
+  const value = (result) =>
+    samples.find((s) => s.name === 'palazzo_song_command_prepare_total' && s.labels.result === result)?.value;
+  assert.equal(value('ready'), 2);
+  assert.equal(value('fallback'), 1);
+  assert.equal(value('failed'), 1);
+  assert.equal(samples.filter((s) => s.name === 'palazzo_song_command_prepare_total').length, 3);
+});
