@@ -361,6 +361,14 @@ the song plays, and sent again with its cue-out through `palazzo.recue_bumper`
   duplicate mark (it is silent on the image before this fix), and that a deck
   stalled after the mark (gate closed again) or playing digital silence is
   journalled ended within about 1 s.
+- The filler's presence check (is a song, intro, instant or live input on
+  air) runs on the station's own clock, before each frame. It used to run in a
+  separate thread every 0.1 s. With the gate above the fades, that thread
+  asking the decks whether they were ready while the clock was still waking
+  them at startup made Liquidsoap 2.4.5 exit with `CamlinternalLazy.Undefined`
+  ("Error while starting source switch"): 3 to 5 startups in 48 under load,
+  first seen in CI. On the clock the two cannot overlap: 0 in 48 under the same
+  load. The script as it was on main did not crash in 96 runs under that load.
 
 Measured on the real image (local and 20 Mbit/s remote 8.4 MB files): handoff
 silence at or below 20 ms against 280–480 ms with song commands alone; overlap

@@ -1254,12 +1254,8 @@ filler_playlist = playlist(
 # and is still short of dead air. A song arriving takes the air at once.
 # A live RTMP input on the air counts too, so the filler does not play under it.
 ${rtmpInput}
+# Presence is read on the output's clock, once per frame, after radio (below), never from another thread.
 filler_last_on_air = ref(time())
-thread.run(every=0.1, fun () ->
-  if source.is_ready(songs) or source.is_ready(intros) or source.is_ready(instants_requests)${livePresence} then
-    filler_last_on_air := time()
-  end
-)
 filler = switch(
   id="filler_on_air",
   track_sensitive=false,
@@ -1285,6 +1281,16 @@ program_audio = fallback(track_sensitive=false, [songs_on_air, filler])
 radio = add(normalize=false, [program_audio, instants${rtmpSource}])
 radio = mksafe(radio)
 station_title := fun () -> radio.insert_metadata([("title", "${liqString(options.streamName)}")])
+# The filler's presence check runs on the clock that streams the station, before each frame. It used to run
+# in a thread every 0.1 s, which asked these sources whether they were ready from a second thread while the
+# clock was still waking them at startup. With a song deck's gate switch above its fades that raced: Liquidsoap
+# 2.4.5 died at startup with CamlinternalLazy.Undefined ("Error while starting source switch"), 3 to 5 runs in
+# 48 under load (production 2026-11-28 fix, CI run of verify-deck-marks.sh). On the clock it cannot race.
+radio.on_frame(before=true, synchronous=true, fun () ->
+  if source.is_ready(songs) or source.is_ready(intros) or source.is_ready(instants_requests)${livePresence} then
+    filler_last_on_air := time()
+  end
+)
 main_volume = interactive.float("palazzo_main_volume", 1.)
 radio = amplify(override=null, main_volume, radio)
 radio_rms = rms(id="radio_rms", duration=0.1, radio)

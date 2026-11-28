@@ -66,6 +66,13 @@ test("generates a private authoritative telemetry script", () => {
     /source\.is_ready\(songs\) or source\.is_ready\(intros\) or source\.is_ready\(instants_requests\)/,
   );
   assert.match(script, /time\(\) - filler_last_on_air\(\) > 15\./);
+  // The presence check runs on the output's clock, never from a thread that could race the clock waking the
+  // sources at startup (CamlinternalLazy.Undefined, 2026-11-28).
+  assert.match(
+    script,
+    /radio = mksafe\(radio\)\nstation_title := [^\n]*\n(#[^\n]*\n)*radio\.on_frame\(before=true, synchronous=true, fun \(\) ->\n  if source\.is_ready\(songs\)/,
+  );
+  assert.doesNotMatch(script, /thread\.run\(every=/);
   // gaulatti/palazzo#48: without a live input nothing else counts as on air.
   assert.match(
     script,
@@ -162,7 +169,7 @@ test("counts a live RTMP input on the air as presence for the filler", () => {
   assert.ok(
     script.indexOf("live_input = input.rtmp") <
       script.indexOf("filler_last_on_air = ref"),
-    "the live input is defined before the presence thread reads it",
+    "the live input is defined before the presence check reads it",
   );
   assert.match(script, /live_on_air=source\.is_ready\(live_input\),/);
   assert.match(
