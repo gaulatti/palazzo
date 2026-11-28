@@ -27,7 +27,8 @@ export interface LiquidsoapLifecycleEvent {
     | 'track_skipped'
     | 'instant_started'
     | 'instant_ended'
-    | 'bumper_result';
+    | 'bumper_result'
+    | 'duplicate_mark';
   playback_request_id: string;
   playback_id: string;
   parent_playback_id: string;
@@ -38,7 +39,8 @@ export interface LiquidsoapLifecycleEvent {
   url: string;
   /**
    * On next_withdrawn: replaced, withdrawn, flushed or not_ready. On track_skipped: replacement, operator,
-   * or cancel after a failed command.
+   * or cancel after a failed command. On duplicate_mark: played (the deck still plays and sounds 1 s after an
+   * ignored duplicate track mark) or ended (it did not, and the song was ended as a real end).
    */
   reason?: string;
   occurred_at: number;
@@ -366,6 +368,11 @@ export class PlaybackTelemetryService {
     dropped_unresolved: 0,
     dropped_late: 0,
     dropped_failed: 0,
+  };
+  /** What Liquidsoap's check found 1 s after each ignored duplicate track mark on a song deck. */
+  private readonly duplicateMarks: Record<DuplicateMarkResult, number> = {
+    played: 0,
+    ended: 0,
   };
   /**
    * The last song start, from the journal only (never the engine snapshot), on Liquidsoap's clock: an
@@ -991,6 +998,11 @@ export class PlaybackTelemetryService {
       if (result) this.bumperResults[result] += 1;
       return;
     }
+    if (event.event_type === 'duplicate_mark') {
+      const result = DUPLICATE_MARK_RESULTS.find((r) => r === event.reason);
+      if (result) this.duplicateMarks[result] += 1;
+      return;
+    }
     if (
       event.event_type === 'instant_started' ||
       event.event_type === 'instant_ended'
@@ -1403,6 +1415,13 @@ export class PlaybackTelemetryService {
       lines.push(`palazzo_next_bumper_total{result="${result}"} ${count}`);
     }
     lines.push(
+      '# HELP palazzo_duplicate_track_marks_total Track ends ignored on a song deck as a duplicate track mark, by what the check 1 s later found: played (the deck still plays and sounds) or ended (it did not; the song was ended as a real end).',
+      '# TYPE palazzo_duplicate_track_marks_total counter',
+    );
+    for (const [result, count] of Object.entries(this.duplicateMarks)) {
+      lines.push(`palazzo_duplicate_track_marks_total{result="${result}"} ${count}`);
+    }
+    lines.push(
       '# HELP palazzo_item_trim_total Spots and instants measured for trailing digital silence before they play, by kind and result: trimmed (cued out at the last audio, at most 1 s), whole (no silence over 50 ms) or failed (not measured in time; the item plays whole).',
       '# TYPE palazzo_item_trim_total counter',
     );
@@ -1516,6 +1535,9 @@ const BUMPER_RESULTS: BumperResult[] = [
   'dropped_late',
   'dropped_failed',
 ];
+/** What the check after an ignored duplicate track mark found (production 2026-11-28). */
+type DuplicateMarkResult = 'played' | 'ended';
+const DUPLICATE_MARK_RESULTS: DuplicateMarkResult[] = ['played', 'ended'];
 const NEXT_WITHDRAWN_REASONS: NextWithdrawnReason[] = [
   'replaced',
   'withdrawn',

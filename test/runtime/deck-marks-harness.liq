@@ -7,13 +7,16 @@
 #   truncated  a WAV whose header says 10 s but holds 1.5 s of audio
 #   cueout     a 10 s song cued in at 0.5 s and out at 1.5 s
 #   skip       a 10 s song skipped 1.5 s after it starts
-# It prints the deck's state mid-song (MID) and the event journal at the end (EVENTS).
+#   stalled    the duplicate mark, then the gate closed again a few frames later and left closed: the deck
+#              holds its request but stops producing audio (production 2026-11-28)
+#   silent     the duplicate mark on a 10 s song of digital silence: the deck plays on but does not sound
+# It prints the deck's state and the song bus level mid-song (MID) and the event journal at the end (EVENTS).
 settings.log.stdout := true
 harness_mode = environment.get(default="", "MODE")
 harness_stage = ref(0)
 deck_b.on_track(
   synchronous=true,
-  fun (_) -> if harness_stage() == 0 and harness_mode == "duplicate" then harness_stage := 1 end
+  fun (_) -> if harness_stage() == 0 and (harness_mode == "duplicate" or harness_mode == "stalled" or harness_mode == "silent") then harness_stage := 1 end
 )
 # radio is pulled every frame by the output, so the gate flips on consecutive frames of the same clock.
 def harness_toggle() =
@@ -23,6 +26,11 @@ def harness_toggle() =
   elsif harness_stage() == 2 then
     deck_b_open := true
     harness_stage := 3
+  elsif harness_stage() >= 3 and harness_stage() < 8 and harness_mode == "stalled" then
+    harness_stage := harness_stage() + 1
+  elsif harness_stage() == 8 then
+    deck_b_open := false
+    harness_stage := 9
   end
 end
 radio.on_frame(before=true, synchronous=true, harness_toggle)
@@ -36,6 +44,8 @@ harness_uri =
     "annotate:liq_cue_in=\"0.5\",liq_cue_out=\"1.5\":/tmp/long.wav"
   elsif harness_mode == "skip" then
     "/tmp/long.wav"
+  elsif harness_mode == "silent" then
+    "/tmp/silent.wav"
   else
     "/tmp/song.wav"
   end
@@ -53,7 +63,7 @@ if harness_mode == "skip" then thread.run(delay=3.5, fun () -> next_queue.skip()
 thread.run(
   delay=3.,
   fun () ->
-    print("MID deck_b_playing=#{deck_b_playing()} current_playing=#{current_playing()} journal=#{harness_journal()}")
+    print("MID deck_b_playing=#{deck_b_playing()} current_playing=#{current_playing()} song_rms=#{get_song_rms()} journal=#{harness_journal()}")
 )
 thread.run(
   delay=7.,

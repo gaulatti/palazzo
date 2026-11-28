@@ -234,14 +234,60 @@ test("a duplicate track mark on a song deck neither ends the song nor starts it 
     assert.match(watch, new RegExp(`deck_mark_is_duplicate\\(name, pos, ${point}, meta\\)`));
   }
   assert.equal(watch.match(/deck_mark_is_duplicate\(/g).length, hooks);
-  // The end hook journals nothing for a duplicate; track_ended stays in the branch for a real end.
+  // The end hook journals nothing for a duplicate (it only schedules the check after the mark, production
+  // 2026-11-28); track_ended stays in the branch for a real end.
   assert.match(
     watch,
-    /if deck_mark_is_duplicate\(name, pos, 0\., meta\) then\n        log\.important\([^\n]*duplicate track mark[^\n]*\n      else\n      begin\n        set_deck_playing\(name, false\)[\s\S]*remember_event\("track_ended", meta\)/,
+    /if deck_mark_is_duplicate\(name, pos, 0\., meta\) then\n        log\.important\([^\n]*duplicate track mark[^\n]*\n        check_after_duplicate_mark\(name, deck, rid, pos, meta\)\n      else\n      begin\n        set_deck_playing\(name, false\)[\s\S]*remember_event\("track_ended", meta\)/,
   );
   // A start on the request already started on the deck is not journalled again.
   assert.match(
     watch,
     /if rid != "" and rid == deck_started_rid\(name\) then\n        log\.important\([^\n]*second track mark[^\n]*\n      else\n      begin\n        set_deck_started_rid\(name, rid\)[\s\S]*remember_event\("track_started", meta\)/,
   );
+});
+
+// Production 2026-11-28: after an ignored duplicate mark the deck held its request and its clock ran, but it
+// was silent while Palazzo reported the song playing. Behaviour on the real Liquidsoap:
+// test/runtime/verify-deck-marks.sh (duplicate, stalled and silent).
+test("a song deck's gate sits above its fades, and a duplicate mark is checked 1 s later", () => {
+  const script = buildLiquidsoapScript({
+    telnetPort: 14000,
+    icecastPort: 8000,
+    icecastPassword: "password",
+    mount: "/stream",
+    streamName: "Name",
+    genre: "Various",
+    bitrate: 128,
+    fillerPlaylistPath: "/run/palazzo/active-filler.m3u",
+    songRequestTimeoutMs: 10000,
+  });
+  const deck = script.slice(script.indexOf("def song_deck(queue, is_open) ="), script.indexOf("deck_a = song_deck("));
+  // The gate switch is the deck's last operator before its meter: a reselection's mark never reaches the fades.
+  assert.ok(deck.indexOf("fade.out(") < deck.indexOf("switch(track_sensitive=false"));
+  assert.ok(deck.indexOf("switch(track_sensitive=false") < deck.indexOf("peak(duration=0.5, gated)"));
+  assert.match(deck, /switch\(track_sensitive=false, \[\(\{is_open\(\)\}, faded\)\]\)/);
+
+  const check = script.slice(
+    script.indexOf("def check_after_duplicate_mark(name, deck, rid, pos, meta) ="),
+    script.indexOf("def watch_deck(name, deck) ="),
+  );
+  // Only the check after the deck's latest mark acts, and only while that song is still the deck's.
+  assert.match(check, /generation = deck_mark_check\(name\) \+ 1\n  set_deck_mark_check\(name, generation\)\n  thread\.run\(delay=1\., fun \(\) ->/);
+  assert.match(check, /if deck_mark_check\(name\) == generation and deck_started_rid\(name\) == rid and deck_playing\(name\) then/);
+  // Held: still the deck's request, its queue's remaining time went down, and it sounds (a song volume at 0
+  // counts as sounding, so muting the songs never ends one).
+  assert.match(check, /sounding = volume <= 0\. or level > 0\.001 \* volume/);
+  assert.match(check, /if held and left > 0\. and left < pos - 0\.5 and sounding then[\s\S]*remember_duplicate_mark\("played", meta\)\n          end\n        else/);
+  // Otherwise ended: the queue is skipped so the deck's own end hooks journal the end, with a closed gate
+  // opened first and the skip sent after it, then a release if the deck is still marked playing.
+  assert.match(check, /remember_duplicate_mark\("ended", meta\)\n[\s\S]*if held and deck_is_open\(name\) then\n              deck_queue\(name\)\.skip\(\)\n            elsif held then\n              begin\n                set_deck_open\(name, true\)\n                thread\.run\(delay=0\.1, fun \(\) -> if deck_holds\(name, rid\) then deck_queue\(name\)\.skip\(\) end\)/);
+  assert.match(check, /thread\.run\(delay=0\.6, fun \(\) -> release_stalled_deck\(name, rid, meta\)\)/);
+  const release = script.slice(
+    script.indexOf("def release_stalled_deck(name, rid, meta) ="),
+    script.indexOf("def check_after_duplicate_mark("),
+  );
+  assert.match(release, /if deck_started_rid\(name\) == rid and deck_playing\(name\) then/);
+  assert.match(release, /set_deck_playing\(name, false\)[\s\S]*open_next_gate\(\)[\s\S]*remember_event\("track_ended", meta\)[\s\S]*current_playing := false/);
+  assert.match(script, /event_type="duplicate_mark",\n      playback_request_id=metadata_value\("palazzo_request_id", meta\),/);
 });

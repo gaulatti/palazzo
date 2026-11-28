@@ -7,6 +7,11 @@
 # deck-marks-harness.liq appended, which forces that double selection on deck b, then checks the journal:
 # one track_started, no track_ended while the song plays, and one track_ended at its real end. The same run
 # without the double selection, a truncated file, a cue-out and a skip must still end when they end.
+# Production 2026-11-28: after the duplicate mark the song must still sound on the song bus (the deck held
+# its request and its clock ran, but the bus was silent while Palazzo reported the song playing), and
+# Liquidsoap checks the deck 1 s after the mark: "played" when it still plays and sounds;
+# a deck that stalls after the mark (stalled: its gate closes again and stays closed) or plays on without
+# sounding (silent: a song of digital silence) is ended within ~1 s.
 # Usage: test/runtime/verify-deck-marks.sh [image]   (default palazzo:ci)
 set -euo pipefail
 station_image="${1:-palazzo:ci}"
@@ -21,6 +26,7 @@ run() {
     cat > /tmp/harness.liq
     ffmpeg -hide_banner -loglevel error -y -f lavfi -i "sine=frequency=440:sample_rate=44100" -t 3 /tmp/song.wav
     ffmpeg -hide_banner -loglevel error -y -f lavfi -i "sine=frequency=440:sample_rate=44100" -t 10 /tmp/long.wav
+    ffmpeg -hide_banner -loglevel error -y -f lavfi -i "anullsrc=channel_layout=mono:sample_rate=44100" -t 10 /tmp/silent.wav
     # A WAV header for 10 s, cut after about 1.5 s of audio (mono 16-bit at 44.1 kHz: 88200 bytes a second).
     head -c 132400 /tmp/long.wav > /tmp/truncated.wav
     node -e "
@@ -44,11 +50,13 @@ run() {
     const of = (events, type) => events.filter((e) => e.event_type === type);
     const mid = line("MID");
     const midEvents = ours(mid.slice(mid.indexOf("journal=") + 8));
+    const songRms = Number((mid.match(/ song_rms=([^ ]+)/) || [])[1]);
     const events = ours(line("EVENTS"));
+    const checks = of(events, "duplicate_mark").map((e) => e.reason);
     const started = of(events, "track_started"), ended = of(events, "track_ended");
     const switches = (out.match(/Switch to songs_next/g) || []).length;
     const ignored = /ignored a track end on request/.test(out);
-    if (of(midEvents, "track_started").length !== 1) fail("the song was not journalled started once by mid-song");
+    if (MODE !== "stalled" && MODE !== "silent" && of(midEvents, "track_started").length !== 1) fail("the song was not journalled started once by mid-song");
     if (started.length !== 1) fail(`track_started journalled ${started.length} times`);
     if (ended.length !== 1) fail(`track_ended journalled ${ended.length} times`);
     const played = ended[0].occurred_at - started[0].occurred_at;
@@ -57,15 +65,24 @@ run() {
       if (!ignored) fail("the duplicate mark was not logged as ignored");
       if (of(midEvents, "track_ended").length !== 0) fail("the song was journalled ended while it was still playing");
       if (!/deck_b_playing=true current_playing=true/.test(mid)) fail(`the deck was released mid-song (${mid.split(" journal=")[0]})`);
+      if (!(songRms > 0.01)) fail(`the song bus was silent after the duplicate mark (song_rms=${songRms}) while the song was reported playing`);
+      if (checks.join() !== "played") fail(`the deck check after the duplicate mark journalled [${checks}], expected [played]`);
+    } else if (MODE === "stalled" || MODE === "silent") {
+      if (!ignored) fail("the duplicate mark was not logged as ignored");
+      if (checks.join() !== "ended") fail(`the deck check after the duplicate mark journalled [${checks}], expected [ended]`);
     } else if (ignored) {
       fail("a real end was taken for a duplicate mark");
     }
+    if (MODE === "natural" && !(songRms > 0.01)) fail(`the song bus was silent mid-song (song_rms=${songRms})`);
+    if (!["duplicate", "stalled", "silent"].includes(MODE) && checks.length) fail(`a deck check ran without a duplicate mark: [${checks}]`);
     if (played < Number(LOW) || played > Number(HIGH)) fail(`journalled ended ${played.toFixed(3)} s after it started, expected ${LOW} to ${HIGH} s`);
-    console.log(`${MODE.padEnd(9)} switches=${switches} started=1 ended=1 after ${played.toFixed(2)} s${MODE === "duplicate" ? " (duplicate mark ignored)" : ""}`);
+    console.log(`${MODE.padEnd(9)} switches=${switches} started=1 ended=1 after ${played.toFixed(2)} s${["duplicate", "stalled", "silent"].includes(MODE) ? ` (duplicate mark ignored, check: ${checks})` : ""}`);
   ' <<<"$out"
 }
 
 run duplicate 2.5 3.6
+run stalled 0.9 2.0
+run silent 0.9 2.0
 run natural 2.5 3.6
 run truncated 1.1 2.0
 run cueout 0.7 1.4

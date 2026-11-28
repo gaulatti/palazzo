@@ -334,6 +334,33 @@ the song plays, and sent again with its cue-out through `palazzo.recue_bumper`
   all leave 0 remaining or another request current, so they end as before.
   `test/runtime/verify-deck-marks.sh` forces the double selection on the
   station's own script and checks all of these.
+- A duplicate mark never silences the song, and a deck never stays silent
+  while it is reported playing (production 2026-11-28). The announced song
+  "Pamplona" got two duplicate marks on deck `b` 66 and 103 ms after its start;
+  both were ignored as above, but the station went silent while Palazzo said the
+  song was playing, until a watchdog outside Palazzo sent the file again 20.9 s
+  later (it then played whole on deck `a`). Cause: the gate switch sat under
+  the deck's track-sensitive `fade.out`. Each reselection starts a track, and
+  `fade.out`'s own end hook (also `allow_partial`) ran for the partial track
+  after its reset for the new one, so its gain stayed at 0 for the rest of the
+  song; the deck kept its request and its clock ran. The gate is now the
+  deck's last operator, above the fades, so a reselection's mark never reaches
+  them (it still reaches the deck's own hooks, which ignore it as above).
+  Then, 1 s after each ignored mark, Liquidsoap checks the deck: it must still
+  hold the request, its queue's remaining time must have gone down, and it must
+  sound above -60 dBFS relative to the song volume (a song volume of 0 counts as
+  sounding, so muting the songs never ends one). If so it journals
+  `duplicate_mark` `played`. If not it journals `duplicate_mark` `ended` and
+  ends the song as a real end: it skips the deck's queue (opening a closed gate
+  first, and skipping 0.1 s later), so the deck's own end hooks journal
+  `track_ended` and hand over to an announced song as at any end; a deck still
+  marked playing 0.6 s later (its request gone) is released and its end
+  journalled there. A song whose audio is below -60 dBFS for that second is
+  therefore ended. Counted in `palazzo_duplicate_track_marks_total{result}`.
+  `test/runtime/verify-deck-marks.sh` checks the song bus sounds after the
+  duplicate mark (it is silent on the image before this fix), and that a deck
+  stalled after the mark (gate closed again) or playing digital silence is
+  journalled ended within about 1 s.
 
 Measured on the real image (local and 20 Mbit/s remote 8.4 MB files): handoff
 silence at or below 20 ms against 280–480 ms with song commands alone; overlap

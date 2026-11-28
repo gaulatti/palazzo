@@ -262,11 +262,12 @@ test("the script applies song gain and fades on the song chain only", () => {
     script.includes(`songs_queue = palazzo_song_queue(id="songs", timeout=29.)
 `) &&
       script.includes(`def song_deck(queue, is_open) =
-  gated = switch(track_sensitive=false, [({is_open()}, queue)])
-  normalized = amplify(override="liq_amplify", 1., gated)
+  normalized = amplify(override="liq_amplify", 1., queue)
   controlled = amplify(override=null, song_volume, normalized)
   faded = fade.in(duration=0., track_sensitive=true, controlled)
-  fade.out(duration=0., track_sensitive=true, faded)
+  faded = fade.out(id="#{source.id(queue)}_faded", duration=0., track_sensitive=true, faded)
+  gated = switch(track_sensitive=false, [({is_open()}, faded)])
+  peak(duration=0.5, gated)
 end
 deck_a = song_deck(songs_queue, deck_a_open)
 deck_b = song_deck(next_queue, deck_b_open)

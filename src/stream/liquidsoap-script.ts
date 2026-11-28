@@ -406,12 +406,20 @@ end
 # (liq_cue_in / liq_cue_out) are applied by request resolution itself in Liquidsoap 2.4, so the deck plays
 # from cue-in to cue-out and its remaining time and every position hook below are on that trimmed clock
 # (gaulatti/palazzo#53). No fade is applied: the fade operators below have no duration and no override.
+# The gate comes last, after the fades (production 2026-11-28). Each time the gate switch selects its queue
+# again it starts a track (gaulatti/palazzo#75), and a track-sensitive fade.out under the gate read the end
+# of that partial track as the song's end: its end hook, with 221 s still to play, ran after its own reset
+# for the new track and left its gain at 0 for the rest of the song. The deck held its request and its
+# clock ran, but it played silence while Palazzo reported the song playing. Above the fades, a reselection's
+# mark never reaches them. The gate's log names its child after the queue ("Switch to songs_next_faded").
+# The deck's peak is measured for the check after a duplicate mark (below).
 def song_deck(queue, is_open) =
-  gated = switch(track_sensitive=false, [({is_open()}, queue)])
-  normalized = amplify(override="liq_amplify", 1., gated)
+  normalized = amplify(override="liq_amplify", 1., queue)
   controlled = amplify(override=null, song_volume, normalized)
   faded = fade.in(duration=0., track_sensitive=true, controlled)
-  fade.out(duration=0., track_sensitive=true, faded)
+  faded = fade.out(id="#{source.id(queue)}_faded", duration=0., track_sensitive=true, faded)
+  gated = switch(track_sensitive=false, [({is_open()}, faded)])
+  peak(duration=0.5, gated)
 end
 deck_a = song_deck(songs_queue, deck_a_open)
 deck_b = song_deck(next_queue, deck_b_open)
@@ -443,6 +451,10 @@ end
 
 def set_deck_open(name, value) =
   if name == "b" then deck_b_open := value else deck_a_open := value end
+end
+
+def deck_is_open(name) =
+  if name == "b" then deck_b_open() else deck_a_open() end
 end
 
 def deck_playing(name) =
@@ -495,6 +507,112 @@ def open_next_gate() =
     set_deck_playing(next_deck(), true)
     next_state := "started"
   end
+end
+
+# The check after a duplicate track mark (production 2026-11-28). An ignored track end must not leave a deck
+# reported playing while it is silent: 1 s after the mark the deck must still hold the request, its queue's
+# remaining time must have gone down, and the deck must sound above -60 dBFS (relative to the song volume;
+# a song volume at 0 counts as sounding). Then the mark is journalled "played". Otherwise it is journalled
+# "ended" and the song ends as a real end: the gate is opened (a stalled deck may be closed, and a closed
+# deck is not pulled) and the queue skipped, so the deck's own end hooks journal track_ended and hand over to
+# the announced song as at any end. A deck still marked playing 0.6 s after that (its request gone, so
+# there is nothing to skip) is released here. Only the check after a deck's latest mark acts.
+deck_a_mark_check = ref(0)
+deck_b_mark_check = ref(0)
+
+def deck_mark_check(name) =
+  if name == "b" then deck_b_mark_check() else deck_a_mark_check() end
+end
+
+def set_deck_mark_check(name, value) =
+  if name == "b" then deck_b_mark_check := value else deck_a_mark_check := value end
+end
+
+def remember_duplicate_mark(result, meta) =
+  begin
+    event_sequence := event_sequence() + 1
+    body = json.stringify(compact=true, {
+      sequence=event_sequence(),
+      event_type="duplicate_mark",
+      playback_request_id=metadata_value("palazzo_request_id", meta),
+      playback_id=metadata_value("palazzo_playback_id", meta),
+      parent_playback_id="",
+      program_id=metadata_value("palazzo_program_id", meta),
+      title="",
+      artist="",
+      cover_url="",
+      url="",
+      reason=result,
+      occurred_at=time()
+    })
+    events := [body, ...list.prefix(127, events())]
+  end
+end
+
+def deck_holds(name, rid) =
+  current = deck_queue(name).current()
+  if null.defined(current) then string(request.id(null.get(current))) == rid else false end
+end
+
+def release_stalled_deck(name, rid, meta) =
+  if deck_started_rid(name) == rid and deck_playing(name) then
+    begin
+      log.important(label="deck_#{name}", "request #{rid} was still marked playing after its skip: its end is journalled here")
+      set_deck_playing(name, false)
+      overlap_limiter_armed := false
+      if next_state() == "queued" and next_deck() != name and active_deck() == name then
+        begin
+          drop_bumper()
+          open_next_gate()
+        end
+      end
+      remember_event("track_ended", meta)
+      if metadata_value("palazzo_request_id", meta) == deck_request(name) then
+        set_deck_request(name, "")
+      end
+      if metadata_value("palazzo_request_id", meta) == current_request_id() then
+        current_playing := false
+      end
+    end
+  end
+end
+
+def check_after_duplicate_mark(name, deck, rid, pos, meta) =
+  generation = deck_mark_check(name) + 1
+  set_deck_mark_check(name, generation)
+  thread.run(delay=1., fun () ->
+    if deck_mark_check(name) == generation and deck_started_rid(name) == rid and deck_playing(name) then
+      begin
+        held = deck_holds(name, rid)
+        left = deck_queue(name).remaining()
+        level = deck.peak()
+        volume = song_volume()
+        sounding = volume <= 0. or level > 0.001 * volume
+        if held and left > 0. and left < pos - 0.5 and sounding then
+          begin
+            log.important(label="deck_#{name}", "request #{rid} still plays 1 s after a duplicate track mark (#{left} s left, peak #{level})")
+            remember_duplicate_mark("played", meta)
+          end
+        else
+          begin
+            log.important(label="deck_#{name}", "request #{rid} stopped after a duplicate track mark (held #{held}, #{left} s left of #{pos}, peak #{level}): ended as a real end")
+            remember_duplicate_mark("ended", meta)
+            # A closed gate is opened first and the skip sent a frame or so later: the reopening is itself a
+            # duplicate mark, and a skip in that same frame would end the song twice.
+            if held and deck_is_open(name) then
+              deck_queue(name).skip()
+            elsif held then
+              begin
+                set_deck_open(name, true)
+                thread.run(delay=0.1, fun () -> if deck_holds(name, rid) then deck_queue(name).skip() end)
+              end
+            end
+            thread.run(delay=0.6, fun () -> release_stalled_deck(name, rid, meta))
+          end
+        end
+      end
+    end
+  )
 end
 
 # Journals why the song on a deck is about to end: replacement or operator, before a command cuts it, or
@@ -692,6 +810,7 @@ def watch_deck(name, deck) =
       rid = metadata_value("rid", meta)
       if deck_mark_is_duplicate(name, pos, 0., meta) then
         log.important(label="deck_#{name}", "ignored a track end on request #{rid} with #{pos} s still to play: a duplicate track mark, not the song's end")
+        check_after_duplicate_mark(name, deck, rid, pos, meta)
       else
       begin
         set_deck_playing(name, false)
