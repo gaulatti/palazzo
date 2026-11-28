@@ -726,6 +726,40 @@ test('counts bumper results and measures a change after an announced spot withou
   assert.match(await telemetry.renderMetrics(), /palazzo_next_bumper_total\{result="dropped_unresolved"\} 1/);
 });
 
+// Production 2026-11-28: Liquidsoap checks a song deck 1 s after each ignored duplicate track mark and
+// journals what it found; Palazzo counts it with two bounded results and ignores any other reason. The
+// check changes nothing else: the song stays on air for played, and ended comes with its own track_ended.
+test('counts the check after a duplicate track mark by bounded result', async () => {
+  const telemetry = service();
+  telemetry.setLiquidsoapRunning(true);
+  const event = (sequence, type, id, occurred_at, extra = {}) => ({
+    ...lifecycle(sequence, type),
+    playback_request_id: id,
+    playback_id: id,
+    occurred_at,
+    ...extra,
+  });
+  const journal = [];
+  const step = (...events) => {
+    journal.push(...events);
+    telemetry.apply(snapshot({ liquidsoap_sequence: journal.length }), [...journal]);
+  };
+  step(event(1, 'track_started', 'song-a', 4_000));
+  step(event(2, 'duplicate_mark', 'song-a', 4_001, { reason: 'played' }));
+  assert.equal(telemetry.replay.filter((e) => e.type === 'track.ended').length, 0);
+  step(event(3, 'duplicate_mark', 'song-a', 4_100, { reason: 'ended' }), event(4, 'track_ended', 'song-a', 4_100.1));
+  step(event(5, 'duplicate_mark', 'song-b', 4_200, { reason: 'something_else' }));
+  const samples = parseExposition(await telemetry.renderMetrics());
+  assertBoundedLabels(samples);
+  const value = (labels) =>
+    samples.find((s) => s.name === 'palazzo_duplicate_track_marks_total' && Object.entries(labels).every(([k, v]) => s.labels[k] === v))?.value;
+  assert.equal(value({ result: 'played' }), 1);
+  assert.equal(value({ result: 'ended' }), 1);
+  assert.equal(samples.filter((s) => s.name === 'palazzo_duplicate_track_marks_total').length, 2);
+  assert.equal(telemetry.replay.filter((e) => e.type === 'track.started').length, 1);
+  assert.equal(telemetry.replay.filter((e) => e.type === 'track.ended').length, 1);
+});
+
 // gaulatti/palazzo#53: a spot journalled as played but silent on the instants bus is silence, not spot time.
 test('subtracts a spot only when the instants bus measured it above -50 dBFS', async () => {
   const telemetry = service();

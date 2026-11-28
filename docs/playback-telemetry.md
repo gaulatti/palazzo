@@ -188,6 +188,15 @@ Useful metrics:
   series is exposed from 0. A song changed after an announced spot is labelled
   `handoff="bumper"` in `palazzo_song_change_gap_seconds`, with the spot's time
   subtracted.
+- `palazzo_duplicate_track_marks_total{result="played|ended"}`: track ends a
+  song deck ignored as a duplicate track mark (gaulatti/palazzo#75), by what
+  Liquidsoap's check 1 s after the mark found (journal `duplicate_mark`,
+  `reason`). `played`: the deck still holds the song, its time runs and it
+  sounds. `ended`: it did not, and the song was ended as a real end, with its
+  own `track_ended`. Every series is exposed from 0; any other reason is
+  ignored. A rise in `ended` is a song that would otherwise have been silent
+  while reported playing (production 2026-11-28, see
+  [program-playout.md](program-playout.md)).
 - `palazzo_song_trimmed_seconds{edge="head|tail"}` (histogram, buckets 0.5, 1,
   2, 3, 5, 8, 10 s): the seconds a song's cue points trim from each edge, one
   observation per applied edge (gaulatti/palazzo#53). The tail is measured
