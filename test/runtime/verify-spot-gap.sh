@@ -4,11 +4,15 @@
 # files (the codecs production uses) rather than tones in WAV. Song A (1 kHz, HOLD_SECONDS, default 14 s) is on air, song B
 # (440 Hz, 8 s) is announced with a 3 s spot (2 kHz). Each tone is found in its own band, so the spot's last
 # frame and the song's first frame are measured apart; the gap is the time between them.
+# SPOT_TAIL_SECONDS (default 0) appends that much digital silence to the spot, as production spots carry: the
+# spot is announced once, on a fresh station, so the gap stays under the limit only if Palazzo measures the
+# spot while song A plays and the cued spot goes on air on that first play.
 # Usage: test/runtime/verify-spot-gap.sh [image] [max gap seconds]   (default palazzo:ci, 0.1)
 set -euo pipefail
 station_image="${1:-palazzo:ci}"
 max_gap="${2:-0.1}"
 hold="${HOLD_SECONDS:-14}"  # song A length: the announced song and spot wait this long behind the closed gate
+tail="${SPOT_TAIL_SECONDS:-0}"
 c="palazzo-spotgap-${RANDOM}-${RANDOM}"
 cleanup() { docker rm --force "$c" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
@@ -25,10 +29,11 @@ for attempt in $(seq 1 60); do
 done
 state | jq --exit-status '.capabilities | index("next.bumper") != null' >/dev/null
 
-mp3() { # name frequency seconds
-  docker exec "$c" ffmpeg -hide_banner -loglevel error -y -f lavfi -i "sine=frequency=$2:sample_rate=44100" -t "$3" -c:a libmp3lame -b:a 128k "/tmp/$1.mp3"
+mp3() { # name frequency seconds [trailing silence seconds]
+  docker exec "$c" ffmpeg -hide_banner -loglevel error -y -f lavfi -t "$3" -i "sine=frequency=$2:sample_rate=44100" \
+    -af "apad=pad_dur=${4:-0}" -c:a libmp3lame -b:a 128k "/tmp/$1.mp3"
 }
-mp3 songa 1000 "$hold"; mp3 songb 440 8; mp3 spot 2000 3
+mp3 songa 1000 "$hold"; mp3 songb 440 8; mp3 spot 2000 3 "$tail"
 docker exec "$c" ffmpeg -hide_banner -loglevel error -y -f lavfi -i "sine=frequency=300:sample_rate=44100" -t 2 /tmp/filler.wav
 docker exec --detach "$c" node -e \
   'const fs=require("node:fs");require("node:http").createServer((q,r)=>{const n=new URL(q.url,"http://x").pathname.slice(1);const f="/tmp/"+n;if(!/^[a-z]+\.(wav|mp3)$/.test(n)||!fs.existsSync(f)){r.statusCode=404;return r.end()}r.setHeader("Content-Type",n.endsWith(".mp3")?"audio/mpeg":"audio/wav");r.setHeader("Content-Length",fs.statSync(f).size);fs.createReadStream(f).pipe(r)}).listen(3200,"127.0.0.1")'

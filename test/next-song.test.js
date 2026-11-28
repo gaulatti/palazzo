@@ -548,3 +548,205 @@ test("a malformed spot is a 400 and nothing is sent", async () => {
     assert.deepEqual(commands, []);
   }
 });
+
+// A spot is measured for its trailing silence when announced, before the song ends, and handed to Liquidsoap
+// again with its cue-out (palazzo.recue_bumper); a measurement stands for 24 hours, since a spot replays about
+// every four songs, well past the 10 minutes it used to stand.
+const cuedSpotUri = (cue) => SPOT_URI.replace('liq_cue_out=""', `liq_cue_out="${cue}"`);
+
+async function settle() {
+  for (let round = 0; round < 20; round += 1) await new Promise((resolve) => setImmediate(resolve));
+}
+
+async function spotTrims(telemetry) {
+  const samples = parseExposition(await telemetry.renderMetrics());
+  const out = {};
+  for (const sample of samples) {
+    if (sample.name === "palazzo_item_trim_total" && sample.labels.kind === "spot" && sample.value > 0) {
+      out[sample.labels.result] = sample.value;
+    }
+  }
+  return out;
+}
+
+test("a spot measured before the song ends is cued out on its first play", async () => {
+  const { service, telemetry, commands, onAir, announce } = await harness();
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  service.trailingSilenceProbe = async () => { await gate; return { durationSeconds: 3, trailingSilenceSeconds: 0.6 }; };
+  onAir();
+  const response = await announce({}, "next-b", { bumper: SPOT });
+  // The announcement never waits for the measurement: the spot is prepared whole at once.
+  assert.equal(response.state, "queued");
+  assert.deepEqual(commands, [
+    `palazzo.prepare_next song-b 120.5 0 ${B_URI}`,
+    `palazzo.prepare_bumper spot-1 120.5 ${SPOT_URI}`,
+  ]);
+  release();
+  await settle();
+  assert.equal(commands.length, 3);
+  assert.match(commands[2], /^palazzo\.recue_bumper spot-1 120\.\d+ /);
+  assert.equal(commands[2].slice(commands[2].indexOf("annotate:")), cuedSpotUri("2.4"));
+  assert.deepEqual(await spotTrims(telemetry), { trimmed: 1 });
+});
+
+test("a spot announced again more than 10 minutes later still carries its cue-out", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1_700_000_000_000 });
+  const { service, telemetry, commands, onAir, announce } = await harness();
+  let probes = 0;
+  service.trailingSilenceProbe = async () => { probes += 1; return { durationSeconds: 3, trailingSilenceSeconds: 0.6 }; };
+  onAir();
+  await announce({}, "next-b", { bumper: SPOT });
+  await settle();
+  t.mock.timers.tick(11 * 60_000);
+  onAir({ playback_request_id: "song-b", url: "https://example.test/b.mp3" });
+  commands.length = 0;
+  await announce({ playbackId: "song-c", url: "https://example.test/c.mp3" }, "next-c", {
+    bumper: { playbackId: "spot-2", url: "https://example.test/spot.mp3?sig=other" },
+  });
+  await settle();
+  const prepared = commands.find((command) => command.startsWith("palazzo.prepare_bumper"));
+  assert.match(prepared, /liq_cue_in="",liq_cue_out="2\.4"/);
+  // Measured once; the second play needs no recue.
+  assert.equal(probes, 1);
+  assert.equal(commands.some((command) => command.startsWith("palazzo.recue_bumper")), false);
+  assert.deepEqual(await spotTrims(telemetry), { trimmed: 2 });
+});
+
+test("a spot measured longer ago than 24 hours is measured again", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1_700_000_000_000 });
+  const { service, commands, onAir, announce } = await harness();
+  let probes = 0;
+  service.trailingSilenceProbe = async () => { probes += 1; return { durationSeconds: 3, trailingSilenceSeconds: 0.6 }; };
+  onAir();
+  await announce({}, "next-b", { bumper: SPOT });
+  await settle();
+  t.mock.timers.tick(24 * 60 * 60_000);
+  onAir({ playback_request_id: "song-b", url: "https://example.test/b.mp3" });
+  commands.length = 0;
+  await announce({ playbackId: "song-c", url: "https://example.test/c.mp3" }, "next-c", {
+    bumper: { playbackId: "spot-2", url: SPOT.url },
+  });
+  await settle();
+  assert.match(commands.find((command) => command.startsWith("palazzo.prepare_bumper")), /liq_cue_out=""/);
+  assert.equal(probes, 2);
+  assert.match(commands.find((command) => command.startsWith("palazzo.recue_bumper")), /liq_cue_out="2\.4"/);
+});
+
+test("a measurement that times out leaves the spot whole for this play and serves the next", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1_700_000_000_000 });
+  const { service, telemetry, commands, onAir, announce } = await harness();
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  service.trailingSilenceProbe = async () => { await gate; return { durationSeconds: 3, trailingSilenceSeconds: 0.6 }; };
+  onAir();
+  await announce({}, "next-b", { bumper: SPOT });
+  t.mock.timers.tick(20_000);
+  await settle();
+  assert.deepEqual(await spotTrims(telemetry), { unmeasured: 1 });
+  // Done after the limit: not used for this play, so nothing is sent.
+  release();
+  await settle();
+  assert.deepEqual(commands, [
+    `palazzo.prepare_next song-b 120.5 0 ${B_URI}`,
+    `palazzo.prepare_bumper spot-1 120.5 ${SPOT_URI}`,
+  ]);
+  assert.equal(service.itemCueOuts.get(SPOT.url).cue, 2.4);
+});
+
+test("a spot measured with no trailing silence plays whole, now and on its next play", async () => {
+  const { telemetry, commands, onAir, announce } = await harness();
+  onAir();
+  await announce({}, "next-b", { bumper: SPOT });
+  await settle();
+  onAir({ playback_request_id: "song-b", url: "https://example.test/b.mp3" });
+  await announce({ playbackId: "song-c", url: "https://example.test/c.mp3" }, "next-c", {
+    bumper: { playbackId: "spot-2", url: SPOT.url },
+  });
+  await settle();
+  assert.equal(commands.some((command) => command.startsWith("palazzo.recue_bumper")), false);
+  assert.match(commands[3], /liq_cue_in="",liq_cue_out=""/);
+  assert.deepEqual(await spotTrims(telemetry), { whole: 2 });
+});
+
+test("a spot whose measurement fails plays whole and is counted", async () => {
+  const { service, telemetry, commands, onAir, announce } = await harness();
+  service.trailingSilenceProbe = async () => { throw new Error("ffmpeg failed"); };
+  onAir();
+  await announce({}, "next-b", { bumper: SPOT });
+  await settle();
+  assert.equal(commands.length, 2);
+  assert.deepEqual(await spotTrims(telemetry), { failed: 1, unmeasured: 1 });
+});
+
+test("a measured spot is not prepared again with under a second of the song left", async () => {
+  const { service, telemetry, commands, onAir, announce } = await harness();
+  service.trailingSilenceProbe = async () => ({ durationSeconds: 3, trailingSilenceSeconds: 0.6 });
+  onAir({ remaining: 0.5 });
+  await announce({}, "next-b", { bumper: SPOT });
+  await settle();
+  assert.equal(commands.length, 2);
+  assert.deepEqual(await spotTrims(telemetry), { unmeasured: 1 });
+});
+
+test("a cued spot Liquidsoap no longer waits for, or whose send fails, plays as prepared", async () => {
+  for (const failure of ["none", "throw"]) {
+    const { service, telemetry, commands, onAir, announce } = await harness({}, { "palazzo.recue_bumper": "none" });
+    service.trailingSilenceProbe = async () => ({ durationSeconds: 3, trailingSilenceSeconds: 0.6 });
+    if (failure === "throw") {
+      const send = service.telnet.send;
+      service.telnet.send = async (command) => {
+        if (command.startsWith("palazzo.recue_bumper")) throw new Error("telnet lost");
+        return send(command);
+      };
+    }
+    onAir();
+    await announce({}, "next-b", { bumper: SPOT });
+    await settle();
+    assert.equal(commands.length, failure === "none" ? 3 : 2);
+    assert.deepEqual(await spotTrims(telemetry), { unmeasured: 1 });
+  }
+});
+
+test("a spot Palazzo cannot relay is dropped and not measured", async () => {
+  const { service, telemetry, onAir, announce } = await harness();
+  let probes = 0;
+  service.trailingSilenceProbe = async () => { probes += 1; return { durationSeconds: 3, trailingSilenceSeconds: 0.6 }; };
+  const relayed = service.relayed.bind(service);
+  service.relayed = (url, path, ttlMs) =>
+    url === SPOT.url ? Promise.reject(new Error("refused")) : relayed(url, path, ttlMs);
+  onAir();
+  const response = await announce({}, "next-b", { bumper: SPOT });
+  await settle();
+  assert.equal(response.state, "queued");
+  assert.equal(telemetry.announcedWithBumper, false);
+  assert.equal(probes, 0);
+  assert.deepEqual(await spotTrims(telemetry), {});
+});
+
+test("a spot Liquidsoap will not take is still measured for its next play", async () => {
+  const { service, telemetry, onAir, announce } = await harness({}, { "palazzo.prepare_bumper": "none" });
+  service.trailingSilenceProbe = async () => ({ durationSeconds: 3, trailingSilenceSeconds: 0.6 });
+  onAir();
+  await announce({}, "next-b", { bumper: SPOT });
+  await settle();
+  assert.equal(service.itemCueOuts.get(SPOT.url).cue, 2.4);
+  assert.deepEqual(await spotTrims(telemetry), { unmeasured: 1 });
+});
+
+test("the script resolves a recued spot in place of the whole one and never holds the song for it", () => {
+  const script = buildLiquidsoapScript({
+    telnetPort: 14000,
+    icecastPort: 8000,
+    icecastPassword: "secret",
+    mount: "/stream",
+    streamName: "Palazzo",
+    genre: "Various",
+    bitrate: 128,
+    fillerPlaylistPath: "/run/palazzo/active-filler.m3u",
+    songRequestTimeoutMs: 29000,
+  });
+  assert.match(script, /"recue_bumper",/);
+  assert.match(script, /bumper_pending := bumper_recued\(\)/);
+  assert.match(script, /list\.iter\(fun \(r\) -> request\.destroy\(r\), bumper_recued\(\)\)\n\s+bumper_recued := \[\]/);
+});

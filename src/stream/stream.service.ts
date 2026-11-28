@@ -208,8 +208,12 @@ export const NO_FILE_CUE = { liq_cue_in: "", liq_cue_out: "" } as const;
 // The background measurement of a spot or an instant (never on the air path): the relay fetch plus the decode.
 const ITEM_TRIM_MEASURE_TIMEOUT_MS = 20_000;
 const ITEM_CUE_CACHE_ENTRIES = 256;
-// How long a measurement stands: a file replaced at the same address is measured again after this.
-const ITEM_CUE_TTL_MS = 10 * 60_000;
+// Under this much of the song left, a measured spot is not prepared again: the whole one already resolved plays.
+const MIN_RECUE_SECONDS = 1;
+// How long a measurement stands. A stored audio object is immutable, so this is long: a spot replays about
+// every four songs, well past any short lifetime, and a short one sent every spot out untrimmed. A file
+// replaced at the same address is measured again after this, or sooner once evicted from the cache.
+const ITEM_CUE_TTL_MS = 24 * 60 * 60_000;
 
 @Injectable()
 export class StreamService implements OnModuleInit, OnModuleDestroy {
@@ -1364,19 +1368,17 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
       // announcement: the song plays at the end as without one, and the drop is counted.
       let withBumper = false;
       if (bumper) {
+        // A spot measured before (kept ITEM_CUE_TTL_MS) is cued out now. One not measured yet is prepared
+        // whole at once, so it is never held or dropped, and measured now, minutes before the song ends:
+        // once measured it is prepared again with its cue-out and that one goes on air (recueBumper).
+        const known = this.knownItemCue(bumper.url);
+        let annotated = false;
         try {
           const bumperUri = this.annotatedUri(
             await this.relayed(bumper.url, "instant", limit * 1000),
-            {
-              palazzo_request_id: bumper.playbackId,
-              palazzo_url: bumper.url,
-              palazzo_kind: "instant",
-              ...this.itemCue("spot", bumper.url),
-              // An announced spot starts just before the song's end, while the song is still on air; it
-              // is titled with the station name all the same (gaulatti/palazzo#54).
-              palazzo_spot: "true",
-            },
+            this.bumperMetadata(bumper, known ? cueAnnotations(known.cue) : { ...NO_FILE_CUE }),
           );
+          annotated = true;
           withBumper =
             (
               await this.telnet.send(
@@ -1387,6 +1389,14 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
           withBumper = false;
         }
         if (!withBumper) this.telemetry.observeBumper("dropped_unresolved");
+        if (known) {
+          this.telemetry.observeItemTrim("spot", known.cue === null ? "whole" : "trimmed");
+        } else if (withBumper) {
+          this.recueBumper(bumper, limit);
+        } else if (annotated) {
+          this.telemetry.observeItemTrim("spot", "unmeasured");
+          void this.measureItemCue("spot", bumper.url);
+        }
       }
       this.nextCommands.set(digest, {
         fingerprint,
@@ -1541,18 +1551,81 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
    * (empty cue-in, gaulatti/palazzo#60) and the item is cued out at its last audio, the trailing digital silence,
    * at most MAX_TRIM_SECONDS of it. Nothing here waits: a measured item (cached for ITEM_CUE_TTL_MS) is cued out;
    * an item not measured yet plays whole and is measured in the background for its next play, so no play and
-   * no queued stream operation ever waits for the relay or for ffmpeg.
+   * no queued stream operation ever waits for the relay or for ffmpeg. A spot announced with the next song
+   * is the exception that needs no next play: see recueBumper.
    */
   private itemCue(kind: "spot" | "instant", sourceUrl: string): Record<string, string> {
-    const key = this.itemCueKey(sourceUrl);
-    const known = this.itemCueOuts.get(key);
-    if (known && Date.now() - known.at < ITEM_CUE_TTL_MS) {
+    const known = this.knownItemCue(sourceUrl);
+    if (known) {
       this.telemetry.observeItemTrim(kind, known.cue === null ? "whole" : "trimmed");
-      return { liq_cue_in: "", liq_cue_out: known.cue === null ? "" : String(known.cue) };
+      return cueAnnotations(known.cue);
     }
     this.telemetry.observeItemTrim(kind, "unmeasured");
     void this.measureItemCue(kind, sourceUrl);
     return { ...NO_FILE_CUE };
+  }
+
+  /** The measurement standing for an item, if any (null cue: it plays whole). */
+  private knownItemCue(sourceUrl: string): { cue: number | null } | undefined {
+    const known = this.itemCueOuts.get(this.itemCueKey(sourceUrl));
+    return known && Date.now() - known.at < ITEM_CUE_TTL_MS ? known : undefined;
+  }
+
+  private bumperMetadata(bumper: ProgramAsset, cue: Record<string, string>): Record<string, string> {
+    return {
+      palazzo_request_id: bumper.playbackId,
+      palazzo_url: bumper.url,
+      palazzo_kind: "instant",
+      ...cue,
+      // An announced spot starts just before the song's end, while the song is still on air; it
+      // is titled with the station name all the same (gaulatti/palazzo#54).
+      palazzo_spot: "true",
+    };
+  }
+
+  /**
+   * An announced spot prepared whole because it was not measured yet: it is measured now, while the current
+   * song still plays, and once measured with a trailing silence the same spot is handed to Liquidsoap again
+   * with its cue-out (palazzo.recue_bumper). Liquidsoap puts that one on air instead of the whole one if it
+   * resolves before the spot is pushed; otherwise the whole one plays as it would have. Nothing here holds
+   * or drops the spot: a measurement not done within ITEM_TRIM_MEASURE_TIMEOUT_MS (or the song's remaining
+   * time) is not used for this play, and the measurement it finishes still serves the next.
+   */
+  private recueBumper(bumper: ProgramAsset, limitSeconds: number): void {
+    const startedAt = Date.now();
+    let timer: NodeJS.Timeout | undefined;
+    const timedOut = new Promise<false>((resolve) => {
+      timer = setTimeout(() => resolve(false), Math.min(ITEM_TRIM_MEASURE_TIMEOUT_MS, limitSeconds * 1000));
+      timer.unref();
+    });
+    const measured = this.measureItemCue("spot", bumper.url).then(() => true);
+    void Promise.race([measured, timedOut]).then(async (done) => {
+      clearTimeout(timer);
+      const known = done ? this.knownItemCue(bumper.url) : undefined;
+      if (!known) {
+        this.telemetry.observeItemTrim("spot", "unmeasured");
+        return;
+      }
+      if (known.cue === null) {
+        this.telemetry.observeItemTrim("spot", "whole");
+        return;
+      }
+      const cue = known.cue;
+      const left = limitSeconds - (Date.now() - startedAt) / 1000;
+      const recued =
+        left >= MIN_RECUE_SECONDS &&
+        (await this.serializeOperation(async () => {
+          const uri = this.annotatedUri(
+            await this.relayed(bumper.url, "instant", left * 1000),
+            this.bumperMetadata(bumper, cueAnnotations(cue)),
+          );
+          const answer = await this.telnet.send(
+            `palazzo.recue_bumper ${bumper.playbackId} ${decimal(left)} ${uri}`,
+          );
+          return answer.trim() === "ok";
+        }).catch(() => false));
+      this.telemetry.observeItemTrim("spot", recued ? "trimmed" : "unmeasured");
+    });
   }
 
   // The item's address without its query: a signed address changes on every request, the object does not.
@@ -1812,6 +1885,10 @@ export function loudnessGain(
 const MIN_OVERLAP_FADE_IN_SECONDS = 0.25;
 
 /** A plain decimal string (never exponent notation), to six places. */
+function cueAnnotations(cue: number | null): Record<string, string> {
+  return { liq_cue_in: "", liq_cue_out: cue === null ? "" : String(cue) };
+}
+
 function decimal(value: number): string {
   return String(Number(value.toFixed(6)));
 }
