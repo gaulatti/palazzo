@@ -352,6 +352,9 @@ station_title = ref(fun () -> ())
 bumper_state = ref("none")
 bumper_playback_id = ref("")
 bumper_pending = ref([])
+# The same spot resolved again with its measured cue-out (palazzo.recue_bumper): when there is one, it goes on
+# air instead of bumper_pending, which was resolved whole before the spot was measured.
+bumper_recued = ref([])
 bumper_generation = ref(0)
 bumper_on_air = ref(false)
 # Request id of the spot once pushed to the instants queue, and the playback id of one dropped there as
@@ -392,6 +395,8 @@ def drop_bumper() =
       bumper_generation := bumper_generation() + 1
       list.iter(fun (r) -> request.destroy(r), bumper_pending())
       bumper_pending := []
+      list.iter(fun (r) -> request.destroy(r), bumper_recued())
+      bumper_recued := []
       bumper_state := "none"
     end
   end
@@ -562,6 +567,14 @@ def start_bumper() =
     bumper_next_generation := next_generation()
     bumper_on_air := false
     generation = bumper_generation()
+    # The spot resolved with its cue-out, when it is ready, replaces the one resolved whole.
+    if list.length(bumper_recued()) > 0 then
+      begin
+        list.iter(fun (r) -> request.destroy(r), bumper_pending())
+        bumper_pending := bumper_recued()
+        bumper_recued := []
+      end
+    end
     list.iter(fun (r) -> begin bumper_rid := request.id(r) instants_requests.push(r) end, bumper_pending())
     bumper_pending := []
     # Not on air within 1 s: the spot failed and the song takes the air.
@@ -836,6 +849,51 @@ server.register(
                     bumper_state := "none"
                     remember_bumper_result("dropped_unresolved")
                   end
+                end
+              else
+                request.destroy(r)
+              end
+            end
+          )
+          "ok"
+        end
+      end
+    end
+)
+
+# palazzo.recue_bumper <playback id> <time limit seconds> <annotated uri>: the spot already prepared, annotated
+# again with the cue-out Palazzo measured after preparing it. It is resolved while the song plays and, once
+# resolved, goes on air in place of the whole one; one that fails to resolve, or resolves after the spot was
+# pushed or dropped, is discarded and changes nothing. It never holds or drops the spot: one still resolving
+# whole when this one is ready is ready with this one. Answers "none" when that spot is not waiting (another
+# spot, none, or already playing), "invalid" on a malformed command, else "ok".
+server.register(
+  namespace="palazzo",
+  usage="recue_bumper <playback id> <time limit seconds> <uri>",
+  description="Resolve the prepared spot again with its measured cue-out",
+  "recue_bumper",
+  fun (arg) ->
+    begin
+      parts = string.split(separator=" ", arg)
+      if list.length(parts) < 3 then
+        "invalid"
+      elsif list.nth(parts, 0) != bumper_playback_id() or (bumper_state() != "resolving" and bumper_state() != "ready") then
+        "none"
+      else
+        begin
+          resolve_limit = float_of_string(default=0., list.nth(parts, 1))
+          uri = string.concat(separator=" ", list.tl(list.tl(parts)))
+          generation = bumper_generation()
+          thread.run(fun () ->
+            begin
+              r = request.create(uri)
+              ok = request.resolve(timeout=resolve_limit, r)
+              if ok and bumper_generation() == generation and (bumper_state() == "resolving" or bumper_state() == "ready") then
+                begin
+                  list.iter(fun (old) -> request.destroy(old), bumper_recued())
+                  bumper_recued := [r]
+                  # A whole one still resolving is discarded when it resolves (its state check fails).
+                  bumper_state := "ready"
                 end
               else
                 request.destroy(r)
