@@ -178,12 +178,13 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-east-1
-          role-to-assume: arn:aws:iam::792025092931:role/palazzo-github-deploy
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
 
       - name: Deploy to Cumulus through SSM
         if: vars.ON_PREMISES != 'true'
         env:
           DEPLOYMENT_TOKEN: ${{ secrets.DEPLOYMENT_TOKEN }}
+          ICECAST_SECRET_ID: ${{ secrets.ICECAST_SOURCE_SECRET_ID }}
         run: |
           set -euo pipefail
           if [ -z "${DEPLOYMENT_TOKEN:-}" ]; then
@@ -200,7 +201,6 @@ jobs:
           fi
           CUMULUS_INSTANCE_ID="$(jq -r '.[0]' <<<"$INSTANCE_IDS")"
 
-          ICECAST_SECRET_ID='broadcast/production/icecast-source-password'
 
           SCRIPT_BASE64="$(base64 -w 0 deploy/cumulus.sh)"
           NGINX_BASE64="$(base64 -w 0 deploy/cumulus.nginx.conf)"

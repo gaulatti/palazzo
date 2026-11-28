@@ -33,10 +33,12 @@ test('preserves the on-premises gate and adds the fail-closed Cumulus path', () 
   );
   assert.match(workflow, /if: vars\.ON_PREMISES == 'true'/);
   assert.match(workflow, /if: vars\.ON_PREMISES != 'true'/);
-  assert.match(workflow, /role\/palazzo-github-deploy/);
+  assert.match(workflow, /role-to-assume: \$\{\{ secrets\.AWS_DEPLOY_ROLE_ARN \}\}/);
+  assert.doesNotMatch(workflow, /arn:aws:iam::\d+/, 'the deploy role ARN comes from a repository secret, never a literal');
   assert.match(workflow, /Name=tag:Name,Values=macondo-services/);
   assert.match(workflow, /Expected exactly one running Macondo service host/);
-  assert.match(workflow, /broadcast\/production\/icecast-source-password/);
+  assert.match(workflow, /ICECAST_SECRET_ID: \$\{\{ secrets\.ICECAST_SOURCE_SECRET_ID \}\}/);
+  assert.doesNotMatch(workflow, /broadcast\/production\//, 'secret ids come from repository secrets, never a literal');
   assert.doesNotMatch(workflow, /palazzo-control-token|PALAZZO_CONTROL_TOKEN/);
   assert.doesNotMatch(deployScript, /palazzoControlToken|PALAZZO_CONTROL_TOKEN/);
   assert.doesNotMatch(workflow, /MacondoStack/);
