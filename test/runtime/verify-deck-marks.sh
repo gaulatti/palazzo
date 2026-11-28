@@ -12,6 +12,14 @@
 # Liquidsoap checks the deck 1 s after the mark: "played" when it still plays and sounds;
 # a deck that stalls after the mark (stalled: its gate closes again and stays closed) or plays on without
 # sounding (silent: a song of digital silence) is ended within ~1 s.
+# Production 2026-11-28, later: a song command arrived on the frame the announced song's gate had opened, before
+# its track started; the announced request played out and the commanded song queued behind it on the same deck,
+# then played silent (fade.out's end hook for the first request, whose end came before its remaining time
+# reached 0, ran after its reset for the second). stacked puts two such requests back to back in one deck and
+# requires the second to sound; command sends the song command in that window and requires the announced
+# request not to play out; silentstart requires a song silent 1 s after its start, with no duplicate mark, to
+# be journalled start_check "silent" and ended within ~1 s; faded requires the song's own fades to still apply.
+# No mode may journal start_check for a song that sounds.
 # Usage: test/runtime/verify-deck-marks.sh [image]   (default palazzo:ci)
 set -euo pipefail
 station_image="${1:-palazzo:ci}"
@@ -46,13 +54,16 @@ run() {
     const { MODE, LOW, HIGH } = process.env;
     const fail = (why) => { console.log(`FAIL: ${MODE}: ${why}`); process.exit(1); };
     const line = (tag) => (out.split("\n").find((l) => l.startsWith(tag + " ")) || fail(`no ${tag} line`)).slice(tag.length + 1);
-    const ours = (journal) => JSON.parse(journal).filter((e) => e.playback_request_id === "deck-marks");
+    const all = (journal) => JSON.parse(journal);
+    const ours = (journal) => all(journal).filter((e) => e.playback_request_id === "deck-marks");
     const of = (events, type) => events.filter((e) => e.event_type === type);
     const mid = line("MID");
     const midEvents = ours(mid.slice(mid.indexOf("journal=") + 8));
     const songRms = Number((mid.match(/ song_rms=([^ ]+)/) || [])[1]);
+    const lateRms = Number((line("LATE").match(/song_rms=([^ ]+)/) || [])[1]);
     const events = ours(line("EVENTS"));
     const checks = of(events, "duplicate_mark").map((e) => e.reason);
+    const startChecks = of(all(line("EVENTS")), "start_check").map((e) => `${e.playback_request_id}:${e.reason}`);
     const started = of(events, "track_started"), ended = of(events, "track_ended");
     const switches = (out.match(/Switch to songs_next/g) || []).length;
     const ignored = /ignored a track end on request/.test(out);
@@ -73,10 +84,29 @@ run() {
     } else if (ignored) {
       fail("a real end was taken for a duplicate mark");
     }
-    if (MODE === "natural" && !(songRms > 0.01)) fail(`the song bus was silent mid-song (song_rms=${songRms})`);
+    if (MODE === "silentstart") {
+      if (startChecks.join() !== "deck-marks:silent") fail(`the check after the start journalled [${startChecks}], expected [deck-marks:silent]`);
+    } else if (startChecks.length) {
+      fail(`the check after the start journalled [${startChecks}] for a song that sounds`);
+    }
+    if (["natural", "stacked", "command"].includes(MODE) && !(songRms > 0.01)) fail(`the song bus was silent mid-song (song_rms=${songRms})`);
+    if (MODE === "faded") {
+      if (!(songRms > 0.012 && songRms < 0.05)) fail(`1 s into a 2 s fade-in the song bus was at ${songRms}, expected about half of 0.0625`);
+      if (!(lateRms > 0.008 && lateRms < 0.045)) fail(`0.4 s before the end with a 1 s fade-out the song bus was at ${lateRms}, expected about 0.4 of 0.0625`);
+    } else if (MODE === "natural" && !(lateRms > 0.05)) {
+      fail(`the song bus was not at full level 2.6 s into a song without fades (song_rms=${lateRms})`);
+    }
+    if (MODE === "command") {
+      const announced = all(line("EVENTS")).filter((e) => e.playback_request_id === "deck-marks-announced");
+      const aStarted = of(announced, "track_started"), aEnded = of(announced, "track_ended");
+      if (!/a song command came before the announced request/.test(out)) fail("reset_decks did not take the announced request that had not started yet");
+      if (aEnded.length > 1 || aStarted.length > 1) fail(`the announced request was journalled started ${aStarted.length} and ended ${aEnded.length} times`);
+      if (aStarted.length && (!aEnded.length || aEnded[0].occurred_at - aStarted[0].occurred_at > 0.5)) fail("the announced request played on after the song command");
+      if (Number(started[0].occurred_at) < Math.max(0, ...aEnded.map((e) => e.occurred_at)) - 0.05) fail("the commanded song started before the announced request ended");
+    }
     if (!["duplicate", "stalled", "silent"].includes(MODE) && checks.length) fail(`a deck check ran without a duplicate mark: [${checks}]`);
     if (played < Number(LOW) || played > Number(HIGH)) fail(`journalled ended ${played.toFixed(3)} s after it started, expected ${LOW} to ${HIGH} s`);
-    console.log(`${MODE.padEnd(9)} switches=${switches} started=1 ended=1 after ${played.toFixed(2)} s${["duplicate", "stalled", "silent"].includes(MODE) ? ` (duplicate mark ignored, check: ${checks})` : ""}`);
+    console.log(`${MODE.padEnd(11)} switches=${switches} started=1 ended=1 after ${played.toFixed(2)} s, song_rms ${songRms.toFixed(4)} then ${lateRms.toFixed(4)}${["duplicate", "stalled", "silent"].includes(MODE) ? ` (duplicate mark ignored, check: ${checks})` : ""}${startChecks.length ? ` (start check: ${startChecks})` : ""}`);
   ' <<<"$out"
 }
 
@@ -87,4 +117,8 @@ run natural 2.5 3.6
 run truncated 1.1 2.0
 run cueout 0.7 1.4
 run skip 1.1 1.9
+run stacked 2.5 3.6
+run silentstart 0.9 2.0
+run faded 2.5 3.6
+run command 2.5 3.6
 echo "deck marks check passed"

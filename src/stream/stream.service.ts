@@ -1468,7 +1468,7 @@ export class StreamService implements OnModuleInit, OnModuleDestroy {
    * probed length when known (`fileDurationSeconds`, an announcement), else
    * the payload's duration; with neither, the tail is applied as sent, which
    * Alcantara bounds before sending (gaulatti/alcantara#234). liq_fade_in and
-   * liq_fade_out are annotated but no operator reads them: no fade is applied.
+   * liq_fade_out are applied by the song deck as a linear fade gain.
    */
   private songAnalysisAnnotations(
     playbackRequestId: string,

@@ -760,6 +760,38 @@ test('counts the check after a duplicate track mark by bounded result', async ()
   assert.equal(telemetry.replay.filter((e) => e.type === 'track.ended').length, 1);
 });
 
+// Production 2026-11-28: Liquidsoap checks a song deck 1 s after every song start and, when it is still silent,
+// journals start_check "silent" and ends the song with its own track_ended. Palazzo counts the silent ones and
+// ignores any other reason; the check emits nothing of its own.
+test('counts songs ended as silent 1 s after their start', async () => {
+  const telemetry = service();
+  telemetry.setLiquidsoapRunning(true);
+  const event = (sequence, type, id, occurred_at, extra = {}) => ({
+    ...lifecycle(sequence, type),
+    playback_request_id: id,
+    playback_id: id,
+    occurred_at,
+    ...extra,
+  });
+  const journal = [];
+  const step = (...events) => {
+    journal.push(...events);
+    telemetry.apply(snapshot({ liquidsoap_sequence: journal.length }), [...journal]);
+  };
+  const silentStarts = async () =>
+    parseExposition(await telemetry.renderMetrics()).find((s) => s.name === 'palazzo_silent_song_starts_total')?.value;
+  assert.equal(await silentStarts(), 0);
+  step(event(1, 'track_started', 'song-a', 5_000));
+  step(event(2, 'start_check', 'song-a', 5_001, { reason: 'silent' }), event(3, 'track_ended', 'song-a', 5_001.1));
+  step(event(4, 'start_check', 'song-b', 5_100, { reason: 'something_else' }));
+  const samples = parseExposition(await telemetry.renderMetrics());
+  assertBoundedLabels(samples);
+  assert.equal(await silentStarts(), 1);
+  assert.equal(telemetry.replay.filter((e) => e.type === 'track.started').length, 1);
+  assert.equal(telemetry.replay.filter((e) => e.type === 'track.ended').length, 1);
+  assert.equal(telemetry.replay.filter((e) => /start_check/.test(e.type)).length, 0);
+});
+
 // gaulatti/palazzo#53: a spot journalled as played but silent on the instants bus is silence, not spot time.
 test('subtracts a spot only when the instants bus measured it above -50 dBFS', async () => {
   const telemetry = service();

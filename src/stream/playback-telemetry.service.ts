@@ -28,7 +28,8 @@ export interface LiquidsoapLifecycleEvent {
     | 'instant_started'
     | 'instant_ended'
     | 'bumper_result'
-    | 'duplicate_mark';
+    | 'duplicate_mark'
+    | 'start_check';
   playback_request_id: string;
   playback_id: string;
   parent_playback_id: string;
@@ -40,7 +41,8 @@ export interface LiquidsoapLifecycleEvent {
   /**
    * On next_withdrawn: replaced, withdrawn, flushed or not_ready. On track_skipped: replacement, operator,
    * or cancel after a failed command. On duplicate_mark: played (the deck still plays and sounds 1 s after an
-   * ignored duplicate track mark) or ended (it did not, and the song was ended as a real end).
+   * ignored duplicate track mark) or ended (it did not, and the song was ended as a real end). On start_check:
+   * silent (the deck did not sound 1 s after the song started, and the song was ended as a real end).
    */
   reason?: string;
   occurred_at: number;
@@ -374,6 +376,8 @@ export class PlaybackTelemetryService {
     played: 0,
     ended: 0,
   };
+  /** Songs Liquidsoap ended because their deck was silent 1 s after they started. */
+  private silentSongStarts = 0;
   /**
    * The last song start, from the journal only (never the engine snapshot), on Liquidsoap's clock: an
    * announced song that starts before the playing one ends is a change with no gap, counted at that end.
@@ -1003,6 +1007,10 @@ export class PlaybackTelemetryService {
       if (result) this.duplicateMarks[result] += 1;
       return;
     }
+    if (event.event_type === 'start_check') {
+      if (event.reason === 'silent') this.silentSongStarts += 1;
+      return;
+    }
     if (
       event.event_type === 'instant_started' ||
       event.event_type === 'instant_ended'
@@ -1421,6 +1429,11 @@ export class PlaybackTelemetryService {
     for (const [result, count] of Object.entries(this.duplicateMarks)) {
       lines.push(`palazzo_duplicate_track_marks_total{result="${result}"} ${count}`);
     }
+    lines.push(
+      '# HELP palazzo_silent_song_starts_total Songs ended because their deck was still silent (under -60 dBFS relative to the song volume) 1 s after they started.',
+      '# TYPE palazzo_silent_song_starts_total counter',
+      `palazzo_silent_song_starts_total ${this.silentSongStarts}`,
+    );
     lines.push(
       '# HELP palazzo_item_trim_total Spots and instants measured for trailing digital silence before they play, by kind and result: trimmed (cued out at the last audio, at most 1 s), whole (no silence over 50 ms) or failed (not measured in time; the item plays whole).',
       '# TYPE palazzo_item_trim_total counter',

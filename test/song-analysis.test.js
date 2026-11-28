@@ -264,8 +264,24 @@ test("the script applies song gain and fades on the song chain only", () => {
       script.includes(`def song_deck(queue, is_open) =
   normalized = amplify(override="liq_amplify", 1., queue)
   controlled = amplify(override=null, song_volume, normalized)
-  faded = fade.in(duration=0., track_sensitive=true, controlled)
-  faded = fade.out(id="#{source.id(queue)}_faded", duration=0., track_sensitive=true, faded)
+  fade_in = ref(0.)
+  fade_out = ref(0.)
+  controlled.on_track(
+    synchronous=true,
+    fun (meta) ->
+      begin
+        fade_in := song_fade_seconds(metadata_value("liq_fade_in", meta))
+        fade_out := song_fade_seconds(metadata_value("liq_fade_out", meta))
+      end
+  )
+  def fade_gain() =
+    elapsed = source.elapsed(queue)
+    left = source.remaining(queue)
+    rise = if fade_in() > 0. and elapsed >= 0. and elapsed < fade_in() then elapsed / fade_in() else 1. end
+    fall = if fade_out() > 0. and left >= 0. and left < fade_out() then left / fade_out() else 1. end
+    rise * fall
+  end
+  faded = amplify(id="#{source.id(queue)}_faded", override=null, fade_gain, controlled)
   gated = switch(track_sensitive=false, [({is_open()}, faded)])
   peak(duration=0.5, gated)
 end
@@ -333,8 +349,9 @@ instants_controlled = amplify(override=null, instant_volume, instants_per_item)`
     script.includes(`main_volume = interactive.float("palazzo_main_volume", 1.)
 radio = amplify(override=null, main_volume, radio)`),
   );
-  assert.equal(script.match(/fade\.in\(/g).length, 2);
-  assert.equal(script.match(/fade\.out\(/g).length, 2);
+  // Only the intro chain uses Liquidsoap's fade operators; a song deck's fades are its own gain (above).
+  assert.equal(script.match(/fade\.in\(/g).length, 1);
+  assert.equal(script.match(/fade\.out\(/g).length, 1);
   // The song deck, the intro chain and the instants chain each read liq_amplify, and only those.
   assert.equal(script.match(/override="liq_amplify"/g).length, 3);
 });
