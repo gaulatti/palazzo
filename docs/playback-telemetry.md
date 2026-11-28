@@ -197,6 +197,12 @@ Useful metrics:
   ignored. A rise in `ended` is a song that would otherwise have been silent
   while reported playing (production 2026-11-28, see
   [program-playout.md](program-playout.md)).
+- `palazzo_silent_song_starts_total`: songs Liquidsoap ended because their deck
+  was still under -60 dBFS (relative to the song volume) 1 s after the song
+  started (journal `start_check`, reason `silent`; any other reason is ignored).
+  The song gets its own `track_ended`. Exposed from 0. A rise is a song that
+  would otherwise have played silent while reported playing (production
+  2026-11-28, see [program-playout.md](program-playout.md)).
 - `palazzo_song_trimmed_seconds{edge="head|tail"}` (histogram, buckets 0.5, 1,
   2, 3, 5, 8, 10 s): the seconds a song's cue points trim from each edge, one
   observation per applied edge (gaulatti/palazzo#53). The tail is measured

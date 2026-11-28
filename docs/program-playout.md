@@ -136,7 +136,7 @@ A valid group becomes Liquidsoap request annotations on the song only:
 | Group    | Annotation                                             | Applied by                                                        |
 | -------- | ------------------------------------------------------ | ----------------------------------------------------------------- |
 | segue    | `liq_cue_in`, `liq_cue_out` (seconds)                  | Liquidsoap 2.4.5 request resolution cuts the file                 |
-| segue    | `liq_fade_in`, `liq_fade_out` (seconds)                | `fade.in` / `fade.out` on the song chain (default duration 0)     |
+| segue    | `liq_fade_in`, `liq_fade_out` (seconds)                | the song deck's own linear fade gain (none when absent)           |
 | loudness | `liq_amplify` (linear gain)                            | `amplify(override="liq_amplify", 1., …)` before `song_volume`     |
 
 The gain is `10^((target − integratedLufs)/20)`, capped so that
@@ -156,7 +156,7 @@ alone still hands off exactly as before.
 
 A command without either group pushes exactly the same `songs.push` request as
 before, and the added operators are no-ops without their annotations:
-`liq_amplify` defaults to `1.`, and both fades default to a duration of `0.`.
+`liq_amplify` defaults to `1.`, and a song without fade annotations has no fade.
 An instant's own `volume` and an intro's own `gain` (each a number in [0, 1], validated at the
 API and clamped to that range where Alcantara stores it) reach Liquidsoap as the `liq_amplify`
 annotation and are applied per item by `amplify(override="liq_amplify", ...)` on the instants and
@@ -207,8 +207,12 @@ Each edge is bounded at 10 s (`CUE_EDGE_BOUND_SECONDS`, the same bound as
 Alcantara's). An edge over it is not annotated, so that edge plays untrimmed,
 and it is counted. The tail is bounded against the announcement's probed file
 length, else the payload's `duration`; with neither, the cue-out is applied as
-sent. `liq_fade_in` and `liq_fade_out` are annotated, but no operator reads
-them, so no fade is applied.
+sent. `liq_fade_in` and `liq_fade_out` are applied by the song deck itself, as
+a linear gain on the same trimmed clock: `elapsed / fade-in` while the song
+rises and `remaining / fade-out` while it falls (see the song deck fades
+below). Before 2026-11-28 the docs said no operator read them; Liquidsoap's
+`fade.in` / `fade.out` did read them (their default override keys), measured on
+2.4.5: a 2 s fade-in and a 1.5 s fade-out were applied.
 
 ## Announced next song (gapless handoff and overlap)
 
@@ -361,6 +365,50 @@ the song plays, and sent again with its cue-out through `palazzo.recue_bumper`
   duplicate mark (it is silent on the image before this fix), and that a deck
   stalled after the mark (gate closed again) or playing digital silence is
   journalled ended within about 1 s.
+- A song never plays silent behind another song on its own deck, and a song
+  command never stacks two requests on one deck (production 2026-11-28). An
+  announced song's gate had opened on deck `a` (`started`, before its track
+  start) when a song command arrived. `reset_decks` left the started
+  announcement alone and the songs queue's flush did not remove it, so it
+  played out and the commanded song queued behind it on the same deck. When
+  its track started (journalled before the first song's `track_ended`) it
+  played silent until a watchdog outside Palazzo resent it about 20 s later.
+  Cause of the silence: a song whose end comes before its remaining time reaches
+  0 (a partial end, for example a file shorter than its header says) ran
+  `fade.out`'s end hook after its reset for the next song on the deck, so the
+  next song's gain stayed at 0 (the mechanism of the duplicate-mark silence
+  above, here between two requests). Three changes:
+  - A song deck has no `fade.in` / `fade.out` any more. A song's own fades
+    (`liq_fade_in`, `liq_fade_out`, linear) are a gain read on every frame from
+    the deck queue's clock: `elapsed / fade-in` while the song rises,
+    `remaining / fade-out` while it falls, 1 otherwise. Nothing is kept between
+    songs but the two durations read at each track start, so no end of one
+    song can hold the next one's gain. The fades sound as before (same linear
+    shape on the same trimmed clock), including the 0.25 s rise of a song
+    entering under an overlap; only `liq_fade_*_type` / `_curve` annotations,
+    which Palazzo never sends, are no longer read.
+  - Every song start is checked 1 s later, not only after a duplicate mark. If
+    the deck still holds the request and is under -60 dBFS relative to the song
+    volume (a song volume of 0 counts as sounding), Liquidsoap journals
+    `start_check` `silent` and ends the song as a real end, by the same path as
+    the check after a duplicate mark. A request that got a duplicate mark is
+    left to that mark's own check. Counted in `palazzo_silent_song_starts_total`.
+    A song that starts with more than about 1 s under -60 dBFS (no cue-in
+    trimming its silence) is ended by this check.
+  - `palazzo.reset_decks` first takes an announcement whose gate has opened but
+    whose track has not started: it removes the request from its deck by id and
+    skips that deck, in the same command, so the song command that follows
+    never queues behind it. A track that did start in the meantime ends at once
+    with its own `track_ended`; one that never started is no longer marked
+    playing.
+
+  `test/runtime/verify-deck-marks.sh` checks these on the real image: `stacked`
+  (a truncated request then the song, back to back on deck `a`: the song bus is
+  silent on the image before this change), `command` (the song command on the
+  frame the announced song's gate opens), `silentstart` (a silent song with no
+  duplicate mark is ended within about 1 s) and `faded` (a 2 s fade-in and a
+  1 s fade-out still apply); no mode may journal `start_check` for a song that
+  sounds.
 - The filler's presence check (is a song, intro, instant or live input on
   air) runs on the station's own clock, before each frame. It used to run in a
   separate thread every 0.1 s. With the gate above the fades, that thread

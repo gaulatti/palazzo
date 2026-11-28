@@ -405,19 +405,44 @@ end
 # Per deck: loudness gain from liq_amplify (1.0 when absent) and the song volume. A song's cue points
 # (liq_cue_in / liq_cue_out) are applied by request resolution itself in Liquidsoap 2.4, so the deck plays
 # from cue-in to cue-out and its remaining time and every position hook below are on that trimmed clock
-# (gaulatti/palazzo#53). No fade is applied: the fade operators below have no duration and no override.
+# (gaulatti/palazzo#53).
+# A song's own fades (liq_fade_in / liq_fade_out, seconds, linear; none when absent or not a positive number)
+# are a gain read on every frame from the queue's own clock: elapsed / fade-in while the song rises,
+# remaining / fade-out while it falls. Nothing is kept between songs but the two durations read at each
+# track start, so no end of one song can hold the gain of the next. Liquidsoap's track-sensitive fade.in /
+# fade.out did keep it (production 2026-11-28): when a song's end comes before its remaining time reaches 0
+# (a partial end, e.g. a file shorter than its header says), fade.out's end hook for that song ran after its
+# own reset for the next song on the same deck and left that song's gain at 0: it played silent.
 # The gate comes last, after the fades (production 2026-11-28). Each time the gate switch selects its queue
-# again it starts a track (gaulatti/palazzo#75), and a track-sensitive fade.out under the gate read the end
-# of that partial track as the song's end: its end hook, with 221 s still to play, ran after its own reset
-# for the new track and left its gain at 0 for the rest of the song. The deck held its request and its
-# clock ran, but it played silence while Palazzo reported the song playing. Above the fades, a reselection's
-# mark never reaches them. The gate's log names its child after the queue ("Switch to songs_next_faded").
-# The deck's peak is measured for the check after a duplicate mark (below).
+# again it starts a track (gaulatti/palazzo#75); above the fades, a reselection's mark never reaches them.
+# The gate's log names its child after the queue ("Switch to songs_next_faded").
+# The deck's peak is measured for the checks after a start and after a duplicate mark (below).
+def song_fade_seconds(value) =
+  seconds = float_of_string(default=0., value)
+  if seconds > 0. and seconds < 3600. then seconds else 0. end
+end
+
 def song_deck(queue, is_open) =
   normalized = amplify(override="liq_amplify", 1., queue)
   controlled = amplify(override=null, song_volume, normalized)
-  faded = fade.in(duration=0., track_sensitive=true, controlled)
-  faded = fade.out(id="#{source.id(queue)}_faded", duration=0., track_sensitive=true, faded)
+  fade_in = ref(0.)
+  fade_out = ref(0.)
+  controlled.on_track(
+    synchronous=true,
+    fun (meta) ->
+      begin
+        fade_in := song_fade_seconds(metadata_value("liq_fade_in", meta))
+        fade_out := song_fade_seconds(metadata_value("liq_fade_out", meta))
+      end
+  )
+  def fade_gain() =
+    elapsed = source.elapsed(queue)
+    left = source.remaining(queue)
+    rise = if fade_in() > 0. and elapsed >= 0. and elapsed < fade_in() then elapsed / fade_in() else 1. end
+    fall = if fade_out() > 0. and left >= 0. and left < fade_out() then left / fade_out() else 1. end
+    rise * fall
+  end
+  faded = amplify(id="#{source.id(queue)}_faded", override=null, fade_gain, controlled)
   gated = switch(track_sensitive=false, [({is_open()}, faded)])
   peak(duration=0.5, gated)
 end
@@ -528,6 +553,18 @@ def set_deck_mark_check(name, value) =
   if name == "b" then deck_b_mark_check := value else deck_a_mark_check := value end
 end
 
+# The request each deck last ignored a duplicate mark on: its own check owns it, not the check after start.
+deck_a_marked_rid = ref("")
+deck_b_marked_rid = ref("")
+
+def deck_marked_rid(name) =
+  if name == "b" then deck_b_marked_rid() else deck_a_marked_rid() end
+end
+
+def set_deck_marked_rid(name, value) =
+  if name == "b" then deck_b_marked_rid := value else deck_a_marked_rid := value end
+end
+
 def remember_duplicate_mark(result, meta) =
   begin
     event_sequence := event_sequence() + 1
@@ -577,9 +614,28 @@ def release_stalled_deck(name, rid, meta) =
   end
 end
 
+# Ends the song a check found stopped or silent as a real end.
+def end_checked_song(name, rid, meta) =
+  begin
+    held = deck_holds(name, rid)
+    # A closed gate is opened first and the skip sent a frame or so later: the reopening is itself a
+    # duplicate mark, and a skip in that same frame would end the song twice.
+    if held and deck_is_open(name) then
+      deck_queue(name).skip()
+    elsif held then
+      begin
+        set_deck_open(name, true)
+        thread.run(delay=0.1, fun () -> if deck_holds(name, rid) then deck_queue(name).skip() end)
+      end
+    end
+    thread.run(delay=0.6, fun () -> release_stalled_deck(name, rid, meta))
+  end
+end
+
 def check_after_duplicate_mark(name, deck, rid, pos, meta) =
   generation = deck_mark_check(name) + 1
   set_deck_mark_check(name, generation)
+  set_deck_marked_rid(name, rid)
   thread.run(delay=1., fun () ->
     if deck_mark_check(name) == generation and deck_started_rid(name) == rid and deck_playing(name) then
       begin
@@ -597,17 +653,52 @@ def check_after_duplicate_mark(name, deck, rid, pos, meta) =
           begin
             log.important(label="deck_#{name}", "request #{rid} stopped after a duplicate track mark (held #{held}, #{left} s left of #{pos}, peak #{level}): ended as a real end")
             remember_duplicate_mark("ended", meta)
-            # A closed gate is opened first and the skip sent a frame or so later: the reopening is itself a
-            # duplicate mark, and a skip in that same frame would end the song twice.
-            if held and deck_is_open(name) then
-              deck_queue(name).skip()
-            elsif held then
-              begin
-                set_deck_open(name, true)
-                thread.run(delay=0.1, fun () -> if deck_holds(name, rid) then deck_queue(name).skip() end)
-              end
-            end
-            thread.run(delay=0.6, fun () -> release_stalled_deck(name, rid, meta))
+            end_checked_song(name, rid, meta)
+          end
+        end
+      end
+    end
+  )
+end
+
+# The check after every song start (production 2026-11-28): a song deck must sound 1 s after its track
+# starts, whatever the cause of a silence (a gain held at 0, a song that is digital silence). 1 s after the
+# deck journals track_started it must still be that request's deck, and if it still holds the request it
+# must sound above -60 dBFS relative to the song volume (a song volume at 0 counts as sounding). If not, the
+# start is journalled start_check "silent" and the song ends as a real end, by the same path as the check
+# after a duplicate mark. A request that got a duplicate mark is left to that mark's own check.
+def remember_start_check(result, meta) =
+  begin
+    event_sequence := event_sequence() + 1
+    body = json.stringify(compact=true, {
+      sequence=event_sequence(),
+      event_type="start_check",
+      playback_request_id=metadata_value("palazzo_request_id", meta),
+      playback_id=metadata_value("palazzo_playback_id", meta),
+      parent_playback_id="",
+      program_id=metadata_value("palazzo_program_id", meta),
+      title="",
+      artist="",
+      cover_url="",
+      url="",
+      reason=result,
+      occurred_at=time()
+    })
+    events := [body, ...list.prefix(127, events())]
+  end
+end
+
+def check_after_start(name, deck, rid, meta) =
+  thread.run(delay=1., fun () ->
+    if deck_started_rid(name) == rid and deck_marked_rid(name) != rid and deck_playing(name) and deck_holds(name, rid) then
+      begin
+        level = deck.peak()
+        volume = song_volume()
+        if volume > 0. and level <= 0.001 * volume then
+          begin
+            log.important(label="deck_#{name}", "request #{rid} is silent 1 s after its start (peak #{level}, song volume #{volume}): ended as a real end")
+            remember_start_check("silent", meta)
+            end_checked_song(name, rid, meta)
           end
         end
       end
@@ -749,6 +840,7 @@ def watch_deck(name, deck) =
         current_url := metadata_value("palazzo_url", meta)
         current_started_at := time()
         remember_event("track_started", meta)
+        check_after_start(name, deck, rid, meta)
       end
       end
       end
@@ -1034,6 +1126,29 @@ server.register(
   fun (reason) -> if drop_next(reason) then "withdrawn" else "none" end
 )
 
+# Used by every command that cuts the songs on air (palazzo.reset_decks), before anything else.
+# The announced song's gate has opened but its track has not started yet (production 2026-11-28: a
+# song command 0.27 s before that start). drop_next leaves a started announcement alone, and the
+# songs queue's flush did not remove it: it played out and the commanded song queued behind it on the
+# same deck. Here it is removed by its id and its deck skipped, so a command never leaves two requests
+# on one deck. A track that did start in the meantime ends now, with its own track_ended; one that
+# never started is no longer marked playing.
+def take_started_next() =
+  if next_state() == "started" then
+    begin
+      started_deck = next_deck()
+      started_rid = next_rid()
+      log.important(label="deck_#{started_deck}", "a song command came before the announced request #{started_rid} started: it is removed and its deck skipped")
+      if started_rid >= 0 then deck_queue(started_deck).remove_request_id(started_rid) end
+      deck_queue(started_deck).skip()
+      if deck_started_rid(started_deck) != string(started_rid) then set_deck_playing(started_deck, false) end
+      next_generation := next_generation() + 1
+      next_rid := -1
+      next_state := "none"
+    end
+  end
+end
+
 # palazzo.reset_decks: before a song command or a stop. Drops the announcement, stops a song playing on
 # deck b, and reopens deck a, so the existing songs commands act as they always have.
 server.register(
@@ -1043,6 +1158,7 @@ server.register(
   "reset_decks",
   fun (_) ->
     begin
+      take_started_next()
       ignore(drop_next("flushed"))
       list.iter(fun (r) -> next_queue.remove(r), next_queue.queue())
       # Stop a song on deck b (the active song, or an announced one whose gate just opened). Its gate
